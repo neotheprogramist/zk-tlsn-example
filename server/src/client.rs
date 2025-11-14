@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
+use async_compat::Compat;
 use axum::body::Bytes;
+use futures::io::{AsyncRead, AsyncWrite};
+use futures_rustls::TlsConnector;
 use http_body_util::{BodyExt, Full};
 use hyper::{StatusCode, Uri};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_rustls::TlsConnector;
 use tracing::info;
+
+use crate::executor::SmolExecutor;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -48,14 +51,17 @@ where
         .map_err(|_| ClientError::InvalidServerName("localhost".to_string()))?;
 
     let tls_connector = TlsConnector::from(client_config);
+    // futures-rustls accepts futures::io traits directly (which smol uses)
     let stream = tls_connector
         .connect(server_name, cnx)
         .await
         .map_err(ClientError::TlsConnection)?;
 
-    let stream = TokioIo::new(stream);
+    // Wrap the futures-io TLS stream with Compat to convert to tokio traits,
+    // then wrap with TokioIo to convert to hyper's Read/Write traits
+    let stream = TokioIo::new(Compat::new(stream));
 
-    let (mut sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), stream)
+    let (mut sender, conn) = hyper::client::conn::http2::handshake(SmolExecutor::new(), stream)
         .await
         .map_err(ClientError::Http2Handshake)?;
 
@@ -84,7 +90,7 @@ where
         Ok::<_, ClientError>(Response { status, body })
     };
 
-    let (conn_result, response) = tokio::join!(conn, request_task);
+    let (conn_result, response) = futures::join!(conn, request_task);
     conn_result.map_err(ClientError::ConnectionTask)?;
     let response = response?;
 

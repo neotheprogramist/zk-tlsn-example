@@ -4,19 +4,21 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+async-compat.workspace = true
 axum.workspace = true
 chrono.workspace = true
 futures.workspace = true
+futures-rustls.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+piper.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shared.workspace = true
+smol.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tokio-rustls.workspace = true
 tower.workspace = true
 tower-service.workspace = true
 tracing.workspace = true

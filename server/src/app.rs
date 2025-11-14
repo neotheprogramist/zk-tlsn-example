@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use async_compat::CompatExt;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -8,8 +9,8 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use smol::lock::RwLock;
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 #[derive(Error, Debug)]
 pub enum ApiError {
@@ -59,7 +60,7 @@ async fn get_balance(
     State(state): State<AppState>,
     Path(username): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
-    let balances = state.balances.read().await;
+    let balances = state.balances.read().compat().await;
 
     match balances.get(&username) {
         Some(&balance) => Ok(Json(BalanceResponse { username, balance })),
@@ -75,48 +76,52 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_get_balance_existing_user() {
-        let mut balances = HashMap::new();
-        balances.insert("alice".to_string(), 100);
-        balances.insert("bob".to_string(), 250);
+    #[test]
+    fn test_get_balance_existing_user() {
+        smol::block_on(async {
+            let mut balances = HashMap::new();
+            balances.insert("alice".to_string(), 100);
+            balances.insert("bob".to_string(), 250);
 
-        let app = get_app(balances);
+            let app = get_app(balances);
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/balance/alice")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/balance/alice")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.status(), StatusCode::OK);
 
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let balance_response: BalanceResponse = serde_json::from_slice(&body).unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let balance_response: BalanceResponse = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(balance_response.username, "alice");
-        assert_eq!(balance_response.balance, 100);
+            assert_eq!(balance_response.username, "alice");
+            assert_eq!(balance_response.balance, 100);
+        });
     }
 
-    #[tokio::test]
-    async fn test_get_balance_nonexistent_user() {
-        let balances = HashMap::new();
-        let app = get_app(balances);
+    #[test]
+    fn test_get_balance_nonexistent_user() {
+        smol::block_on(async {
+            let balances = HashMap::new();
+            let app = get_app(balances);
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/balance/charlie")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/balance/charlie")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        });
     }
 }
