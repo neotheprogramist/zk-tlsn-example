@@ -8,7 +8,6 @@ use hyper::{Request, body::Incoming};
 use hyper_util::rt::TokioIo;
 use thiserror::Error;
 use tower::Service;
-use tracing::info;
 
 use crate::executor::SmolExecutor;
 
@@ -29,45 +28,42 @@ pub async fn handle_connection<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    tracing::info!(
+        component = "server",
+        phase = "tls_handshake",
+        status = "started"
+    );
     let tls_acceptor = TlsAcceptor::from(server_config);
     let stream = tls_acceptor
         .accept(cnx)
         .await
         .map_err(ConnectionError::TlsHandshake)?;
+    tracing::info!(
+        component = "server",
+        phase = "tls_handshake",
+        status = "completed"
+    );
 
-    // Wrap the futures-io TLS stream with Compat to convert to tokio traits,
-    // then wrap with TokioIo to convert to hyper's Read/Write traits
     let stream = TokioIo::new(Compat::new(stream));
 
     let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
         tower_service.clone().call(request)
     });
 
-    let result = hyper_util::server::conn::auto::Builder::new(SmolExecutor::new())
+    tracing::info!(
+        component = "server",
+        phase = "serve_connection",
+        status = "started"
+    );
+    hyper_util::server::conn::auto::Builder::new(SmolExecutor::new())
         .serve_connection_with_upgrades(stream, hyper_service)
-        .await;
+        .await
+        .unwrap();
+    tracing::info!(
+        component = "server",
+        phase = "serve_connection",
+        status = "completed"
+    );
 
-    match result {
-        Ok(()) => {
-            info!("Connection handled successfully");
-            Ok(())
-        }
-        Err(e) => {
-            // Check if it's a broken pipe error (expected when client closes connection after receiving response)
-            let is_broken_pipe = e
-                .source()
-                .and_then(|s| s.downcast_ref::<std::io::Error>())
-                .map(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
-                .unwrap_or(false);
-
-            if is_broken_pipe {
-                info!(
-                    "Connection closed by client (broken pipe) - treating as successful completion"
-                );
-                Ok(())
-            } else {
-                Err(ConnectionError::ServeConnection(e))
-            }
-        }
-    }
+    Ok(())
 }

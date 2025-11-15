@@ -108,7 +108,7 @@ mod types;
 
 // Re-export public API
 pub use error::ParserError;
-pub use grammar::{RequestParser, ResponseParser};
+pub use grammar::{RedactedRequestParser, RedactedResponseParser, RequestParser, ResponseParser};
 pub use search::{BodySearchable, HeaderSearchable};
 pub use types::{RangedText, RangedValue, Request, Response};
 
@@ -118,6 +118,8 @@ mod tests {
 
     #[test]
     fn test_request_parsing_and_range_extraction() {
+        shared::init_test_logging();
+
         let input = r#"POST /api/users HTTP/1.1
 Host: example.com
 Content-Type: application/json
@@ -148,6 +150,8 @@ Content-Type: application/json
 
     #[test]
     fn test_response_parsing_and_range_extraction() {
+        shared::init_test_logging();
+
         let input = r#"HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -181,6 +185,8 @@ Content-Type: application/json
 
     #[test]
     fn test_nested_json_keypath_ranges() {
+        shared::init_test_logging();
+
         let input = r#"POST /api/test HTTP/1.1
 Host: api.example.com
 
@@ -207,6 +213,8 @@ Host: api.example.com
 
     #[test]
     fn test_multiple_headers_range_extraction() {
+        shared::init_test_logging();
+
         let input = r#"GET /api/data HTTP/1.1
 Host: example.com
 User-Agent: TestClient/1.0
@@ -240,6 +248,8 @@ Authorization: Bearer token123
 
     #[test]
     fn test_response_with_nested_json() {
+        shared::init_test_logging();
+
         let input = r#"HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -268,6 +278,8 @@ Content-Type: application/json
 
     #[test]
     fn test_request_without_body() {
+        shared::init_test_logging();
+
         let input = "GET /api/test HTTP/1.1\nHost: example.com\n\n";
 
         let request = RequestParser::parse_request(input).unwrap();
@@ -297,6 +309,8 @@ Content-Type: application/json
 
     #[test]
     fn test_non_existent_keypaths() {
+        shared::init_test_logging();
+
         let input = r#"POST /test HTTP/1.1
 Host: example.com
 
@@ -323,6 +337,8 @@ Host: example.com
 
     #[test]
     fn test_array_indexing_in_http_response() {
+        shared::init_test_logging();
+
         let input = r#"HTTP/1.1 200 OK
 Content-Type: application/json
 
@@ -361,6 +377,8 @@ Content-Type: application/json
 
     #[test]
     fn test_range_boundaries_are_valid() {
+        shared::init_test_logging();
+
         let input = r#"POST /api HTTP/1.1
 Host: test.com
 
@@ -398,6 +416,8 @@ Host: test.com
 
     #[test]
     fn test_complete_workflow() {
+        shared::init_test_logging();
+
         let request_str = r#"POST /api/users HTTP/1.1
 Host: api.example.com
 Content-Type: application/json

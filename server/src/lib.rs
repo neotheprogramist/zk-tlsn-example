@@ -20,6 +20,8 @@ mod tests {
 
     #[test]
     fn test_https_get_balance_existing_user() {
+        shared::init_test_logging();
+
         smol::block_on(async {
             let mut balances = HashMap::new();
             balances.insert("alice".to_string(), 100);
@@ -70,6 +72,8 @@ mod tests {
 
     #[test]
     fn test_parser_extracts_ranges_from_request_and_response() {
+        shared::init_test_logging();
+
         smol::block_on(async {
             let mut balances = HashMap::new();
             balances.insert("alice".to_string(), 100);
@@ -88,8 +92,8 @@ mod tests {
 
             let (server_result, client_result) = futures::join!(server_task, client_task);
 
-            server_result.expect("Server task should complete");
-            let traffic = client_result.expect("Client task should complete");
+            server_result.unwrap();
+            let traffic = client_result.unwrap();
 
             let raw_request_str = String::from_utf8(traffic.raw_request.clone())
                 .expect("Request should be valid UTF-8");

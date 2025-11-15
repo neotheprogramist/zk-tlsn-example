@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Parser)]
-#[grammar = "./grammar/request.pest"]
+#[grammar = "./grammar/standard/request.pest"]
 pub struct RequestParser;
 
 impl RequestParser {

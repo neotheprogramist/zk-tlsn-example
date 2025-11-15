@@ -7,6 +7,7 @@ use crate::{errors::TlsConfigError, tls::generate_self_signed_cert};
 pub struct TestTlsConfig {
     pub server_config: Arc<rustls::ServerConfig>,
     pub client_config: Arc<rustls::ClientConfig>,
+    pub cert_bytes: Vec<u8>,
 }
 
 pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
@@ -24,7 +25,7 @@ pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert)?;
+    root_store.add(cert.clone())?;
 
     let client_config = rustls::ClientConfig::builder_with_provider(crypto_provider)
         .with_safe_default_protocol_versions()?
@@ -34,6 +35,7 @@ pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
     Ok(TestTlsConfig {
         server_config: Arc::new(server_config),
         client_config: Arc::new(client_config),
+        cert_bytes: cert.to_vec(),
     })
 }
 

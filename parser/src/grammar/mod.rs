@@ -1,6 +1,6 @@
 pub(crate) mod common;
-mod request;
-mod response;
+pub mod redacted;
+pub mod standard;
 
-pub use request::RequestParser;
-pub use response::ResponseParser;
+pub use redacted::{RedactedRequestParser, RedactedResponseParser};
+pub use standard::{RequestParser, ResponseParser};

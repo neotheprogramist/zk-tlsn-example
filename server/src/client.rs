@@ -1,4 +1,5 @@
 use std::{
+    error::Error,
     io,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -14,7 +15,6 @@ use hyper::Uri;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use thiserror::Error;
-use tracing::info;
 
 type CapturedBytes = Arc<Mutex<Vec<u8>>>;
 
@@ -144,6 +144,7 @@ where
         let req = hyper::Request::builder()
             .method("GET")
             .uri(uri)
+            .header("Connection", "close")
             .header("content-type", "application/json")
             .body(Full::new(Bytes::new()))
             .expect("valid request");
@@ -166,7 +167,6 @@ where
     };
 
     let (conn_result, response) = futures::join!(conn, request_task);
-    conn_result.map_err(ClientError::ConnectionTask)?;
     let (status, _body) = response?;
 
     let raw_request = captured_write_bytes
@@ -179,9 +179,41 @@ where
         .unwrap_or_else(|_| panic!("Failed to lock captured read bytes"))
         .clone();
 
-    info!("Request sent successfully, status: {}", status);
-    Ok(CapturedTraffic {
-        raw_request,
-        raw_response,
-    })
+    match conn_result {
+        Ok(_) => {
+            tracing::info!(
+                component = "client",
+                phase = "http_exchange",
+                status = "completed",
+                http_status = status.as_u16()
+            );
+            Ok(CapturedTraffic {
+                raw_request,
+                raw_response,
+            })
+        }
+        Err(e) => {
+            if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>())
+                && io_err.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                tracing::debug!(
+                    component = "client",
+                    phase = "http_exchange",
+                    status = "completed",
+                    note = "broken_pipe"
+                );
+                return Ok(CapturedTraffic {
+                    raw_request,
+                    raw_response,
+                });
+            }
+            tracing::error!(
+                component = "client",
+                phase = "http_exchange",
+                status = "failed",
+                error = %e
+            );
+            Err(ClientError::ConnectionTask(e))
+        }
+    }
 }

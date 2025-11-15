@@ -1,0 +1,47 @@
+redacted_request = _{
+    SOI ~ request_line ~ redacted_headers ~ (NEWLINE* ~ redacted_body)? ~ NEWLINE* ~ EOI
+}
+
+request_line = { method ~ " " ~ url ~ " " ~ protocol ~ NEWLINE }
+method       = { "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS" }
+url          = { (ASCII_ALPHANUMERIC | "/" | ":" | "." | "-" | "_" | "?" | "=" | "&" | "%" | "~" | "@")+ }
+protocol     = { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+redacted_headers = _{ (header | redacted_header_line)* }
+header           =  { header_name ~ ": " ~ header_value ~ NEWLINE }
+header_name      =  { (ASCII_ALPHANUMERIC | "-")+ }
+header_value     =  { (!NEWLINE ~ !"\u{0000}" ~ ANY)* }
+
+redacted_header_line = { "\u{0000}" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+
+redacted_body = { redacted_json | "\u{0000}"+ }
+
+ws = _{ " " | "\t" }
+
+redacted_object  =  {
+    "{" ~ ws* ~ "}"
+  | "{" ~ ws* ~ redacted_pair ~ (ws* ~ "," ~ ws* ~ redacted_pair)* ~ ws* ~ "}"
+}
+redacted_pair    =  { (redacted_string | string) ~ ws* ~ ":" ~ ws* ~ redacted_value }
+redacted_array   =  {
+    "[" ~ ws* ~ "]"
+  | "[" ~ ws* ~ redacted_value ~ (ws* ~ "," ~ ws* ~ redacted_value)* ~ ws* ~ "]"
+}
+redacted_value   = _{ redacted_object | redacted_array | redacted_string | string | number | boolean | null | redacted_literal }
+boolean          =  { "true" | "false" }
+null             =  { "null" }
+string           = ${ "\"" ~ inner ~ "\"" }
+inner            = @{ char* }
+char             =  {
+    !("\"" | "\\") ~ ANY
+  | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+  | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+number           = @{
+    "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+redacted_string  = { "\"" ~ (!("\"" | "\u{0000}") ~ ANY)* ~ "\u{0000}"+ ~ (!("\"" | "\u{0000}") ~ ANY)* ~ "\"" }
+redacted_literal = { "\u{0000}"+ }
+
+redacted_json    =  { redacted_object | redacted_array }
