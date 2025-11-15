@@ -1291,6 +1291,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "parser",
  "rustls",
  "serde",
  "serde_json",

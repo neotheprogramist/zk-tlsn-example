@@ -37,6 +37,7 @@ pub enum ClientError {
 pub struct Response {
     pub status: StatusCode,
     pub body: Vec<u8>,
+    pub raw_response: String,
 }
 
 pub async fn send_request<IO>(
@@ -78,6 +79,7 @@ where
             .map_err(ClientError::RequestFailed)?;
 
         let status = res.status();
+        let headers = res.headers().clone();
         let body = res
             .into_body()
             .collect()
@@ -86,7 +88,26 @@ where
             .to_bytes()
             .to_vec();
 
-        Ok::<_, ClientError>(Response { status, body })
+        // Build raw HTTP response string in chunked transfer encoding format
+        let mut raw_response = format!("HTTP/1.1 {} {}\n", status.as_u16(), status.canonical_reason().unwrap_or(""));
+
+        for (name, value) in headers.iter() {
+            raw_response.push_str(&format!("{}: {}\n", name, value.to_str().unwrap_or("")));
+        }
+        raw_response.push('\n');
+
+        // Add body in chunked format
+        if let Ok(body_str) = String::from_utf8(body.clone()) {
+            // Write chunk size in hex
+            raw_response.push_str(&format!("{:x}\n", body_str.len()));
+            // Write chunk data
+            raw_response.push_str(&body_str);
+            raw_response.push('\n');
+            // Write terminating chunk
+            raw_response.push_str("0\n");
+        }
+
+        Ok::<_, ClientError>(Response { status, body, raw_response })
     };
 
     let (conn_result, response) = futures::join!(conn, request_task);
