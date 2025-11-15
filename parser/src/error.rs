@@ -16,4 +16,10 @@ pub enum ParserError {
 
     #[error("Invalid value format")]
     InvalidValue,
+
+    #[error("Header not found: {0}")]
+    HeaderNotFound(String),
+
+    #[error("Keypath not found: {0}")]
+    KeypathNotFound(String),
 }
