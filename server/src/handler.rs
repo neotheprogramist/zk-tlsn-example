@@ -30,7 +30,6 @@ where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let tls_acceptor = TlsAcceptor::from(server_config);
-    // futures-rustls accepts futures::io traits directly (which smol uses)
     let stream = tls_acceptor
         .accept(cnx)
         .await
@@ -44,11 +43,31 @@ where
         tower_service.clone().call(request)
     });
 
-    hyper_util::server::conn::auto::Builder::new(SmolExecutor::new())
+    let result = hyper_util::server::conn::auto::Builder::new(SmolExecutor::new())
         .serve_connection_with_upgrades(stream, hyper_service)
-        .await
-        .map_err(ConnectionError::ServeConnection)?;
+        .await;
 
-    info!("Connection handled successfully");
-    Ok(())
+    match result {
+        Ok(()) => {
+            info!("Connection handled successfully");
+            Ok(())
+        }
+        Err(e) => {
+            // Check if it's a broken pipe error (expected when client closes connection after receiving response)
+            let is_broken_pipe = e
+                .source()
+                .and_then(|s| s.downcast_ref::<std::io::Error>())
+                .map(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
+                .unwrap_or(false);
+
+            if is_broken_pipe {
+                info!(
+                    "Connection closed by client (broken pipe) - treating as successful completion"
+                );
+                Ok(())
+            } else {
+                Err(ConnectionError::ServeConnection(e))
+            }
+        }
+    }
 }

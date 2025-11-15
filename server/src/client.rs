@@ -51,7 +51,6 @@ where
         .map_err(|_| ClientError::InvalidServerName("localhost".to_string()))?;
 
     let tls_connector = TlsConnector::from(client_config);
-    // futures-rustls accepts futures::io traits directly (which smol uses)
     let stream = tls_connector
         .connect(server_name, cnx)
         .await
