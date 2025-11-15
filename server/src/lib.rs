@@ -94,9 +94,6 @@ mod tests {
             let raw_request_str = String::from_utf8(traffic.raw_request.clone())
                 .expect("Request should be valid UTF-8");
 
-            eprintln!("Raw request:\n{}", raw_request_str);
-            eprintln!("Raw request bytes: {:?}", raw_request_str.as_bytes());
-
             let parsed_request = parser::RequestParser::parse_request(&raw_request_str)
                 .expect("Should parse request");
 
@@ -118,9 +115,6 @@ mod tests {
 
             let raw_response_str = String::from_utf8(traffic.raw_response.clone())
                 .expect("Response should be valid UTF-8");
-
-            eprintln!("Raw response:\n{}", raw_response_str);
-            eprintln!("Raw response bytes: {:?}", raw_response_str.as_bytes());
 
             let parsed_response =
                 ResponseParser::parse_response(&raw_response_str).expect("Should parse response");

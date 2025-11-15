@@ -88,9 +88,6 @@ mod tests {
         let input = "GET /api/users HTTP/1.1\nHost: example.com\n\n";
         let result = RequestParser::parse_request(input);
 
-        if let Err(e) = &result {
-            eprintln!("Parse error: {:?}", e);
-        }
         assert!(result.is_ok());
         let request = result.unwrap();
 
