@@ -40,10 +40,16 @@ impl RequestParser {
                     headers.insert(key, value);
                 }
                 Rule::body => {
+                    let json_pair = pair
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::json)
+                        .ok_or(ParserError::MissingField("request body"))?;
+
                     body = Some(CommonParser::parse_value(
-                        pair.into_inner()
+                        json_pair
+                            .into_inner()
                             .next()
-                            .ok_or(ParserError::MissingField("request body"))?,
+                            .ok_or(ParserError::MissingField("request body content"))?,
                     )?);
                 }
                 _ => continue,
@@ -271,7 +277,7 @@ Host: example.com
         assert_eq!(request.request_line.range.start, 0);
         assert!(request.request_line.range.end > 0);
 
-        for (_, header) in &request.headers {
+        for header in request.headers.values() {
             assert!(header.range.start < header.range.end);
         }
 

@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parser_extracts_ranges_from_response() {
+    fn test_parser_extracts_ranges_from_request_and_response() {
         smol::block_on(async {
             let mut balances = HashMap::new();
             balances.insert("alice".to_string(), 100);
@@ -75,34 +75,57 @@ mod tests {
 
             assert_eq!(response.status, StatusCode::OK);
 
-            // Parse the raw HTTP response
-            let parsed_response = ResponseParser::parse_response(&response.raw_response)
-                .expect("Should parse response");
+            let raw_request_str = String::from_utf8(response.raw_request.clone())
+                .expect("Request should be valid UTF-8");
 
-            // Extract header ranges
+            eprintln!("Raw request:\n{}", raw_request_str);
+            eprintln!("Raw request bytes: {:?}", raw_request_str.as_bytes());
+
+            let parsed_request = parser::RequestParser::parse_request(&raw_request_str)
+                .expect("Should parse request");
+
+            let request_line_range = parsed_request.get_request_line_range();
+            let request_line_str = &raw_request_str[request_line_range];
+            assert!(request_line_str.contains("GET /api/balance/alice HTTP/1.1"));
+
+            let request_header_ranges = parsed_request
+                .get_header_ranges(&["content-type"])
+                .expect("Should find content-type header in request");
+
+            assert_eq!(request_header_ranges.len(), 1);
+
+            let request_content_type_str = &raw_request_str[request_header_ranges[0].clone()];
+            assert!(request_content_type_str.contains("application/json"));
+
+            let raw_response_str = String::from_utf8(response.raw_response.clone())
+                .expect("Response should be valid UTF-8");
+
+            eprintln!("Raw response:\n{}", raw_response_str);
+            eprintln!("Raw response bytes: {:?}", raw_response_str.as_bytes());
+
+            let parsed_response =
+                ResponseParser::parse_response(&raw_response_str).expect("Should parse response");
+
             let header_ranges = parsed_response
                 .get_header_ranges(&["content-type"])
                 .expect("Should find content-type header");
 
             assert_eq!(header_ranges.len(), 1);
 
-            // Verify we can extract the header value using the range
             let content_type_range = &header_ranges[0];
-            let content_type_str = &response.raw_response[content_type_range.clone()];
+            let content_type_str = &raw_response_str[content_type_range.clone()];
             assert!(content_type_str.contains("application/json"));
 
-            // Extract body keypaths
             let body_ranges = parsed_response
                 .get_body_keypaths_ranges(&["username", "balance"])
                 .expect("Should find username and balance fields");
 
             assert_eq!(body_ranges.len(), 2);
 
-            // Verify we can extract the exact values using ranges
-            let username_str = &response.raw_response[body_ranges[0].clone()];
+            let username_str = &raw_response_str[body_ranges[0].clone()];
             assert_eq!(username_str, "\"username\":\"alice\"");
 
-            let balance_str = &response.raw_response[body_ranges[1].clone()];
+            let balance_str = &raw_response_str[body_ranges[1].clone()];
             assert_eq!(balance_str, "\"balance\":100");
         });
     }

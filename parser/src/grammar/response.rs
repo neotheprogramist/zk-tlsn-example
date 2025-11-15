@@ -31,11 +31,17 @@ impl ResponseParser {
                     let (key, value) = CommonParser::parse_header(pair)?;
                     headers.insert(key, value);
                 }
-                Rule::body => {
+                Rule::chunked_body | Rule::content_length_body => {
+                    let body_pair = pair
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::json)
+                        .ok_or(ParserError::MissingField("response body"))?;
+
                     body = CommonParser::parse_value(
-                        pair.into_inner()
+                        body_pair
+                            .into_inner()
                             .next()
-                            .ok_or(ParserError::MissingField("response body"))?,
+                            .ok_or(ParserError::MissingField("response body content"))?,
                     )?;
                 }
                 _ => continue,
@@ -252,7 +258,7 @@ f
 
         let response = result.unwrap();
 
-        for (_, header) in &response.headers {
+        for header in response.headers.values() {
             assert!(header.range.start < header.range.end);
         }
 
@@ -467,6 +473,84 @@ Content-Type: application/json
                 _ => panic!("Expected scientific notation number"),
             },
             _ => panic!("Expected object"),
+        }
+    }
+
+    #[test]
+    fn test_response_with_content_length_encoding() {
+        let input = r#"HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 34
+
+{"username":"alice","balance":100}"#;
+
+        let result = ResponseParser::parse_response(input);
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.headers.len(), 2);
+
+        let content_type_header = response
+            .headers
+            .get("Content-Type")
+            .expect("Content-Type header should exist");
+        assert_eq!(content_type_header.value, "application/json");
+
+        let content_length_header = response
+            .headers
+            .get("Content-Length")
+            .expect("Content-Length header should exist");
+        assert_eq!(content_length_header.value, "34");
+
+        match &response.body {
+            RangedValue::Object { value, .. } => {
+                assert!(value.contains_key("username"));
+                assert!(value.contains_key("balance"));
+            }
+            _ => panic!("Expected object content"),
+        }
+    }
+
+    #[test]
+    fn test_response_with_content_length_and_crlf() {
+        let input = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 34\r\n\r\n{\"username\":\"alice\",\"balance\":100}";
+
+        let result = ResponseParser::parse_response(input);
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        assert_eq!(response.headers.len(), 2);
+
+        match &response.body {
+            RangedValue::Object { value, .. } => {
+                assert!(value.contains_key("username"));
+                assert!(value.contains_key("balance"));
+            }
+            _ => panic!("Expected object content"),
+        }
+    }
+
+    #[test]
+    fn test_chunked_encoding_still_works() {
+        // Ensure chunked encoding still works after our changes
+        let input = r#"HTTP/1.1 200 OK
+Content-Type: application/json
+
+22
+{"username":"bob","balance":200}
+0
+"#;
+
+        let result = ResponseParser::parse_response(input);
+        assert!(result.is_ok());
+
+        let response = result.unwrap();
+        match &response.body {
+            RangedValue::Object { value, .. } => {
+                assert!(value.contains_key("username"));
+                assert!(value.contains_key("balance"));
+            }
+            _ => panic!("Expected object content"),
         }
     }
 }
