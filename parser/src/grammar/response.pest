@@ -1,0 +1,49 @@
+response = _{
+    SOI ~
+    preamble ~
+    headers ~
+    NEWLINE* ~
+    ASCII_HEX_DIGIT+ ~
+    NEWLINE* ~
+    body ~
+    NEWLINE* ~
+    ASCII_HEX_DIGIT+ ~
+    NEWLINE* ~
+    EOI
+}
+
+preamble = _{ "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ " " ~ ASCII_DIGIT+ ~ " " ~ ASCII_ALPHA+ ~ NEWLINE }
+
+headers = _{ header* }
+header = { header_name ~ ": " ~ header_value ~ NEWLINE }
+header_name = { (ASCII_ALPHANUMERIC | "-")+ }
+header_value = { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" | "\"" | "." | "=" | "+" | "*" | "_" | "{" | "}")+ }
+
+ws = _{ " " | "\t" }
+
+object = {
+    "{" ~ ws* ~ "}" |
+    "{" ~ ws* ~ pair ~ (ws* ~ "," ~ ws* ~ pair)* ~ ws* ~ "}"
+}
+pair = { string ~ ws* ~ ":" ~ ws* ~ value }
+array = {
+    "[" ~ ws* ~ "]" |
+    "[" ~ ws* ~ value ~ (ws* ~ "," ~ ws* ~ value)* ~ ws* ~ "]"
+}
+value = _{ object | array | string | number | boolean | null }
+boolean = { "true" | "false" }
+null = { "null" }
+string = ${ "\"" ~ inner ~ "\"" }
+inner = @{ char* }
+char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+number = @{
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    ~ ("." ~ ASCII_DIGIT*)?
+    ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+body = { object | array }

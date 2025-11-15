@@ -1,0 +1,47 @@
+request = _{
+    SOI ~
+    request_line ~
+    headers ~
+    (NEWLINE* ~ body)? ~
+    NEWLINE* ~
+    EOI
+}
+
+request_line = { method ~ " " ~ url ~ " " ~ protocol ~ NEWLINE }
+method = { "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS" }
+url = { (ASCII_ALPHANUMERIC | "/" | ":" | "." | "-" | "_" | "?" | "=" | "&" | "%" | "~" | "@")+ }
+protocol = { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+headers = _{ header* }
+header = { header_name ~ ": " ~ header_value ~ NEWLINE }
+header_name = { (ASCII_ALPHANUMERIC | "-")+ }
+header_value = { (!NEWLINE ~ ANY)* }
+
+ws = _{ " " | "\t" }
+
+object = {
+    "{" ~ ws* ~ "}" |
+    "{" ~ ws* ~ pair ~ (ws* ~ "," ~ ws* ~ pair)* ~ ws* ~ "}"
+}
+pair = { string ~ ws* ~ ":" ~ ws* ~ value }
+array = {
+    "[" ~ ws* ~ "]" |
+    "[" ~ ws* ~ value ~ (ws* ~ "," ~ ws* ~ value)* ~ ws* ~ "]"
+}
+value = _{ object | array | string | number | boolean | null }
+boolean = { "true" | "false" }
+null = { "null" }
+string = ${ "\"" ~ inner ~ "\"" }
+inner = @{ char* }
+char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+number = @{
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    ~ ("." ~ ASCII_DIGIT*)?
+    ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+body = { object | array }
