@@ -4,7 +4,7 @@ use pest::{RuleType, iterators::Pair};
 
 use crate::{
     error::ParserError,
-    types::{RangedHeader, RangedValue},
+    types::{RangedText, RangedValue},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -24,9 +24,7 @@ pub trait CommonRule: RuleType {
 pub struct CommonParser;
 
 impl CommonParser {
-    pub fn parse_header<R: CommonRule>(
-        pair: Pair<R>,
-    ) -> Result<(String, RangedHeader), ParserError> {
+    pub fn parse_header<R: CommonRule>(pair: Pair<R>) -> Result<(String, RangedText), ParserError> {
         let range = pair.as_span().start()..pair.as_span().end();
         let mut inner = pair.into_inner();
 
@@ -42,7 +40,7 @@ impl CommonParser {
             .as_str()
             .to_string();
 
-        Ok((key, RangedHeader { range, value }))
+        Ok((key, RangedText { range, value }))
     }
 
     pub fn parse_value<R: CommonRule>(pair: Pair<R>) -> Result<RangedValue, ParserError> {

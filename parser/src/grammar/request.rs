@@ -6,7 +6,7 @@ use pest_derive::Parser;
 use crate::{
     error::ParserError,
     grammar::common::{CommonParser, CommonRule, CommonRuleType},
-    types::{RangedHeader, Request},
+    types::{RangedText, Request},
 };
 
 #[derive(Parser)]
@@ -30,7 +30,7 @@ impl RequestParser {
             match pair.as_rule() {
                 Rule::request_line => {
                     let range = pair.as_span().start()..pair.as_span().end();
-                    request_line = Some(RangedHeader {
+                    request_line = Some(RangedText {
                         range,
                         value: pair.as_str().to_string(),
                     });

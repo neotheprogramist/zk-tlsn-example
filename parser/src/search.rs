@@ -2,11 +2,11 @@ use std::{collections::HashMap, ops::Range};
 
 use crate::{
     error::ParserError,
-    types::{RangedHeader, RangedValue, Request, Response},
+    types::{RangedText, RangedValue, Request, Response},
 };
 
 pub trait HeaderSearchable {
-    fn get_headers(&self) -> &HashMap<String, RangedHeader>;
+    fn get_headers(&self) -> &HashMap<String, RangedText>;
 
     fn get_header_ranges(&self, header_names: &[&str]) -> Result<Vec<Range<usize>>, ParserError> {
         let mut ranges = Vec::new();
@@ -75,13 +75,13 @@ pub trait BodySearchable {
 }
 
 impl HeaderSearchable for Request {
-    fn get_headers(&self) -> &HashMap<String, RangedHeader> {
+    fn get_headers(&self) -> &HashMap<String, RangedText> {
         &self.headers
     }
 }
 
 impl HeaderSearchable for Response {
-    fn get_headers(&self) -> &HashMap<String, RangedHeader> {
+    fn get_headers(&self) -> &HashMap<String, RangedText> {
         &self.headers
     }
 }
@@ -106,12 +106,18 @@ impl Request {
     }
 }
 
+impl Response {
+    pub fn get_status_line_range(&self) -> Range<usize> {
+        self.status_line.range.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn create_test_request_with_content(content: RangedValue) -> Request {
-        let request_line = RangedHeader {
+        let request_line = RangedText {
             range: 0..24,
             value: "GET /api/test HTTP/1.1".to_string(),
         };
@@ -119,7 +125,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert(
             "Host".to_string(),
-            RangedHeader {
+            RangedText {
                 range: 25..40,
                 value: "example.com".to_string(),
             },
@@ -129,16 +135,21 @@ mod tests {
     }
 
     fn create_test_response_with_content(content: RangedValue) -> Response {
+        let status_line = RangedText {
+            range: 0..15,
+            value: "HTTP/1.1 200 OK".to_string(),
+        };
+
         let mut headers = HashMap::new();
         headers.insert(
             "Content-Type".to_string(),
-            RangedHeader {
-                range: 0..30,
+            RangedText {
+                range: 16..46,
                 value: "application/json".to_string(),
             },
         );
 
-        Response::new(headers, content)
+        Response::new(status_line, headers, content)
     }
 
     #[test]
@@ -152,23 +163,28 @@ mod tests {
 
     #[test]
     fn test_search_multiple_headers() {
+        let status_line = RangedText {
+            range: 0..15,
+            value: "HTTP/1.1 200 OK".to_string(),
+        };
+
         let mut headers = HashMap::new();
         headers.insert(
             "Host".to_string(),
-            RangedHeader {
-                range: 0..20,
+            RangedText {
+                range: 16..36,
                 value: "example.com".to_string(),
             },
         );
         headers.insert(
             "User-Agent".to_string(),
-            RangedHeader {
-                range: 21..50,
+            RangedText {
+                range: 37..66,
                 value: "TestClient".to_string(),
             },
         );
 
-        let response = Response::new(headers, RangedValue::default());
+        let response = Response::new(status_line, headers, RangedValue::default());
         let header_ranges = response.get_header_ranges(&["Host", "User-Agent"]).unwrap();
 
         assert_eq!(header_ranges.len(), 2);

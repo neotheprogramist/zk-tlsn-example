@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 
-use super::ranged::{RangedHeader, RangedValue};
+use super::ranged::{RangedText, RangedValue};
 
 #[derive(Debug)]
 pub struct Request {
-    pub request_line: RangedHeader,
-    pub headers: HashMap<String, RangedHeader>,
+    pub request_line: RangedText,
+    pub headers: HashMap<String, RangedText>,
     pub body: Option<RangedValue>,
 }
 
 impl Request {
     pub fn new(
-        request_line: RangedHeader,
-        headers: HashMap<String, RangedHeader>,
+        request_line: RangedText,
+        headers: HashMap<String, RangedText>,
         body: Option<RangedValue>,
     ) -> Self {
         Self {
@@ -25,12 +25,21 @@ impl Request {
 
 #[derive(Debug)]
 pub struct Response {
-    pub headers: HashMap<String, RangedHeader>,
+    pub status_line: RangedText,
+    pub headers: HashMap<String, RangedText>,
     pub body: RangedValue,
 }
 
 impl Response {
-    pub fn new(headers: HashMap<String, RangedHeader>, body: RangedValue) -> Self {
-        Self { headers, body }
+    pub fn new(
+        status_line: RangedText,
+        headers: HashMap<String, RangedText>,
+        body: RangedValue,
+    ) -> Self {
+        Self {
+            status_line,
+            headers,
+            body,
+        }
     }
 }

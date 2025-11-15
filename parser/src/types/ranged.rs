@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 #[derive(Debug, Clone, Default)]
-pub struct RangedHeader {
+pub struct RangedText {
     pub range: Range<usize>,
     pub value: String,
 }

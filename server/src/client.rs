@@ -10,7 +10,7 @@ use axum::body::Bytes;
 use futures::io::{AsyncRead, AsyncWrite};
 use futures_rustls::TlsConnector;
 use http_body_util::{BodyExt, Full};
-use hyper::{StatusCode, Uri};
+use hyper::Uri;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use thiserror::Error;
@@ -108,9 +108,7 @@ pub enum ClientError {
     ConnectionTask(#[from] hyper::Error),
 }
 
-pub struct Response {
-    pub status: StatusCode,
-    pub body: Vec<u8>,
+pub struct CapturedTraffic {
     pub raw_request: Vec<u8>,
     pub raw_response: Vec<u8>,
 }
@@ -119,7 +117,7 @@ pub async fn send_request<IO>(
     uri: Uri,
     client_config: Arc<rustls::ClientConfig>,
     cnx: IO,
-) -> Result<Response, ClientError>
+) -> Result<CapturedTraffic, ClientError>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -169,7 +167,7 @@ where
 
     let (conn_result, response) = futures::join!(conn, request_task);
     conn_result.map_err(ClientError::ConnectionTask)?;
-    let (status, body) = response?;
+    let (status, _body) = response?;
 
     let raw_request = captured_write_bytes
         .lock()
@@ -182,9 +180,7 @@ where
         .clone();
 
     info!("Request sent successfully, status: {}", status);
-    Ok(Response {
-        status,
-        body,
+    Ok(CapturedTraffic {
         raw_request,
         raw_response,
     })

@@ -22,11 +22,18 @@ impl ResponseParser {
     }
 
     fn build_response(pairs: Pairs<Rule>) -> Result<Response, ParserError> {
+        let mut status_line = None;
         let mut headers = HashMap::new();
         let mut body = RangedValue::default();
 
         for pair in pairs {
             match pair.as_rule() {
+                Rule::status_line => {
+                    let span = pair.as_span();
+                    let range = span.start()..span.end();
+                    let value = span.as_str().trim_end().to_string();
+                    status_line = Some(crate::types::RangedText { range, value });
+                }
                 Rule::header => {
                     let (key, value) = CommonParser::parse_header(pair)?;
                     headers.insert(key, value);
@@ -48,7 +55,9 @@ impl ResponseParser {
             }
         }
 
-        Ok(Response::new(headers, body))
+        let status_line = status_line.ok_or(ParserError::MissingField("response status line"))?;
+
+        Ok(Response::new(status_line, headers, body))
     }
 }
 

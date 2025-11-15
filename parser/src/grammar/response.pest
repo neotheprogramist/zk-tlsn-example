@@ -1,8 +1,8 @@
 response = _{
-    SOI ~ preamble ~ headers ~ NEWLINE* ~ (chunked_body | content_length_body) ~ NEWLINE* ~ EOI
+    SOI ~ status_line ~ headers ~ NEWLINE* ~ (chunked_body | content_length_body) ~ NEWLINE* ~ EOI
 }
 
-preamble = _{ "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ " " ~ ASCII_DIGIT+ ~ " " ~ ASCII_ALPHA+ ~ NEWLINE }
+status_line = { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ " " ~ ASCII_DIGIT+ ~ " " ~ (!NEWLINE ~ ANY)+ ~ NEWLINE }
 
 headers      = _{ header* }
 header       =  { header_name ~ ": " ~ header_value ~ NEWLINE }
