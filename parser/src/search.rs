@@ -5,6 +5,49 @@ use crate::{
     types::{RangedText, RangedValue, Request, Response},
 };
 
+/// JSON key-value syntax: `"key":value`
+mod json_syntax {
+    pub const KEY_QUOTE_OPEN: usize = 1;
+    pub const KEY_QUOTE_CLOSE: usize = 1;
+    pub const COLON_SEPARATOR: usize = 1;
+
+    /// Calculates offset to include `"key":` before value
+    pub fn key_prefix_length(key_len: usize) -> usize {
+        KEY_QUOTE_OPEN + key_len + KEY_QUOTE_CLOSE + COLON_SEPARATOR
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PathSegment {
+    Key(String),
+    Index(usize),
+}
+
+impl PathSegment {
+    fn to_path_string(segments: &[PathSegment]) -> String {
+        let mut result = String::new();
+        for (i, segment) in segments.iter().enumerate() {
+            match segment {
+                PathSegment::Key(key) => {
+                    if i > 0 {
+                        result.push('.');
+                    }
+                    result.push_str(key);
+                }
+                PathSegment::Index(idx) => {
+                    result.push_str(&format!("[{}]", idx));
+                }
+            }
+        }
+        result
+    }
+}
+
+struct WorkItem<'a> {
+    value: &'a RangedValue,
+    path: Vec<PathSegment>,
+}
+
 pub trait HeaderSearchable {
     fn get_headers(&self) -> &HashMap<String, RangedText>;
 
@@ -26,13 +69,42 @@ pub trait HeaderSearchable {
 pub trait BodySearchable {
     fn get_body(&self) -> Result<&RangedValue, ParserError>;
 
+    /// Extracts byte ranges for JSON keypaths using simplified dot and array index notation.
+    ///
+    /// # Keypath Syntax
+    ///
+    /// This implementation uses a **simplified keypath syntax** intentionally divergent from
+    /// RFC 9535 (JSONPath) for the specific use case of TLS notarization, where we need
+    /// precise byte ranges for known field paths.
+    ///
+    /// **Supported syntax:**
+    /// - Simple keys: `"username"`, `"balance"`, `"status"`
+    /// - Nested keys: `"user.name"`, `"user.profile.age"`, `"data.items"`
+    /// - Array indexing: `"[0]"`, `"items[0]"`, `"users[1].name"`
+    /// - Nested arrays: `"matrix[0][1]"`, `"data[0].values[2]"`
+    ///
+    /// **Not supported (RFC 9535 features):**
+    /// - Root identifier: `$` (not required)
+    /// - Bracket notation for keys: `$['key']`
+    /// - Negative indexing: `$[-1]`
+    /// - Array slicing: `$[1:3]`
+    /// - Wildcards: `[*]`
+    /// - Recursive descent: `..`
+    /// - Filter expressions: `?<expr>`
+    ///
+    /// # Design Rationale
+    ///
+    /// The simplified syntax is intentional because:
+    /// 1. TLS notarization requires exact byte ranges for specific known fields
+    /// 2. Wildcards and filters would return multiple ranges, complicating notarization
+    /// 3. All practical use cases involve direct object/array element access
+    /// 4. Simpler implementation reduces attack surface for security-critical code
     fn get_body_keypaths_ranges(
         &self,
         keypaths: &[&str],
     ) -> Result<Vec<Range<usize>>, ParserError> {
         let body = self.get_body()?;
-        let mut all_ranges = HashMap::new();
-        Self::collect_body_ranges(body, Vec::new(), &mut all_ranges);
+        let all_ranges = Self::collect_body_ranges(body);
 
         let mut result = Vec::new();
         for keypath in keypaths {
@@ -45,32 +117,58 @@ pub trait BodySearchable {
         Ok(result)
     }
 
-    fn collect_body_ranges(
-        body: &RangedValue,
-        current_path: Vec<String>,
-        ranges: &mut HashMap<String, Range<usize>>,
-    ) {
-        match body {
-            RangedValue::Object { value, .. } => {
-                for (key, val) in value {
-                    let mut new_path = current_path.clone();
-                    new_path.push(key.clone());
-                    let path_str = new_path.join(".");
+    fn collect_body_ranges(body: &RangedValue) -> HashMap<String, Range<usize>> {
+        let mut ranges = HashMap::new();
+        let mut stack = vec![WorkItem {
+            value: body,
+            path: Vec::new(),
+        }];
 
-                    let start = val.get_range().start;
-                    let end = val.get_range().end;
-                    ranges.insert(path_str.clone(), (start.saturating_sub(key.len() + 3))..end);
+        while let Some(WorkItem { value, path }) = stack.pop() {
+            match value {
+                RangedValue::Object { value: obj, .. } => {
+                    for (key, val) in obj {
+                        let mut new_path = path.clone();
+                        new_path.push(PathSegment::Key(key.clone()));
 
-                    Self::collect_body_ranges(val, new_path, ranges);
+                        let path_str = PathSegment::to_path_string(&new_path);
+
+                        // Include "key":value for TLS notarization
+                        let key_prefix_len = json_syntax::key_prefix_length(key.len());
+                        let value_start = val.get_range().start;
+                        let value_end = val.get_range().end;
+                        let range_with_key = value_start.saturating_sub(key_prefix_len)..value_end;
+
+                        ranges.insert(path_str, range_with_key);
+
+                        stack.push(WorkItem {
+                            value: val,
+                            path: new_path,
+                        });
+                    }
                 }
-            }
-            RangedValue::Array { value, .. } => {
-                for item in value {
-                    Self::collect_body_ranges(item, current_path.clone(), ranges);
+                RangedValue::Array { value: arr, .. } => {
+                    for (index, item) in arr.iter().enumerate() {
+                        let mut new_path = path.clone();
+                        new_path.push(PathSegment::Index(index));
+
+                        let path_str = PathSegment::to_path_string(&new_path);
+                        let range = item.get_range();
+                        ranges.insert(path_str, range);
+
+                        stack.push(WorkItem {
+                            value: item,
+                            path: new_path,
+                        });
+                    }
                 }
+                // Primitive values (String, Number, Boolean, Null) are leaf nodes.
+                // Their ranges were already inserted when processing from parent Object/Array.
+                _ => {}
             }
-            _ => {}
         }
+
+        ranges
     }
 }
 
@@ -115,6 +213,46 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_json_syntax_key_prefix_length() {
+        let key = "username";
+        let prefix_len = json_syntax::key_prefix_length(key.len());
+
+        assert_eq!(prefix_len, 11); // "username": = 11 chars
+        assert_eq!(prefix_len, 1 + key.len() + 1 + 1);
+
+        assert_eq!(json_syntax::key_prefix_length(0), 3);
+        assert_eq!(json_syntax::key_prefix_length(1), 4);
+        assert_eq!(json_syntax::key_prefix_length(5), 8);
+
+        assert_eq!(
+            json_syntax::key_prefix_length(key.len()),
+            json_syntax::KEY_QUOTE_OPEN
+                + key.len()
+                + json_syntax::KEY_QUOTE_CLOSE
+                + json_syntax::COLON_SEPARATOR
+        );
+    }
+
+    #[test]
+    fn test_range_includes_json_key_prefix() {
+        let json = r#"{"username":"alice","balance":100}"#;
+        let key = "username";
+        let value_start: usize = 12;
+        let value_end: usize = 19;
+
+        let key_prefix_len = json_syntax::key_prefix_length(key.len());
+        let range_with_key_start = value_start.saturating_sub(key_prefix_len);
+
+        assert_eq!(range_with_key_start, 1);
+        assert_eq!(
+            &json[range_with_key_start..value_end],
+            r#""username":"alice""#
+        );
+        assert_eq!(key_prefix_len, 11);
+        assert_eq!(value_start - key_prefix_len, 1);
+    }
 
     fn create_test_request_with_content(content: RangedValue) -> Request {
         let request_line = RangedText {
@@ -503,5 +641,492 @@ mod tests {
         let range = request.get_request_line_range();
 
         assert_eq!(range, 0..24);
+    }
+
+    #[test]
+    fn test_array_indexing_simple() {
+        // Test simple array: [1, 2, 3]
+        let array = RangedValue::Array {
+            range: 100..120,
+            value: vec![
+                RangedValue::Number {
+                    range: 101..102,
+                    value: 1.0,
+                },
+                RangedValue::Number {
+                    range: 104..105,
+                    value: 2.0,
+                },
+                RangedValue::Number {
+                    range: 107..108,
+                    value: 3.0,
+                },
+            ],
+        };
+
+        let response = create_test_response_with_content(array);
+        let ranges = response
+            .get_body_keypaths_ranges(&["[0]", "[1]", "[2]"])
+            .unwrap();
+
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ranges[0], 101..102);
+        assert_eq!(ranges[1], 104..105);
+        assert_eq!(ranges[2], 107..108);
+    }
+
+    #[test]
+    fn test_array_indexing_with_objects() {
+        // Test array of objects: [{"id":1}, {"id":2}]
+        let mut obj1 = HashMap::new();
+        obj1.insert(
+            "id".to_string(),
+            RangedValue::Number {
+                range: 112..113,
+                value: 1.0,
+            },
+        );
+
+        let mut obj2 = HashMap::new();
+        obj2.insert(
+            "id".to_string(),
+            RangedValue::Number {
+                range: 125..126,
+                value: 2.0,
+            },
+        );
+
+        let array = RangedValue::Array {
+            range: 100..140,
+            value: vec![
+                RangedValue::Object {
+                    range: 105..118,
+                    value: obj1,
+                },
+                RangedValue::Object {
+                    range: 120..133,
+                    value: obj2,
+                },
+            ],
+        };
+
+        let request = create_test_request_with_content(array);
+
+        // Access array elements
+        let ranges = request.get_body_keypaths_ranges(&["[0]", "[1]"]).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 105..118);
+        assert_eq!(ranges[1], 120..133);
+
+        // Access nested fields in array elements
+        let ranges = request
+            .get_body_keypaths_ranges(&["[0].id", "[1].id"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        // Note: The range includes the key name, so it starts before the value
+        assert!(ranges[0].contains(&112));
+        assert!(ranges[1].contains(&125));
+    }
+
+    #[test]
+    fn test_nested_array_in_object() {
+        // Test object with array field: {"items":[{"name":"A"}, {"name":"B"}]}
+        let mut item1 = HashMap::new();
+        item1.insert(
+            "name".to_string(),
+            RangedValue::String {
+                range: 220..221,
+                value: "A".to_string(),
+            },
+        );
+
+        let mut item2 = HashMap::new();
+        item2.insert(
+            "name".to_string(),
+            RangedValue::String {
+                range: 240..241,
+                value: "B".to_string(),
+            },
+        );
+
+        let mut outer = HashMap::new();
+        outer.insert(
+            "items".to_string(),
+            RangedValue::Array {
+                range: 200..260,
+                value: vec![
+                    RangedValue::Object {
+                        range: 210..225,
+                        value: item1,
+                    },
+                    RangedValue::Object {
+                        range: 230..245,
+                        value: item2,
+                    },
+                ],
+            },
+        );
+
+        let content = RangedValue::Object {
+            range: 190..270,
+            value: outer,
+        };
+
+        let response = create_test_response_with_content(content);
+
+        // Access the items array
+        let ranges = response.get_body_keypaths_ranges(&["items"]).unwrap();
+        assert_eq!(ranges.len(), 1);
+        // The range includes the key name: "items":[...]
+        // "items" = 5 chars, plus ":" = 1, plus quotes = 2, total subtract 8
+        // But saturating_sub(5 + 3) = 8, so 200 - 8 = 192
+        assert_eq!(ranges[0], 192..260);
+
+        // Access array elements via items
+        let ranges = response
+            .get_body_keypaths_ranges(&["items[0]", "items[1]"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 210..225);
+        assert_eq!(ranges[1], 230..245);
+
+        // Access nested fields in array elements
+        let ranges = response
+            .get_body_keypaths_ranges(&["items[0].name", "items[1].name"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges[0].contains(&220));
+        assert!(ranges[1].contains(&240));
+    }
+
+    #[test]
+    fn test_array_indexing_out_of_bounds() {
+        let array = RangedValue::Array {
+            range: 100..120,
+            value: vec![RangedValue::Number {
+                range: 101..102,
+                value: 1.0,
+            }],
+        };
+
+        let response = create_test_response_with_content(array);
+        let result = response.get_body_keypaths_ranges(&["[5]"]);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ParserError::KeypathNotFound(_)
+        ));
+    }
+
+    #[test]
+    fn test_deeply_nested_arrays() {
+        // Test [[1, 2], [3, 4]]
+        let inner1 = RangedValue::Array {
+            range: 305..315,
+            value: vec![
+                RangedValue::Number {
+                    range: 306..307,
+                    value: 1.0,
+                },
+                RangedValue::Number {
+                    range: 309..310,
+                    value: 2.0,
+                },
+            ],
+        };
+
+        let inner2 = RangedValue::Array {
+            range: 320..330,
+            value: vec![
+                RangedValue::Number {
+                    range: 321..322,
+                    value: 3.0,
+                },
+                RangedValue::Number {
+                    range: 324..325,
+                    value: 4.0,
+                },
+            ],
+        };
+
+        let outer = RangedValue::Array {
+            range: 300..340,
+            value: vec![inner1, inner2],
+        };
+
+        let request = create_test_request_with_content(outer);
+
+        // Access outer array elements
+        let ranges = request.get_body_keypaths_ranges(&["[0]", "[1]"]).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 305..315);
+        assert_eq!(ranges[1], 320..330);
+
+        // Access nested array elements
+        let ranges = request
+            .get_body_keypaths_ranges(&["[0][0]", "[0][1]", "[1][0]", "[1][1]"])
+            .unwrap();
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(ranges[0], 306..307);
+        assert_eq!(ranges[1], 309..310);
+        assert_eq!(ranges[2], 321..322);
+        assert_eq!(ranges[3], 324..325);
+    }
+
+    #[test]
+    fn test_single_field_extraction() {
+        let body = RangedValue::Object {
+            range: 0..30,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "username".to_string(),
+                    RangedValue::String {
+                        range: 12..19,
+                        value: "alice".to_string(),
+                    },
+                );
+                map
+            },
+        };
+
+        let request = create_test_request_with_content(body);
+        let ranges = request.get_body_keypaths_ranges(&["username"]).unwrap();
+        assert_eq!(ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_fields_extraction() {
+        let body = RangedValue::Object {
+            range: 0..40,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "username".to_string(),
+                    RangedValue::String {
+                        range: 12..19,
+                        value: "alice".to_string(),
+                    },
+                );
+                map.insert(
+                    "balance".to_string(),
+                    RangedValue::Number {
+                        range: 30..33,
+                        value: 100.0,
+                    },
+                );
+                map
+            },
+        };
+
+        let request = create_test_request_with_content(body);
+        let ranges = request
+            .get_body_keypaths_ranges(&["username", "balance"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_nested_fields_extraction() {
+        let profile = RangedValue::Object {
+            range: 70..120,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert(
+                    "name".to_string(),
+                    RangedValue::String {
+                        range: 80..85,
+                        value: "Bob".to_string(),
+                    },
+                );
+                map.insert(
+                    "age".to_string(),
+                    RangedValue::Number {
+                        range: 95..97,
+                        value: 25.0,
+                    },
+                );
+                map
+            },
+        };
+
+        let user = RangedValue::Object {
+            range: 50..130,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("profile".to_string(), profile);
+                map
+            },
+        };
+
+        let body = RangedValue::Object {
+            range: 0..150,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("user".to_string(), user);
+                map
+            },
+        };
+
+        let request = create_test_request_with_content(body);
+        let ranges = request
+            .get_body_keypaths_ranges(&["user.profile.name", "user.profile.age"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_array_elements_extraction() {
+        let array = RangedValue::Array {
+            range: 10..50,
+            value: vec![
+                RangedValue::String {
+                    range: 11..16,
+                    value: "item1".to_string(),
+                },
+                RangedValue::String {
+                    range: 18..23,
+                    value: "item2".to_string(),
+                },
+            ],
+        };
+
+        let body = RangedValue::Object {
+            range: 0..60,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("items".to_string(), array);
+                map
+            },
+        };
+
+        let response = create_test_response_with_content(body);
+        let ranges = response
+            .get_body_keypaths_ranges(&["items[0]", "items[1]"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_fields_from_array_elements_extraction() {
+        let users = RangedValue::Array {
+            range: 10..100,
+            value: vec![
+                RangedValue::Object {
+                    range: 11..50,
+                    value: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            "name".to_string(),
+                            RangedValue::String {
+                                range: 20..25,
+                                value: "Alice".to_string(),
+                            },
+                        );
+                        map.insert(
+                            "email".to_string(),
+                            RangedValue::String {
+                                range: 35..50,
+                                value: "alice@example.com".to_string(),
+                            },
+                        );
+                        map
+                    },
+                },
+                RangedValue::Object {
+                    range: 51..90,
+                    value: {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            "name".to_string(),
+                            RangedValue::String {
+                                range: 60..63,
+                                value: "Bob".to_string(),
+                            },
+                        );
+                        map.insert(
+                            "email".to_string(),
+                            RangedValue::String {
+                                range: 73..86,
+                                value: "bob@example.com".to_string(),
+                            },
+                        );
+                        map
+                    },
+                },
+            ],
+        };
+
+        let body = RangedValue::Object {
+            range: 0..110,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("users".to_string(), users);
+                map
+            },
+        };
+
+        let request = create_test_request_with_content(body);
+        let ranges = request
+            .get_body_keypaths_ranges(&["users[0].name", "users[1].email"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_nested_arrays_extraction() {
+        let matrix = RangedValue::Array {
+            range: 10..80,
+            value: vec![
+                RangedValue::Array {
+                    range: 11..30,
+                    value: vec![
+                        RangedValue::Number {
+                            range: 12..13,
+                            value: 1.0,
+                        },
+                        RangedValue::Number {
+                            range: 14..15,
+                            value: 2.0,
+                        },
+                    ],
+                },
+                RangedValue::Array {
+                    range: 31..70,
+                    value: vec![
+                        RangedValue::Number {
+                            range: 32..33,
+                            value: 3.0,
+                        },
+                        RangedValue::Number {
+                            range: 34..35,
+                            value: 4.0,
+                        },
+                        RangedValue::Number {
+                            range: 36..37,
+                            value: 5.0,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let body = RangedValue::Object {
+            range: 0..90,
+            value: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("matrix".to_string(), matrix);
+                map
+            },
+        };
+
+        let response = create_test_response_with_content(body);
+        let ranges = response
+            .get_body_keypaths_ranges(&["matrix[0][0]", "matrix[1][2]"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], 12..13);
+        assert_eq!(ranges[1], 36..37);
     }
 }

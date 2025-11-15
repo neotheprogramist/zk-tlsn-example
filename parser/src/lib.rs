@@ -5,6 +5,26 @@
 //! useful for applications that need to reference specific parts of the
 //! HTTP message, such as selective disclosure in TLS proofs.
 //!
+//! # JSONPath Syntax
+//!
+//! **Important:** This parser uses a **simplified keypath syntax** that is
+//! intentionally divergent from RFC 9535 (JSONPath). The simplified syntax
+//! is designed specifically for TLS notarization use cases where:
+//! - Precise byte ranges for known field paths are required
+//! - Wildcards and filters would complicate range extraction
+//! - Security-critical code benefits from minimal complexity
+//!
+//! **Supported syntax:**
+//! - Object keys: `"field"`, `"nested.field"`, `"deeply.nested.field"`
+//! - Array indexing: `"[0]"`, `"items[0]"`, `"users[1].name"`
+//! - Nested arrays: `"matrix[0][1]"`, `"data[0].values[2]"`
+//!
+//! **Not supported:** RFC 9535 features like `$` root identifier, bracket notation
+//! for keys `$['field']`, negative indexing `$[-1]`, array slicing `$[1:3]`,
+//! wildcards `[*]`, recursive descent `..`, or filter expressions `?<expr>`.
+//!
+//! See [`BodySearchable::get_body_keypaths_ranges`] for detailed documentation.
+//!
 //! # Examples
 //!
 //! ## Complete End-to-End Flow
@@ -299,6 +319,44 @@ Host: example.com
             header_result.unwrap_err(),
             ParserError::HeaderNotFound(_)
         ));
+    }
+
+    #[test]
+    fn test_array_indexing_in_http_response() {
+        let input = r#"HTTP/1.1 200 OK
+Content-Type: application/json
+
+26
+{"users":[{"id":1},{"id":2}]}
+0
+"#;
+
+        let response = ResponseParser::parse_response(input).unwrap();
+
+        // Test status line
+        let status_line_range = response.get_status_line_range();
+        assert_eq!(&input[status_line_range], "HTTP/1.1 200 OK\n");
+
+        // Test accessing array field
+        let ranges = response.get_body_keypaths_ranges(&["users"]).unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert!(&input[ranges[0].clone()].contains("[{\"id\":1},{\"id\":2}]"));
+
+        // Test accessing array elements by index
+        let ranges = response
+            .get_body_keypaths_ranges(&["users[0]", "users[1]"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert!(&input[ranges[0].clone()].contains("\"id\":1"));
+        assert!(&input[ranges[1].clone()].contains("\"id\":2"));
+
+        // Test accessing nested fields in array elements
+        let ranges = response
+            .get_body_keypaths_ranges(&["users[0].id", "users[1].id"])
+            .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert!(&input[ranges[0].clone()].contains("\"id\":1"));
+        assert!(&input[ranges[1].clone()].contains("\"id\":2"));
     }
 
     #[test]
