@@ -89,23 +89,14 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for CapturingStream<S> {
 
 #[derive(Error, Debug)]
 pub enum ClientError {
-    #[error("Invalid server name: {0}")]
-    InvalidServerName(String),
+    #[error(transparent)]
+    InvalidServerName(#[from] rustls::pki_types::InvalidDnsNameError),
 
-    #[error("TLS connection failed: {0}")]
-    TlsConnection(std::io::Error),
+    #[error(transparent)]
+    TlsConnection(#[from] std::io::Error),
 
-    #[error("HTTP/2 handshake failed: {0}")]
-    Http2Handshake(hyper::Error),
-
-    #[error("Request failed: {0}")]
-    RequestFailed(hyper::Error),
-
-    #[error("Response body collection failed: {0}")]
-    BodyCollection(hyper::Error),
-
-    #[error("Connection task failed: {0}")]
-    ConnectionTask(#[from] hyper::Error),
+    #[error(transparent)]
+    Hyper(#[from] hyper::Error),
 }
 
 pub struct CapturedTraffic {
@@ -121,14 +112,10 @@ pub async fn send_request<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let server_name = ServerName::try_from("localhost")
-        .map_err(|_| ClientError::InvalidServerName("localhost".to_string()))?;
+    let server_name = ServerName::try_from("localhost")?;
 
     let tls_connector = TlsConnector::from(client_config);
-    let stream = tls_connector
-        .connect(server_name, cnx)
-        .await
-        .map_err(ClientError::TlsConnection)?;
+    let stream = tls_connector.connect(server_name, cnx).await?;
 
     let (capturing_stream, captured_read_bytes, captured_write_bytes) =
         CapturingStream::new(stream);
@@ -136,9 +123,7 @@ where
     // Convert futures-io to tokio traits, then to hyper's Read/Write
     let stream = TokioIo::new(Compat::new(capturing_stream));
 
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream)
-        .await
-        .map_err(ClientError::Http2Handshake)?;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
 
     let request_task = async move {
         let req = hyper::Request::builder()
@@ -149,19 +134,10 @@ where
             .body(Full::new(Bytes::new()))
             .expect("valid request");
 
-        let res = sender
-            .send_request(req)
-            .await
-            .map_err(ClientError::RequestFailed)?;
+        let res = sender.send_request(req).await?;
 
         let status = res.status();
-        let body = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(ClientError::BodyCollection)?
-            .to_bytes()
-            .to_vec();
+        let body = res.into_body().collect().await?.to_bytes().to_vec();
 
         Ok::<_, ClientError>((status, body))
     };
@@ -213,7 +189,7 @@ where
                 status = "failed",
                 error = %e
             );
-            Err(ClientError::ConnectionTask(e))
+            Err(ClientError::Hyper(e))
         }
     }
 }

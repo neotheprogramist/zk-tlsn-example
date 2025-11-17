@@ -16,9 +16,8 @@ pub struct RedactedResponseParser;
 
 impl RedactedResponseParser {
     pub fn parse_redacted_response(input: &str) -> Result<Response, ParserError> {
-        let pairs = Self::parse(Rule::redacted_response, input).map_err(|e| {
-            ParserError::ResponseParseFailed(format!("Redacted response parsing failed: {}", e))
-        })?;
+        let pairs = Self::parse(Rule::redacted_response, input)
+            .map_err(|e| ParserError::ResponseParseFailed(Box::new(e)))?;
 
         Self::build_response(pairs)
     }

@@ -2,23 +2,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("prover setup failed: {0}")]
-    ProverSetup(String),
-
-    #[error("prover connection failed: {0}")]
-    ProverConnection(String),
-
-    #[error("MPC-TLS handshake failed: {0}")]
-    MpcTlsHandshake(String),
-
     #[error("HTTP request failed with status {0}")]
     HttpRequestFailed(u16),
-
-    #[error("prover prove phase failed: {0}")]
-    ProveFailed(String),
-
-    #[error("verifier verification failed: {0}")]
-    VerifyFailed(String),
 
     #[error(transparent)]
     Parser(#[from] parser::ParserError),
@@ -52,4 +37,7 @@ pub enum Error {
 
     #[error(transparent)]
     Hyper(#[from] hyper::Error),
+
+    #[error(transparent)]
+    Utf8(#[from] std::string::FromUtf8Error),
 }

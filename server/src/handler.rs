@@ -13,8 +13,8 @@ use crate::executor::SmolExecutor;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
-    #[error("TLS handshake failed: {0}")]
-    TlsHandshake(std::io::Error),
+    #[error(transparent)]
+    TlsHandshake(#[from] std::io::Error),
 
     #[error("Failed to serve connection: {0}")]
     ServeConnection(Box<dyn std::error::Error + Send + Sync>),
@@ -34,10 +34,7 @@ where
         status = "started"
     );
     let tls_acceptor = TlsAcceptor::from(server_config);
-    let stream = tls_acceptor
-        .accept(cnx)
-        .await
-        .map_err(ConnectionError::TlsHandshake)?;
+    let stream = tls_acceptor.accept(cnx).await?;
     tracing::info!(
         component = "server",
         phase = "tls_handshake",

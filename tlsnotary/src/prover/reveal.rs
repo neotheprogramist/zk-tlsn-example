@@ -49,8 +49,7 @@ pub fn reveal_request(
         return Ok(());
     }
 
-    let raw_request_str = String::from_utf8(request.to_vec())
-        .map_err(|_| Error::InvalidTranscript("Request is not valid UTF-8".into()))?;
+    let raw_request_str = String::from_utf8(request.to_vec())?;
 
     let parsed_request = RequestParser::parse_request(&raw_request_str)?;
 
@@ -109,8 +108,7 @@ pub fn reveal_response(
     transcript_commitment_builder: &mut TranscriptCommitConfigBuilder,
     config: &RevealConfig,
 ) -> Result<(), Error> {
-    let raw_response_str = String::from_utf8(response.to_vec())
-        .map_err(|_| Error::InvalidTranscript("Response is not valid UTF-8".into()))?;
+    let raw_response_str = String::from_utf8(response.to_vec())?;
 
     let parsed_response = ResponseParser::parse_response(&raw_response_str)?;
 

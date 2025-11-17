@@ -75,17 +75,11 @@ impl CommonParser {
             }),
             CommonRuleType::Number => Ok(RangedValue::Number {
                 range,
-                value: pair
-                    .as_str()
-                    .parse()
-                    .map_err(|_| ParserError::InvalidValue)?,
+                value: pair.as_str().parse()?,
             }),
             CommonRuleType::Boolean => Ok(RangedValue::Bool {
                 range,
-                value: pair
-                    .as_str()
-                    .parse()
-                    .map_err(|_| ParserError::InvalidValue)?,
+                value: pair.as_str().parse()?,
             }),
             CommonRuleType::Null => Ok(RangedValue::Null),
         }
@@ -146,17 +140,11 @@ impl CommonParser {
             }),
             CommonRuleType::Number => Ok(RangedValue::Number {
                 range,
-                value: pair
-                    .as_str()
-                    .parse()
-                    .map_err(|_| ParserError::InvalidValue)?,
+                value: pair.as_str().parse()?,
             }),
             CommonRuleType::Boolean => Ok(RangedValue::Bool {
                 range,
-                value: pair
-                    .as_str()
-                    .parse()
-                    .map_err(|_| ParserError::InvalidValue)?,
+                value: pair.as_str().parse()?,
             }),
             CommonRuleType::Null => Ok(RangedValue::Null),
         }

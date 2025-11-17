@@ -16,6 +16,9 @@ pub enum CertificateError {
 
     #[error("Invalid date/time: {0}")]
     InvalidDateTime(String),
+
+    #[error(transparent)]
+    TryFromInt(#[from] std::num::TryFromIntError),
 }
 
 #[derive(Error, Debug)]

@@ -17,7 +17,7 @@ pub struct ResponseParser;
 impl ResponseParser {
     pub fn parse_response(input: &str) -> Result<Response, ParserError> {
         let pairs = Self::parse(Rule::response, input)
-            .map_err(|e| ParserError::ResponseParseFailed(format!("Pest parsing failed: {}", e)))?;
+            .map_err(|e| ParserError::ResponseParseFailed(Box::new(e)))?;
 
         Self::build_response(pairs)
     }

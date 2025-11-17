@@ -92,18 +92,12 @@ impl Prover {
     {
         tracing::info!(component = "prover", phase = "setup", status = "started");
 
-        let prover = TlsnProver::new(config)
-            .setup(verifier_socket)
-            .await
-            .map_err(|e| Error::ProverSetup(e.to_string()))?;
+        let prover = TlsnProver::new(config).setup(verifier_socket).await?;
 
         tracing::info!(component = "prover", phase = "setup", status = "completed");
         tracing::info!(component = "prover", phase = "connect", status = "started");
 
-        let (mpc_tls_connection, prover_fut) = prover
-            .connect(server_socket)
-            .await
-            .map_err(|e| Error::ProverConnection(e.to_string()))?;
+        let (mpc_tls_connection, prover_fut) = prover.connect(server_socket).await?;
 
         tracing::info!(
             component = "prover",
@@ -136,9 +130,7 @@ impl Prover {
         let mpc_tls_connection = TokioIo::new(Compat::new(mpc_tls_connection));
 
         let (mut request_sender, connection) =
-            hyper::client::conn::http1::handshake(mpc_tls_connection)
-                .await
-                .map_err(|e| Error::MpcTlsHandshake(e.to_string()))?;
+            hyper::client::conn::http1::handshake(mpc_tls_connection).await?;
 
         let request_task = async move {
             tracing::info!(
@@ -170,12 +162,12 @@ impl Prover {
             Ok::<Vec<u8>, Error>(body.to_vec())
         };
 
-        let (prover, connection_result, request_result) =
+        let (prover, connection_result, request_task_result) =
             join!(prover_fut, connection, request_task);
 
-        connection_result.map_err(|e| Error::MpcTlsHandshake(e.to_string()))?;
-        let response_body = request_result?;
-        let prover = prover.map_err(|e| Error::ProveFailed(e.to_string()))?;
+        let prover = prover?;
+        connection_result?;
+        let response_body = request_task_result?;
 
         Ok((prover, response_body))
     }
@@ -215,7 +207,7 @@ impl Prover {
         let transcripts_commitment_config = transcript_commitment_builder.build()?;
         prove_config_builder.transcript_commit(transcripts_commitment_config);
 
-        prove_config_builder.build().map_err(Into::into)
+        Ok(prove_config_builder.build()?)
     }
 
     async fn generate_and_finalize_proof(
@@ -233,10 +225,7 @@ impl Prover {
             recv_len
         );
 
-        let prover_output = prover
-            .prove(prove_config)
-            .await
-            .map_err(|e| Error::ProveFailed(e.to_string()))?;
+        let prover_output = prover.prove(prove_config).await?;
 
         tracing::info!(
             component = "prover",
@@ -244,10 +233,7 @@ impl Prover {
             status = "completed"
         );
 
-        prover
-            .close()
-            .await
-            .map_err(|e| Error::ProveFailed(e.to_string()))?;
+        prover.close().await?;
 
         Ok(prover_output)
     }

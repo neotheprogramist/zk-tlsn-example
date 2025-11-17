@@ -66,10 +66,7 @@ impl Verifier {
         T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let verifier = TlsnVerifier::new(config);
-        verifier
-            .verify(socket, &VerifyConfig::default())
-            .await
-            .map_err(|e| Error::VerifyFailed(e.to_string()))
+        Ok(verifier.verify(socket, &VerifyConfig::default()).await?)
     }
 
     fn parse_transcript_data(
@@ -81,10 +78,8 @@ impl Verifier {
         ),
         Error,
     > {
-        let sent_data = String::from_utf8(transcript.sent_unsafe().to_vec())
-            .map_err(|_| Error::InvalidTranscript("Sent data is not valid UTF-8".into()))?;
-        let received_data = String::from_utf8(transcript.received_unsafe().to_vec())
-            .map_err(|_| Error::InvalidTranscript("Received data is not valid UTF-8".into()))?;
+        let sent_data = String::from_utf8(transcript.sent_unsafe().to_vec())?;
+        let received_data = String::from_utf8(transcript.received_unsafe().to_vec())?;
 
         let parsed_request = RedactedRequestParser::parse_redacted_request(&sent_data).ok();
         let parsed_response = RedactedResponseParser::parse_redacted_response(&received_data).ok();
