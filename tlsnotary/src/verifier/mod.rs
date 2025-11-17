@@ -33,7 +33,8 @@ impl Verifier {
     {
         tracing::info!(component = "verifier", phase = "verify", status = "started");
 
-        let verifier_output = Self::run_verification(self.verifier_config, socket).await?;
+        let verifier_output = Self::run_verify(self.verifier_config, socket).await?;
+
         let (server_name, transcript) =
             Self::extract_core_data(verifier_output.server_name, verifier_output.transcript)?;
 
@@ -51,7 +52,7 @@ impl Verifier {
         })
     }
 
-    async fn run_verification<T>(
+    async fn run_verify<T>(
         config: VerifierConfig,
         socket: T,
     ) -> Result<tlsn::verifier::VerifierOutput, Error>
