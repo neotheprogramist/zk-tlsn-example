@@ -15,7 +15,7 @@ pub use tlsn::{
     },
     verifier::VerifierConfig,
 };
-pub use verifier::{Verifier, VerifierBuilder, VerifierOutput};
+pub use verifier::{Validator, ValidatorBuilder, Verifier, VerifierBuilder, VerifierOutput};
 
 pub const MAX_SENT_DATA: usize = 1 << 12;
 pub const MAX_RECV_DATA: usize = 1 << 14;

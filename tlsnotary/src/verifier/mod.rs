@@ -1,9 +1,13 @@
+mod validator;
+
 use futures::{AsyncRead, AsyncWrite};
 use parser::{RedactedRequestParser, RedactedResponseParser};
 use tlsn::{
     transcript::PartialTranscript,
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
 };
+
+pub use validator::{Validator, ValidatorBuilder};
 
 use crate::error::Error;
 

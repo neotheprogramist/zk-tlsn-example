@@ -17,7 +17,8 @@ use tlsn::{
 };
 
 use crate::{
-    MAX_RECV_DATA, MAX_SENT_DATA, ProverOutput, prover::RevealConfig, verifier::VerifierOutput,
+    MAX_RECV_DATA, MAX_SENT_DATA, ProverOutput, Validator, prover::RevealConfig,
+    verifier::VerifierOutput,
 };
 
 /// Socket pairs for prover-server and prover-verifier communication
@@ -437,6 +438,78 @@ mod tests {
                     .expect("Received data should be valid UTF-8");
 
             verify_parsed_response(&verifier_output, &received_data);
+        });
+    }
+
+    #[test]
+    fn test_validator() {
+        shared::init_test_logging();
+
+        smol::block_on(async {
+            let test_tls_config = create_test_tls_config().unwrap();
+            let sockets = create_test_sockets();
+
+            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
+
+            let mut balances = HashMap::new();
+            balances.insert("alice".to_string(), 100);
+            let app = get_app(balances);
+            let server_task =
+                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
+
+            let prover = Prover::builder()
+                .prover_config(prover_config)
+                .request(create_test_request())
+                .request_reveal_config(create_request_reveal_config())
+                .response_reveal_config(create_response_reveal_config())
+                .build()
+                .unwrap();
+
+            let verifier = Verifier::builder()
+                .verifier_config(verifier_config)
+                .build()
+                .unwrap();
+
+            let prover_task =
+                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
+            let verifier_task = verifier.verify(sockets.verifier_socket);
+
+            let (_, _, verifier_result) = join!(server_task, prover_task, verifier_task);
+
+            let verifier_output = verifier_result.expect("Verifier should complete successfully");
+
+            // Test validator with expected properties
+            let validator = Validator::builder()
+                .expected_server_name("localhost")
+                .expected_hash_alg(tlsn::hash::HashAlgId::SHA256)
+                .min_sent_data(50)
+                .min_received_data(50)
+                .build();
+
+            validator
+                .validate(&verifier_output)
+                .expect("Validation should pass with correct properties");
+
+            // Test validator with wrong server name
+            let wrong_validator = Validator::builder()
+                .expected_server_name("wronghost")
+                .build();
+
+            assert!(
+                wrong_validator.validate(&verifier_output).is_err(),
+                "Validation should fail with wrong server name"
+            );
+
+            // Test validator with insufficient data
+            let min_data_validator = Validator::builder()
+                .min_sent_data(10000)
+                .build();
+
+            assert!(
+                min_data_validator.validate(&verifier_output).is_err(),
+                "Validation should fail with insufficient sent data"
+            );
         });
     }
 }
