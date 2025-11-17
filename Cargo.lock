@@ -4069,3 +4069,25 @@ dependencies = [
 [[package]]
 name = "zktlsn"
 version = "0.1.0"
+dependencies = [
+ "async-compat",
+ "axum",
+ "chrono",
+ "futures",
+ "futures-rustls",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "parser",
+ "rustls",
+ "serde",
+ "serde_json",
+ "server",
+ "shared",
+ "smol",
+ "thiserror 2.0.17",
+ "tlsnotary",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]

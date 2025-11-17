@@ -14,8 +14,7 @@ use axum::body::Bytes;
 use http_body_util::Empty;
 use hyper::Request;
 use smol::net::unix::UnixStream;
-
-use crate::{
+use tlsnotary::{
     CertificateDer, ExpectedValue, ProtocolConfig, ProtocolConfigValidator, ProverConfig,
     ProverOutput, RootCertStore, ServerName, TlsConfig, Validator, VerifierConfig,
     prover::RevealConfig, verifier::VerifierOutput,
@@ -237,9 +236,9 @@ mod tests {
     use futures::join;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;
+    use tlsnotary::{HashAlgId, Prover, Verifier};
 
     use super::*;
-    use crate::{HashAlgId, Prover, Verifier};
 
     #[test]
     fn test_end_to_end_proof_generation_and_verification() {
