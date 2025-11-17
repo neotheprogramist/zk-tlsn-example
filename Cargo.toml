@@ -27,8 +27,13 @@ shared = { path = "./shared" }
 smol = "2.0.2"
 thiserror = "2.0.17"
 tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.13" }
+tlsnotary = { path = "./tlsnotary" }
 tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
-tlsnotary = { path = "./tlsnotary" }
 zktlsn = { path = "./zktlsn" }
+
+k256 = { version = "0.13.4", features = ["ecdsa"] }
+noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
+    "barretenberg",
+] }
