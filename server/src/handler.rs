@@ -55,7 +55,7 @@ where
         phase = "serve_connection",
         status = "started"
     );
-    hyper_util::server::conn::auto::Builder::new(SmolExecutor::new())
+    hyper_util::server::conn::auto::Builder::new(SmolExecutor::default())
         .serve_connection_with_upgrades(stream, hyper_service)
         .await
         .unwrap();
