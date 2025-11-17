@@ -20,9 +20,6 @@ pub use verifier::{
     VerifierOutput,
 };
 
-pub const MAX_SENT_DATA: usize = 1 << 12;
-pub const MAX_RECV_DATA: usize = 1 << 14;
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

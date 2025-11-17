@@ -1,9 +1,14 @@
-//! Test utilities for zktlsnotary integration tests
+//! Test utilities for tlsnotary integration tests
 //!
 //! This module provides reusable components for testing the TLSN protocol
 //! end-to-end, including socket setup, configuration builders, and verification helpers.
 
 use std::collections::HashMap;
+
+/// Maximum sent data size for tests (4 KB)
+pub const MAX_SENT_DATA: usize = 1 << 12;
+/// Maximum received data size for tests (16 KB)
+pub const MAX_RECV_DATA: usize = 1 << 14;
 
 use axum::body::Bytes;
 use http_body_util::Empty;
@@ -17,8 +22,7 @@ use tlsn::{
 };
 
 use crate::{
-    ExpectedValue, MAX_RECV_DATA, MAX_SENT_DATA, ProverOutput, Validator, prover::RevealConfig,
-    verifier::VerifierOutput,
+    ExpectedValue, ProverOutput, Validator, prover::RevealConfig, verifier::VerifierOutput,
 };
 
 /// Socket pairs for prover-server and prover-verifier communication
