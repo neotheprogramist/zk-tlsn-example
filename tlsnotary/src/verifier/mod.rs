@@ -6,7 +6,6 @@ use tlsn::{
     transcript::PartialTranscript,
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
 };
-
 pub use validator::{ExpectedValue, FieldAssertion, Validator, ValidatorBuilder};
 
 use crate::error::Error;

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use parser::{RangedText, RangedValue};
-use tlsn::{hash::HashAlgId, transcript::Direction};
-
-use crate::error::Error;
+use tlsn::hash::HashAlgId;
 
 use super::VerifierOutput;
+use crate::error::Error;
 
 #[derive(Debug, Clone)]
 pub enum FieldAssertion {
@@ -36,34 +35,25 @@ impl Validator {
     }
 
     pub fn validate(&self, output: &VerifierOutput) -> Result<(), Error> {
-        if let Some(expected_name) = &self.expected_server_name {
-            if output.server_name != *expected_name {
-                return Err(Error::InvalidTranscript(format!(
-                    "Expected server name '{}', got '{}'",
-                    expected_name, output.server_name
-                )));
-            }
+        if let Some(expected_name) = &self.expected_server_name
+            && output.server_name != *expected_name
+        {
+            return Err(Error::InvalidTranscript(format!(
+                "Expected server name '{}', got '{}'",
+                expected_name, output.server_name
+            )));
         }
 
         if let Some(expected_alg) = self.expected_hash_alg {
-            let received_commitment = output
-                .transcript_commitments
-                .iter()
-                .find_map(|commitment| match commitment {
-                    tlsn::transcript::TranscriptCommitment::Hash(hash)
-                        if hash.direction == Direction::Received =>
-                    {
-                        Some(hash)
-                    }
-                    _ => None,
-                })
-                .ok_or(Error::MissingField("received hash commitment"))?;
-
-            if received_commitment.hash.alg != expected_alg {
-                return Err(Error::InvalidTranscript(format!(
-                    "Expected {:?} hash algorithm, got {:?}",
-                    expected_alg, received_commitment.hash.alg
-                )));
+            for commitment in &output.transcript_commitments {
+                if let tlsn::transcript::TranscriptCommitment::Hash(hash) = commitment
+                    && hash.hash.alg != expected_alg
+                {
+                    return Err(Error::InvalidTranscript(format!(
+                        "Expected {:?} hash algorithm in {:?} direction, got {:?}",
+                        expected_alg, hash.direction, hash.hash.alg
+                    )));
+                }
             }
         }
 
@@ -85,12 +75,7 @@ impl Validator {
                 .ok_or(Error::MissingField("parsed response"))?;
 
             for assertion in &self.response_assertions {
-                Self::validate_assertion(
-                    assertion,
-                    &response.headers,
-                    &response.body,
-                    "response",
-                )?;
+                Self::validate_assertion(assertion, &response.headers, &response.body, "response")?;
             }
         }
 
@@ -108,10 +93,7 @@ impl Validator {
                 let actual = headers
                     .get(key)
                     .ok_or_else(|| {
-                        Error::InvalidTranscript(format!(
-                            "Missing {} header '{}'",
-                            context, key
-                        ))
+                        Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
                     })?
                     .value
                     .as_str();
@@ -206,7 +188,11 @@ impl ValidatorBuilder {
     }
 
     #[must_use]
-    pub fn request_header_equals(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn request_header_equals(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         self.request_assertions.push(FieldAssertion::HeaderEquals {
             key: key.into(),
             value: value.into(),
@@ -215,7 +201,11 @@ impl ValidatorBuilder {
     }
 
     #[must_use]
-    pub fn response_header_equals(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn response_header_equals(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         self.response_assertions.push(FieldAssertion::HeaderEquals {
             key: key.into(),
             value: value.into(),
@@ -224,20 +214,30 @@ impl ValidatorBuilder {
     }
 
     #[must_use]
-    pub fn request_body_field_equals(mut self, key: impl Into<String>, value: ExpectedValue) -> Self {
-        self.request_assertions.push(FieldAssertion::BodyFieldEquals {
-            key: key.into(),
-            value,
-        });
+    pub fn request_body_field_equals(
+        mut self,
+        key: impl Into<String>,
+        value: ExpectedValue,
+    ) -> Self {
+        self.request_assertions
+            .push(FieldAssertion::BodyFieldEquals {
+                key: key.into(),
+                value,
+            });
         self
     }
 
     #[must_use]
-    pub fn response_body_field_equals(mut self, key: impl Into<String>, value: ExpectedValue) -> Self {
-        self.response_assertions.push(FieldAssertion::BodyFieldEquals {
-            key: key.into(),
-            value,
-        });
+    pub fn response_body_field_equals(
+        mut self,
+        key: impl Into<String>,
+        value: ExpectedValue,
+    ) -> Self {
+        self.response_assertions
+            .push(FieldAssertion::BodyFieldEquals {
+                key: key.into(),
+                value,
+            });
         self
     }
 
