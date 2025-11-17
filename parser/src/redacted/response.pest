@@ -1,0 +1,39 @@
+redacted_byte = _{ "\0" }
+ws            = _{ " " | "\t" }
+
+redacted_response = _{
+    SOI ~ maybe_redacted_status_line ~ partially_redacted_headers ~ partially_redacted_body ~ EOI
+}
+
+maybe_redacted_status_line = _{ status_line | redacted_byte+ }
+status_line                =  { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ " " ~ ASCII_DIGIT+ ~ " " ~ (!NEWLINE ~ ANY)+ ~ NEWLINE }
+
+partially_redacted_headers = _{ (header | redacted_byte+)* }
+header                     =  { header_name ~ ": " ~ header_value ~ NEWLINE }
+header_name                =  { (ASCII_ALPHANUMERIC | "-")+ }
+header_value               =  { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" | "\"" | "." | "=" | "+" | "*" | "_" | "{" | "}")+ }
+
+partially_redacted_body = { (pair | redacted_byte+)* }
+
+object  =  {
+    "{" ~ ws* ~ "}"
+  | "{" ~ ws* ~ pair ~ (ws* ~ "," ~ ws* ~ pair)* ~ ws* ~ "}"
+}
+pair    =  { string ~ ws* ~ ":" ~ ws* ~ value }
+array   =  {
+    "[" ~ ws* ~ "]"
+  | "[" ~ ws* ~ value ~ (ws* ~ "," ~ ws* ~ value)* ~ ws* ~ "]"
+}
+value   = _{ object | array | string | number | boolean | null }
+boolean =  { "true" | "false" }
+null    =  { "null" }
+string  = ${ "\"" ~ inner ~ "\"" }
+inner   = @{ char* }
+char    =  {
+    !("\"" | "\\") ~ ANY
+  | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+  | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+number  = @{
+    "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}

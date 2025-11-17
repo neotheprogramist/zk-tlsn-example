@@ -4,7 +4,7 @@ use pest::{RuleType, iterators::Pair};
 
 use crate::{
     error::ParserError,
-    types::{RangedText, RangedValue},
+    ranged::{RangedText, RangedValue},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +45,77 @@ impl CommonParser {
 
     pub fn parse_value<R: CommonRule>(pair: Pair<R>) -> Result<RangedValue, ParserError> {
         let range = pair.as_span().start()..pair.as_span().end();
+
+        match pair.as_rule().rule_type()? {
+            CommonRuleType::Object => {
+                let mut map = HashMap::new();
+                for p in pair.into_inner() {
+                    let (key, value) = Self::parse_object_entry(p)?;
+                    map.insert(key, value);
+                }
+                Ok(RangedValue::Object { range, value: map })
+            }
+            CommonRuleType::Array => {
+                let mut values = Vec::new();
+                for p in pair.into_inner() {
+                    values.push(Self::parse_value(p)?);
+                }
+                Ok(RangedValue::Array {
+                    range,
+                    value: values,
+                })
+            }
+            CommonRuleType::String => Ok(RangedValue::String {
+                range,
+                value: pair
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_default(),
+            }),
+            CommonRuleType::Number => Ok(RangedValue::Number {
+                range,
+                value: pair
+                    .as_str()
+                    .parse()
+                    .map_err(|_| ParserError::InvalidValue)?,
+            }),
+            CommonRuleType::Boolean => Ok(RangedValue::Bool {
+                range,
+                value: pair
+                    .as_str()
+                    .parse()
+                    .map_err(|_| ParserError::InvalidValue)?,
+            }),
+            CommonRuleType::Null => Ok(RangedValue::Null),
+        }
+    }
+
+    pub fn parse_pair<R: CommonRule>(pair: Pair<R>) -> Result<(String, RangedValue), ParserError> {
+        let pair_span = pair.as_span();
+        let mut inner = pair.into_inner();
+
+        let key_pair = inner.next().ok_or(ParserError::MissingField("pair key"))?;
+        let key = key_pair
+            .into_inner()
+            .next()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_default();
+
+        let value_pair = inner
+            .next()
+            .ok_or(ParserError::MissingField("pair value"))?;
+
+        let value = Self::parse_value_with_span(value_pair, pair_span)?;
+
+        Ok((key, value))
+    }
+
+    fn parse_value_with_span<R: CommonRule>(
+        pair: Pair<R>,
+        span: pest::Span,
+    ) -> Result<RangedValue, ParserError> {
+        let range = span.start()..span.end();
 
         match pair.as_rule().rule_type()? {
             CommonRuleType::Object => {

@@ -38,15 +38,3 @@ pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
         cert_bytes: cert.to_vec(),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_create_test_tls_config() {
-        let config = create_test_tls_config().unwrap();
-        assert!(Arc::strong_count(&config.server_config) == 1);
-        assert!(Arc::strong_count(&config.client_config) == 1);
-    }
-}

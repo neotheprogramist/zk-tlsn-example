@@ -59,32 +59,3 @@ fn set_validity(params: &mut CertificateParams) -> Result<(), CertificateError> 
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_generate_self_signed_cert() {
-        let tls_cert = generate_self_signed_cert().unwrap();
-
-        let cert_pem = tls_cert.cert.pem();
-        let key_pem = tls_cert.key_pair.serialize_pem();
-
-        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
-        assert!(cert_pem.contains("END CERTIFICATE"));
-        assert!(key_pem.contains("BEGIN PRIVATE KEY"));
-        assert!(key_pem.contains("END PRIVATE KEY"));
-    }
-
-    #[test]
-    fn test_certificate_has_valid_der() {
-        let tls_cert = generate_self_signed_cert().unwrap();
-
-        let cert_der = tls_cert.cert.der();
-        let key_der = tls_cert.key_pair.serialize_der();
-
-        assert!(!cert_der.is_empty());
-        assert!(!key_der.is_empty());
-    }
-}

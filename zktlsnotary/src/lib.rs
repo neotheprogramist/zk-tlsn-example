@@ -44,7 +44,7 @@ pub mod verifier;
 pub use error::ZkTlsNotaryError;
 pub use prover::{Prover, ProverBuilder, ProverOutput, RevealConfig};
 pub use transcript::{extract_received_commitments, extract_received_secrets};
-pub use verifier::{VerifierOutput, verify};
+pub use verifier::{Verifier, VerifierBuilder, VerifierOutput};
 
 /// Maximum number of bytes that can be sent from prover to server.
 pub const MAX_SENT_DATA: usize = 1 << 12;
@@ -70,7 +70,212 @@ mod tests {
         verifier::VerifierConfig,
     };
 
-    use crate::{MAX_RECV_DATA, MAX_SENT_DATA, Prover, prover::RevealConfig, verify};
+    use crate::{
+        MAX_RECV_DATA, MAX_SENT_DATA, Prover, ProverOutput, Verifier, prover::RevealConfig,
+    };
+
+    struct TestSockets {
+        prover_server_socket: UnixStream,
+        server_socket: UnixStream,
+        prover_verifier_socket: UnixStream,
+        verifier_socket: UnixStream,
+    }
+
+    fn create_test_sockets() -> TestSockets {
+        let (prover_server_socket, server_socket) = UnixStream::pair().unwrap();
+        let (prover_verifier_socket, verifier_socket) = UnixStream::pair().unwrap();
+
+        TestSockets {
+            prover_server_socket,
+            server_socket,
+            prover_verifier_socket,
+            verifier_socket,
+        }
+    }
+
+    fn create_test_request() -> Request<Empty<Bytes>> {
+        Request::builder()
+            .method("GET")
+            .uri("/api/balance/alice")
+            .header("content-type", "application/json")
+            .header("Connection", "close")
+            .body(Empty::<Bytes>::new())
+            .expect("Failed to build request")
+    }
+
+    fn create_prover_config(cert_bytes: Vec<u8>) -> ProverConfig {
+        let server_name = ServerName::Dns("localhost".to_string().try_into().unwrap());
+
+        let mut tls_config_builder = TlsConfig::builder();
+        tls_config_builder.root_store(RootCertStore {
+            roots: vec![CertificateDer(cert_bytes)],
+        });
+        let tls_config = tls_config_builder.build().unwrap();
+
+        let mut prover_config_builder = ProverConfig::builder();
+        prover_config_builder
+            .server_name(server_name)
+            .tls_config(tls_config)
+            .protocol_config(
+                ProtocolConfig::builder()
+                    .max_sent_data(MAX_SENT_DATA)
+                    .max_recv_data(MAX_RECV_DATA)
+                    .build()
+                    .unwrap(),
+            );
+
+        prover_config_builder.build().unwrap()
+    }
+
+    fn create_verifier_config(cert_bytes: Vec<u8>) -> VerifierConfig {
+        VerifierConfig::builder()
+            .root_store(RootCertStore {
+                roots: vec![CertificateDer(cert_bytes)],
+            })
+            .protocol_config_validator(
+                ProtocolConfigValidator::builder()
+                    .max_sent_data(MAX_SENT_DATA)
+                    .max_recv_data(MAX_RECV_DATA)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn create_request_reveal_config() -> RevealConfig {
+        RevealConfig {
+            reveal_headers: vec!["content-type".into()],
+            commit_headers: vec!["connection".into()],
+            reveal_body_keypaths: vec![],
+            commit_body_keypaths: vec![],
+        }
+    }
+
+    fn create_response_reveal_config() -> RevealConfig {
+        RevealConfig {
+            reveal_headers: vec![],
+            commit_headers: vec![],
+            reveal_body_keypaths: vec!["username".into()],
+            commit_body_keypaths: vec!["balance".into()],
+        }
+    }
+
+    fn verify_prover_output(prover_output: &ProverOutput) {
+        assert!(
+            !prover_output.transcript_commitments.is_empty(),
+            "Prover should produce transcript commitments"
+        );
+        assert!(
+            !prover_output.transcript_secrets.is_empty(),
+            "Prover should produce transcript secrets"
+        );
+    }
+
+    fn verify_verifier_output(verifier_output: &crate::verifier::VerifierOutput) {
+        assert_eq!(
+            verifier_output.server_name, "localhost",
+            "Verifier should verify correct server name"
+        );
+
+        let sent_data = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
+            .expect("Sent data should be valid UTF-8");
+        let received_data =
+            String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
+                .expect("Received data should be valid UTF-8");
+
+        dbg!(&sent_data);
+        dbg!(&received_data);
+
+        assert!(
+            received_data.contains("username"),
+            "Response should contain username field"
+        );
+        assert!(
+            received_data.contains("alice"),
+            "Response should contain alice username"
+        );
+
+        assert!(
+            sent_data.contains("GET /api/balance/alice"),
+            "Request should be a GET to /api/balance/alice"
+        );
+    }
+
+    fn verify_verifier_result(
+        verifier_output: &crate::verifier::VerifierOutput,
+        sent_data: &str,
+        received_data: &str,
+    ) {
+        // Verify parsed request
+        let parsed_request = verifier_output
+            .parsed_request
+            .as_ref()
+            .expect("Request should be parsed");
+
+        // Verify request line
+        assert_eq!(
+            parsed_request.request_line.value,
+            "GET /api/balance/alice HTTP/1.1"
+        );
+        assert_eq!(
+            &sent_data[parsed_request.request_line.range.clone()],
+            "GET /api/balance/alice HTTP/1.1\r\n",
+        );
+
+        // Verify request headers
+        assert_eq!(parsed_request.headers.len(), 1);
+        let content_type = parsed_request
+            .headers
+            .get("content-type")
+            .expect("Should have content-type header");
+        assert_eq!(content_type.value, "application/json");
+        assert_eq!(
+            &sent_data[content_type.range.clone()],
+            "content-type: application/json\r\n"
+        );
+
+        // Verify parsed response
+        let parsed_response = verifier_output
+            .parsed_response
+            .as_ref()
+            .expect("Response should be parsed");
+
+        // Verify status line
+        assert_eq!(parsed_response.status_line.value, "HTTP/1.1 200 OK");
+        assert_eq!(
+            &received_data[parsed_response.status_line.range.clone()],
+            "HTTP/1.1 200 OK\r\n"
+        );
+
+        // Verify response body
+        // For redacted responses, body is a HashMap<String, RangedValue>
+        assert_eq!(
+            parsed_response.body.len(),
+            1,
+            "Should have exactly one field"
+        );
+        let username_value = parsed_response
+            .body
+            .get("username")
+            .expect("Should have username field");
+
+        match username_value {
+            parser::RangedValue::String {
+                range: username_range,
+                value: username,
+            } => {
+                assert_eq!(username, "alice");
+                // Verify range points to the full key-value pair in received_data
+                assert_eq!(
+                    &received_data[username_range.clone()],
+                    "\"username\":\"alice\"",
+                    "Range should point to full username key-value pair"
+                );
+            }
+            _ => panic!("Username should be a string value"),
+        }
+    }
 
     #[test]
     fn test_tls_notary_end_to_end() {
@@ -78,79 +283,34 @@ mod tests {
 
         smol::block_on(async {
             let test_tls_config = create_test_tls_config().unwrap();
+            let sockets = create_test_sockets();
 
-            let (prover_server_socket, server_socket) = UnixStream::pair().unwrap();
-            let (prover_verifier_socket, verifier_socket) = UnixStream::pair().unwrap();
-
-            let server_name = ServerName::Dns("localhost".to_string().try_into().unwrap());
-
-            let request = Request::builder()
-                .method("GET")
-                .uri("/api/balance/alice")
-                .header("content-type", "application/json")
-                .header("Connection", "close")
-                .body(Empty::<Bytes>::new())
-                .expect("Failed to build request");
-            let mut tls_config_builder = TlsConfig::builder();
-            tls_config_builder.root_store(RootCertStore {
-                roots: vec![CertificateDer(test_tls_config.cert_bytes.clone())],
-            });
-            let tls_config = tls_config_builder.build().unwrap();
-
-            let mut prover_config_builder = ProverConfig::builder();
-            prover_config_builder
-                .server_name(server_name.clone())
-                .tls_config(tls_config)
-                .protocol_config(
-                    ProtocolConfig::builder()
-                        .max_sent_data(MAX_SENT_DATA)
-                        .max_recv_data(MAX_RECV_DATA)
-                        .build()
-                        .unwrap(),
-                );
-
-            let prover_config = prover_config_builder.build().unwrap();
-
-            let verifier_config = VerifierConfig::builder()
-                .root_store(RootCertStore {
-                    roots: vec![CertificateDer(test_tls_config.cert_bytes)],
-                })
-                .protocol_config_validator(
-                    ProtocolConfigValidator::builder()
-                        .max_sent_data(MAX_SENT_DATA)
-                        .max_recv_data(MAX_RECV_DATA)
-                        .build()
-                        .unwrap(),
-                )
-                .build()
-                .unwrap();
+            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             let mut balances = HashMap::new();
             balances.insert("alice".to_string(), 100);
             let app = get_app(balances);
-            let server_task = handle_connection(app, test_tls_config.server_config, server_socket);
+            let server_task =
+                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
 
             let prover = Prover::builder()
                 .prover_config(prover_config)
-                .request(request)
-                .request_reveal_config(RevealConfig {
-                    reveal_headers: vec!["content-type".into()],
-                    commit_headers: vec!["connection".into()],
-                    reveal_body_keypaths: vec![],
-                    commit_body_keypaths: vec![],
-                })
-                .response_reveal_config(RevealConfig {
-                    reveal_headers: vec![],
-                    commit_headers: vec![],
-                    reveal_body_keypaths: vec!["username".into()],
-                    commit_body_keypaths: vec!["balance".into()],
-                })
+                .request(create_test_request())
+                .request_reveal_config(create_request_reveal_config())
+                .response_reveal_config(create_response_reveal_config())
                 .build()
                 .unwrap();
 
-            let prover_task = prover.prove(prover_verifier_socket, prover_server_socket);
+            let verifier = Verifier::builder()
+                .verifier_config(verifier_config)
+                .build()
+                .unwrap();
 
-            let verifier_task = verify(verifier_socket, verifier_config);
+            let prover_task =
+                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
+
+            let verifier_task = verifier.verify(sockets.verifier_socket);
 
             let (server_result, prover_result, verifier_result) =
                 join!(server_task, prover_task, verifier_task);
@@ -159,19 +319,8 @@ mod tests {
             let prover_output = prover_result.expect("Prover should complete successfully");
             let verifier_output = verifier_result.expect("Verifier should complete successfully");
 
-            assert!(
-                !prover_output.transcript_commitments.is_empty(),
-                "Prover should produce transcript commitments"
-            );
-            assert!(
-                !prover_output.transcript_secrets.is_empty(),
-                "Prover should produce transcript secrets"
-            );
-
-            assert_eq!(
-                verifier_output.server_name, "localhost",
-                "Verifier should verify correct server name"
-            );
+            verify_prover_output(&prover_output);
+            verify_verifier_output(&verifier_output);
 
             let sent_data = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
                 .expect("Sent data should be valid UTF-8");
@@ -179,22 +328,11 @@ mod tests {
                 String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
                     .expect("Received data should be valid UTF-8");
 
-            dbg!(&sent_data);
-            dbg!(&received_data);
+            verify_verifier_result(&verifier_output, &sent_data, &received_data);
 
-            assert!(
-                received_data.contains("username"),
-                "Response should contain username field"
-            );
-            assert!(
-                received_data.contains("alice"),
-                "Response should contain alice username"
-            );
-
-            assert!(
-                sent_data.contains("GET /api/balance/alice"),
-                "Request should be a GET to /api/balance/alice"
-            );
+            dbg!(verifier_output.server_name);
+            dbg!(verifier_output.parsed_request);
+            dbg!(verifier_output.parsed_response);
         });
     }
 }
