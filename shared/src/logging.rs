@@ -3,7 +3,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 pub fn init_test_logging() {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .with_target(true)
         .with_file(true)
         .with_line_number(true)
