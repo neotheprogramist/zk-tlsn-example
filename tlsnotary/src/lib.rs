@@ -1,6 +1,5 @@
 pub mod error;
 pub mod prover;
-pub mod transcript;
 pub mod verifier;
 
 pub use error::Error;
@@ -16,7 +15,6 @@ pub use tlsn::{
     },
     verifier::VerifierConfig,
 };
-pub use transcript::{extract_received_commitments, extract_received_secrets};
 pub use verifier::{Verifier, VerifierBuilder, VerifierOutput};
 
 pub const MAX_SENT_DATA: usize = 1 << 12;

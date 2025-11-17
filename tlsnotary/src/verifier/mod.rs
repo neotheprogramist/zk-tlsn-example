@@ -6,11 +6,12 @@ use tlsn::{
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
 };
 
-use crate::{error::Error, transcript::extract_received_commitments};
+use crate::error::Error;
 
 #[derive(Debug)]
 pub struct VerifierOutput {
     pub transcript: PartialTranscript,
+    pub transcript_commitments: Vec<tlsn::transcript::TranscriptCommitment>,
     pub server_name: String,
     pub parsed_request: Option<parser::redacted::Request>,
     pub parsed_response: Option<parser::redacted::Response>,
@@ -46,6 +47,7 @@ impl Verifier {
 
         Ok(VerifierOutput {
             transcript,
+            transcript_commitments: verifier_output.transcript_commitments,
             server_name: server_name.to_string(),
             parsed_request,
             parsed_response,
@@ -79,16 +81,17 @@ impl Verifier {
         transcript_commitments: &[tlsn::transcript::TranscriptCommitment],
         expected_hash_alg: HashAlgId,
     ) -> Result<(), Error> {
-        let received_commitments = extract_received_commitments(transcript_commitments);
-        let received_commitment = received_commitments
-            .first()
+        let received_commitment = transcript_commitments
+            .iter()
+            .find_map(|commitment| match commitment {
+                tlsn::transcript::TranscriptCommitment::Hash(hash)
+                    if hash.direction == Direction::Received =>
+                {
+                    Some(hash)
+                }
+                _ => None,
+            })
             .ok_or(Error::MissingField("received hash commitment"))?;
-
-        if received_commitment.direction != Direction::Received {
-            return Err(Error::InvalidTranscript(
-                "Expected received direction for commitment".into(),
-            ));
-        }
 
         if received_commitment.hash.alg != expected_hash_alg {
             return Err(Error::InvalidTranscript(format!(
