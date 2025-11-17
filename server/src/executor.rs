@@ -1,6 +1,10 @@
-use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 /// SmolExecutor implements hyper's Executor trait using smol's runtime
 /// with task tracking and wait capabilities

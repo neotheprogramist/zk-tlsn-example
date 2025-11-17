@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[derive(Error, Debug)]
 pub enum Error {
     #[error("prover setup failed: {0}")]
     ProverSetup(String),
@@ -20,8 +20,8 @@ pub enum Error {
     #[error("verifier verification failed: {0}")]
     VerifyFailed(String),
 
-    #[error("parser error: {0}")]
-    Parser(String),
+    #[error(transparent)]
+    Parser(#[from] parser::ParserError),
 
     #[error("missing required field: {0}")]
     MissingField(&'static str),
@@ -32,72 +32,24 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
-    #[error("TLSN prover error: {0}")]
-    TlsnProver(String),
+    #[error(transparent)]
+    TlsnProver(#[from] tlsn::prover::ProverError),
 
-    #[error("TLSN verifier error: {0}")]
-    TlsnVerifier(String),
+    #[error(transparent)]
+    TlsnVerifier(#[from] tlsn::verifier::VerifierError),
 
-    #[error("TLSN protocol config builder error: {0}")]
-    TlsnProtocolConfigBuilder(String),
+    #[error(transparent)]
+    TlsnProtocolConfigBuilder(#[from] tlsn::config::ProtocolConfigBuilderError),
 
-    #[error("TLSN prove config builder error: {0}")]
-    TlsnProveConfigBuilder(String),
+    #[error(transparent)]
+    TlsnProveConfigBuilder(#[from] tlsn::prover::ProveConfigBuilderError),
 
-    #[error("TLSN transcript commit config builder error: {0}")]
-    TlsnTranscriptCommitConfigBuilder(String),
+    #[error(transparent)]
+    TlsnTranscriptCommitConfigBuilder(#[from] tlsn::transcript::TranscriptCommitConfigBuilderError),
 
-    #[error("I/O error: {0}")]
-    Io(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 
-    #[error("Hyper error: {0}")]
-    Hyper(String),
-}
-
-impl From<parser::ParserError> for Error {
-    fn from(err: parser::ParserError) -> Self {
-        Self::Parser(err.to_string())
-    }
-}
-
-impl From<tlsn::prover::ProverError> for Error {
-    fn from(err: tlsn::prover::ProverError) -> Self {
-        Self::TlsnProver(err.to_string())
-    }
-}
-
-impl From<tlsn::verifier::VerifierError> for Error {
-    fn from(err: tlsn::verifier::VerifierError) -> Self {
-        Self::TlsnVerifier(err.to_string())
-    }
-}
-
-impl From<tlsn::config::ProtocolConfigBuilderError> for Error {
-    fn from(err: tlsn::config::ProtocolConfigBuilderError) -> Self {
-        Self::TlsnProtocolConfigBuilder(err.to_string())
-    }
-}
-
-impl From<tlsn::prover::ProveConfigBuilderError> for Error {
-    fn from(err: tlsn::prover::ProveConfigBuilderError) -> Self {
-        Self::TlsnProveConfigBuilder(err.to_string())
-    }
-}
-
-impl From<tlsn::transcript::TranscriptCommitConfigBuilderError> for Error {
-    fn from(err: tlsn::transcript::TranscriptCommitConfigBuilderError) -> Self {
-        Self::TlsnTranscriptCommitConfigBuilder(err.to_string())
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io(err.to_string())
-    }
-}
-
-impl From<hyper::Error> for Error {
-    fn from(err: hyper::Error) -> Self {
-        Self::Hyper(err.to_string())
-    }
+    #[error(transparent)]
+    Hyper(#[from] hyper::Error),
 }
