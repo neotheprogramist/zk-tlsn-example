@@ -12,9 +12,9 @@ use tlsn::{
     transcript::{TranscriptCommitConfig, TranscriptCommitmentKind},
 };
 
-use crate::error::ZkTlsNotaryError;
+use crate::error::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProverOutput {
     pub transcript_commitments: Vec<tlsn::transcript::TranscriptCommitment>,
     pub transcript_secrets: Vec<tlsn::transcript::TranscriptSecret>,
@@ -29,6 +29,7 @@ pub struct Prover {
 }
 
 impl Prover {
+    #[must_use]
     pub fn builder() -> ProverBuilder {
         ProverBuilder::new()
     }
@@ -37,7 +38,7 @@ impl Prover {
         self,
         verifier_socket: T,
         server_socket: S,
-    ) -> Result<ProverOutput, ZkTlsNotaryError>
+    ) -> Result<ProverOutput, Error>
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -46,14 +47,14 @@ impl Prover {
         let prover = TlsnProver::new(self.prover_config)
             .setup(verifier_socket)
             .await
-            .map_err(|e| ZkTlsNotaryError::ProverSetup(e.to_string()))?;
+            .map_err(|e| Error::ProverSetup(e.to_string()))?;
         tracing::info!(component = "prover", phase = "setup", status = "completed");
 
         tracing::info!(component = "prover", phase = "connect", status = "started");
         let (mpc_tls_connection, prover_fut) = prover
             .connect(server_socket)
             .await
-            .map_err(|e| ZkTlsNotaryError::ProverConnection(e.to_string()))?;
+            .map_err(|e| Error::ProverConnection(e.to_string()))?;
         tracing::info!(
             component = "prover",
             phase = "connect",
@@ -66,7 +67,7 @@ impl Prover {
         let (mut request_sender, connection) =
             hyper::client::conn::http1::handshake(mpc_tls_connection)
                 .await
-                .map_err(|e| ZkTlsNotaryError::MpcTlsHandshake(e.to_string()))?;
+                .map_err(|e| Error::MpcTlsHandshake(e.to_string()))?;
 
         smol::spawn(connection).detach();
 
@@ -85,7 +86,7 @@ impl Prover {
                 status = "failed",
                 http_status = status.as_u16()
             );
-            return Err(ZkTlsNotaryError::HttpRequestFailed(status.as_u16()));
+            return Err(Error::HttpRequestFailed(status.as_u16()));
         }
 
         let _ = response.collect().await?;
@@ -98,7 +99,7 @@ impl Prover {
 
         let mut prover = prover_task
             .await
-            .map_err(|e| ZkTlsNotaryError::ProveFailed(e.to_string()))?;
+            .map_err(|e| Error::ProveFailed(e.to_string()))?;
 
         let transcript = prover.transcript().clone();
         let mut prove_config_builder = ProveConfig::builder(&transcript);
@@ -143,13 +144,13 @@ impl Prover {
         let prover_output = prover
             .prove(&prove_config)
             .await
-            .map_err(|e| ZkTlsNotaryError::ProveFailed(e.to_string()))?;
+            .map_err(|e| Error::ProveFailed(e.to_string()))?;
         tracing::info!(component = "prover", phase = "prove", status = "completed");
 
         prover
             .close()
             .await
-            .map_err(|e| ZkTlsNotaryError::ProveFailed(e.to_string()))?;
+            .map_err(|e| Error::ProveFailed(e.to_string()))?;
         Ok(ProverOutput {
             transcript_commitments: prover_output.transcript_commitments,
             transcript_secrets: prover_output.transcript_secrets,
@@ -157,6 +158,7 @@ impl Prover {
     }
 }
 
+#[derive(Debug)]
 pub struct ProverBuilder {
     prover_config: Option<ProverConfig>,
     request: Option<Request<Empty<Bytes>>>,
@@ -176,38 +178,43 @@ impl ProverBuilder {
         }
     }
 
+    #[must_use]
     pub fn prover_config(mut self, config: ProverConfig) -> Self {
         self.prover_config = Some(config);
         self
     }
 
+    #[must_use]
     pub fn request(mut self, request: Request<Empty<Bytes>>) -> Self {
         self.request = Some(request);
         self
     }
 
+    #[must_use]
     pub fn request_reveal_config(mut self, config: RevealConfig) -> Self {
         self.request_reveal_config = config;
         self
     }
 
+    #[must_use]
     pub fn response_reveal_config(mut self, config: RevealConfig) -> Self {
         self.response_reveal_config = config;
         self
     }
 
+    #[must_use]
     pub fn hash_alg(mut self, alg: HashAlgId) -> Self {
         self.hash_alg = alg;
         self
     }
 
-    pub fn build(self) -> Result<Prover, ZkTlsNotaryError> {
+    pub fn build(self) -> Result<Prover, Error> {
         let prover_config = self
             .prover_config
-            .ok_or_else(|| ZkTlsNotaryError::InvalidConfig("prover_config is required".into()))?;
+            .ok_or_else(|| Error::InvalidConfig("prover_config is required".into()))?;
         let request = self
             .request
-            .ok_or_else(|| ZkTlsNotaryError::InvalidConfig("request is required".into()))?;
+            .ok_or_else(|| Error::InvalidConfig("request is required".into()))?;
 
         Ok(Prover {
             prover_config,

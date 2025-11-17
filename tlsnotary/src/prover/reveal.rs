@@ -1,9 +1,11 @@
+//! Selective disclosure configuration for HTTP requests and responses.
+
 use parser::{BodySearchable, HeaderSearchable, RequestParser, ResponseParser};
 use tlsn::{prover::ProveConfigBuilder, transcript::TranscriptCommitConfigBuilder};
 
-use crate::error::ZkTlsNotaryError;
+use crate::error::Error;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RevealConfig {
     pub reveal_headers: Vec<String>,
     pub commit_headers: Vec<String>,
@@ -11,19 +13,44 @@ pub struct RevealConfig {
     pub commit_body_keypaths: Vec<String>,
 }
 
+impl RevealConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn reveal_all() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn commit_all() -> Self {
+        Self {
+            reveal_headers: vec![],
+            commit_headers: vec![],
+            reveal_body_keypaths: vec![],
+            commit_body_keypaths: vec![],
+        }
+    }
+}
+
+/// # Errors
+///
+/// Returns error if request is not UTF-8, parsing fails, or field lookup fails.
 pub fn reveal_request(
     request: &[u8],
     builder: &mut ProveConfigBuilder<'_>,
     transcript_commitment_builder: &mut TranscriptCommitConfigBuilder,
     config: &RevealConfig,
-) -> Result<(), ZkTlsNotaryError> {
+) -> Result<(), Error> {
     if config.reveal_headers.is_empty() && config.reveal_body_keypaths.is_empty() {
         builder.reveal_sent(&(0..request.len()))?;
         return Ok(());
     }
 
     let raw_request_str = String::from_utf8(request.to_vec())
-        .map_err(|_| ZkTlsNotaryError::InvalidTranscript("Request is not valid UTF-8".into()))?;
+        .map_err(|_| Error::InvalidTranscript("Request is not valid UTF-8".into()))?;
 
     let parsed_request = RequestParser::parse_request(&raw_request_str)?;
 
@@ -73,14 +100,17 @@ pub fn reveal_request(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns error if response is not UTF-8, parsing fails, or field lookup fails.
 pub fn reveal_response(
     response: &[u8],
     builder: &mut ProveConfigBuilder<'_>,
     transcript_commitment_builder: &mut TranscriptCommitConfigBuilder,
     config: &RevealConfig,
-) -> Result<(), ZkTlsNotaryError> {
+) -> Result<(), Error> {
     let raw_response_str = String::from_utf8(response.to_vec())
-        .map_err(|_| ZkTlsNotaryError::InvalidTranscript("Response is not valid UTF-8".into()))?;
+        .map_err(|_| Error::InvalidTranscript("Response is not valid UTF-8".into()))?;
 
     let parsed_response = ResponseParser::parse_response(&raw_response_str)?;
 

@@ -3426,6 +3426,32 @@ version = "0.1.0"
 source = "git+https://github.com/tlsnotary/tlsn-utils?rev=6168663#6168663495281f2c1b2c1734dc276cecc4d36ef1"
 
 [[package]]
+name = "tlsnotary"
+version = "0.1.0"
+dependencies = [
+ "async-compat",
+ "axum",
+ "chrono",
+ "futures",
+ "futures-rustls",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "parser",
+ "rustls",
+ "serde",
+ "serde_json",
+ "server",
+ "shared",
+ "smol",
+ "thiserror 2.0.17",
+ "tlsn",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tokio"
 version = "1.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4041,27 +4067,5 @@ dependencies = [
 ]
 
 [[package]]
-name = "zktlsnotary"
+name = "zktlsn"
 version = "0.1.0"
-dependencies = [
- "async-compat",
- "axum",
- "chrono",
- "futures",
- "futures-rustls",
- "http-body-util",
- "hyper",
- "hyper-util",
- "parser",
- "rustls",
- "serde",
- "serde_json",
- "server",
- "shared",
- "smol",
- "thiserror 2.0.17",
- "tlsn",
- "tower",
- "tracing",
- "tracing-subscriber",
-]

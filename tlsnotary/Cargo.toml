@@ -1,5 +1,5 @@
 [package]
-name = "zktlsnotary"
+name = "tlsnotary"
 version.workspace = true
 edition.workspace = true
 

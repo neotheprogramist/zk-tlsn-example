@@ -1,0 +1,6 @@
+[package]
+name = "zktlsn"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
