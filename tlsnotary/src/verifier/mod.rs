@@ -1,8 +1,7 @@
 use futures::{AsyncRead, AsyncWrite};
 use parser::{RedactedRequestParser, RedactedResponseParser};
 use tlsn::{
-    hash::HashAlgId,
-    transcript::{Direction, PartialTranscript},
+    transcript::PartialTranscript,
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
 };
 
@@ -19,7 +18,6 @@ pub struct VerifierOutput {
 
 pub struct Verifier {
     verifier_config: VerifierConfig,
-    hash_alg: HashAlgId,
 }
 
 impl Verifier {
@@ -36,10 +34,13 @@ impl Verifier {
 
         let verifier_output = Self::run_verify(self.verifier_config, socket).await?;
 
-        let (server_name, transcript) =
-            Self::extract_core_data(verifier_output.server_name, verifier_output.transcript)?;
+        let server_name = verifier_output
+            .server_name
+            .ok_or(Error::MissingField("server name"))?;
 
-        Self::validate_commitments(&verifier_output.transcript_commitments, self.hash_alg)?;
+        let transcript = verifier_output
+            .transcript
+            .ok_or(Error::MissingField("transcript"))?;
 
         let (parsed_request, parsed_response) = Self::parse_transcript_data(&transcript)?;
 
@@ -68,41 +69,6 @@ impl Verifier {
             .map_err(|e| Error::VerifyFailed(e.to_string()))
     }
 
-    fn extract_core_data(
-        server_name: Option<tlsn::connection::ServerName>,
-        transcript: Option<PartialTranscript>,
-    ) -> Result<(tlsn::connection::ServerName, PartialTranscript), Error> {
-        let server_name = server_name.ok_or(Error::MissingField("server name"))?;
-        let transcript = transcript.ok_or(Error::MissingField("transcript"))?;
-        Ok((server_name, transcript))
-    }
-
-    fn validate_commitments(
-        transcript_commitments: &[tlsn::transcript::TranscriptCommitment],
-        expected_hash_alg: HashAlgId,
-    ) -> Result<(), Error> {
-        let received_commitment = transcript_commitments
-            .iter()
-            .find_map(|commitment| match commitment {
-                tlsn::transcript::TranscriptCommitment::Hash(hash)
-                    if hash.direction == Direction::Received =>
-                {
-                    Some(hash)
-                }
-                _ => None,
-            })
-            .ok_or(Error::MissingField("received hash commitment"))?;
-
-        if received_commitment.hash.alg != expected_hash_alg {
-            return Err(Error::InvalidTranscript(format!(
-                "Expected {:?} hash algorithm",
-                expected_hash_alg
-            )));
-        }
-
-        Ok(())
-    }
-
     fn parse_transcript_data(
         transcript: &PartialTranscript,
     ) -> Result<
@@ -127,14 +93,12 @@ impl Verifier {
 #[derive(Debug)]
 pub struct VerifierBuilder {
     verifier_config: Option<VerifierConfig>,
-    hash_alg: HashAlgId,
 }
 
 impl VerifierBuilder {
     fn new() -> Self {
         Self {
             verifier_config: None,
-            hash_alg: HashAlgId::SHA256,
         }
     }
 
@@ -144,20 +108,11 @@ impl VerifierBuilder {
         self
     }
 
-    #[must_use]
-    pub fn hash_alg(mut self, alg: HashAlgId) -> Self {
-        self.hash_alg = alg;
-        self
-    }
-
     pub fn build(self) -> Result<Verifier, Error> {
         let verifier_config = self
             .verifier_config
             .ok_or_else(|| Error::InvalidConfig("verifier_config is required".into()))?;
 
-        Ok(Verifier {
-            verifier_config,
-            hash_alg: self.hash_alg,
-        })
+        Ok(Verifier { verifier_config })
     }
 }
