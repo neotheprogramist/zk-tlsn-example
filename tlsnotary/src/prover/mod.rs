@@ -1,7 +1,7 @@
 mod reveal;
 
 use async_compat::Compat;
-use futures::{AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, join};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
@@ -61,7 +61,6 @@ impl Prover {
             status = "completed"
         );
 
-        let prover_task = smol::spawn(prover_fut);
         let mpc_tls_connection = TokioIo::new(Compat::new(mpc_tls_connection));
 
         let (mut request_sender, connection) =
@@ -69,37 +68,40 @@ impl Prover {
                 .await
                 .map_err(|e| Error::MpcTlsHandshake(e.to_string()))?;
 
-        smol::spawn(connection).detach();
-
-        tracing::info!(
-            component = "prover",
-            phase = "http_exchange",
-            status = "started"
-        );
-        let response = request_sender.send_request(self.request).await?;
-        let status = response.status();
-
-        if status != StatusCode::OK {
-            tracing::error!(
+        let request_task = async move {
+            tracing::info!(
                 component = "prover",
                 phase = "http_exchange",
-                status = "failed",
+                status = "started"
+            );
+            let response = request_sender.send_request(self.request).await?;
+            let status = response.status();
+
+            if status != StatusCode::OK {
+                tracing::error!(
+                    component = "prover",
+                    phase = "http_exchange",
+                    status = "failed",
+                    http_status = status.as_u16()
+                );
+                return Err(Error::HttpRequestFailed(status.as_u16()));
+            }
+
+            let response = response.collect().await?;
+            tracing::info!(
+                component = "prover",
+                phase = "http_exchange",
+                status = "completed",
                 http_status = status.as_u16()
             );
-            return Err(Error::HttpRequestFailed(status.as_u16()));
-        }
 
-        let _ = response.collect().await?;
-        tracing::info!(
-            component = "prover",
-            phase = "http_exchange",
-            status = "completed",
-            http_status = status.as_u16()
-        );
+            Ok(response)
+        };
 
-        let mut prover = prover_task
-            .await
-            .map_err(|e| Error::ProveFailed(e.to_string()))?;
+        let (prover, connection_result, response) = join!(prover_fut, connection, request_task);
+        let mut prover = prover?;
+        connection_result?;
+        let response = response?;
 
         let transcript = prover.transcript().clone();
         let mut prove_config_builder = ProveConfig::builder(&transcript);
