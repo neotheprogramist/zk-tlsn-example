@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use parser::{RangedText, RangedValue};
 use tlsn::{hash::HashAlgId, transcript::Direction};
 
 use crate::error::Error;
@@ -5,11 +8,25 @@ use crate::error::Error;
 use super::VerifierOutput;
 
 #[derive(Debug, Clone)]
+pub enum FieldAssertion {
+    HeaderEquals { key: String, value: String },
+    BodyFieldEquals { key: String, value: ExpectedValue },
+}
+
+#[derive(Debug, Clone)]
+pub enum ExpectedValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct Validator {
     expected_server_name: Option<String>,
     expected_hash_alg: Option<HashAlgId>,
-    min_sent_data: Option<usize>,
-    min_received_data: Option<usize>,
+    request_assertions: Vec<FieldAssertion>,
+    response_assertions: Vec<FieldAssertion>,
 }
 
 impl Validator {
@@ -50,27 +67,116 @@ impl Validator {
             }
         }
 
-        if let Some(min_sent) = self.min_sent_data {
-            let sent_len = output.transcript.sent_unsafe().len();
-            if sent_len < min_sent {
-                return Err(Error::InvalidTranscript(format!(
-                    "Expected at least {} bytes sent, got {}",
-                    min_sent, sent_len
-                )));
+        if !self.request_assertions.is_empty() {
+            let request = output
+                .parsed_request
+                .as_ref()
+                .ok_or(Error::MissingField("parsed request"))?;
+
+            for assertion in &self.request_assertions {
+                Self::validate_assertion(assertion, &request.headers, &request.body, "request")?;
             }
         }
 
-        if let Some(min_received) = self.min_received_data {
-            let received_len = output.transcript.received_unsafe().len();
-            if received_len < min_received {
-                return Err(Error::InvalidTranscript(format!(
-                    "Expected at least {} bytes received, got {}",
-                    min_received, received_len
-                )));
+        if !self.response_assertions.is_empty() {
+            let response = output
+                .parsed_response
+                .as_ref()
+                .ok_or(Error::MissingField("parsed response"))?;
+
+            for assertion in &self.response_assertions {
+                Self::validate_assertion(
+                    assertion,
+                    &response.headers,
+                    &response.body,
+                    "response",
+                )?;
             }
         }
 
         Ok(())
+    }
+
+    fn validate_assertion(
+        assertion: &FieldAssertion,
+        headers: &HashMap<String, RangedText>,
+        body: &HashMap<String, RangedValue>,
+        context: &str,
+    ) -> Result<(), Error> {
+        match assertion {
+            FieldAssertion::HeaderEquals { key, value } => {
+                let actual = headers
+                    .get(key)
+                    .ok_or_else(|| {
+                        Error::InvalidTranscript(format!(
+                            "Missing {} header '{}'",
+                            context, key
+                        ))
+                    })?
+                    .value
+                    .as_str();
+
+                if actual != value {
+                    return Err(Error::InvalidTranscript(format!(
+                        "Expected {} header '{}' to be '{}', got '{}'",
+                        context, key, value, actual
+                    )));
+                }
+            }
+            FieldAssertion::BodyFieldEquals { key, value } => {
+                let actual = body.get(key).ok_or_else(|| {
+                    Error::InvalidTranscript(format!("Missing {} body field '{}'", context, key))
+                })?;
+
+                Self::validate_value(value, actual, context, key)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_value(
+        expected: &ExpectedValue,
+        actual: &RangedValue,
+        context: &str,
+        key: &str,
+    ) -> Result<(), Error> {
+        match (expected, actual) {
+            (ExpectedValue::Null, RangedValue::Null) => Ok(()),
+            (ExpectedValue::Bool(expected_val), RangedValue::Bool { value, .. }) => {
+                if expected_val == value {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be {}, got {}",
+                        context, key, expected_val, value
+                    )))
+                }
+            }
+            (ExpectedValue::Number(expected_val), RangedValue::Number { value, .. }) => {
+                if (expected_val - value).abs() < f64::EPSILON {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be {}, got {}",
+                        context, key, expected_val, value
+                    )))
+                }
+            }
+            (ExpectedValue::String(expected_val), RangedValue::String { value, .. }) => {
+                if expected_val == value {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be '{}', got '{}'",
+                        context, key, expected_val, value
+                    )))
+                }
+            }
+            _ => Err(Error::InvalidTranscript(format!(
+                "Type mismatch for {} body field '{}'",
+                context, key
+            ))),
+        }
     }
 }
 
@@ -78,8 +184,8 @@ impl Validator {
 pub struct ValidatorBuilder {
     expected_server_name: Option<String>,
     expected_hash_alg: Option<HashAlgId>,
-    min_sent_data: Option<usize>,
-    min_received_data: Option<usize>,
+    request_assertions: Vec<FieldAssertion>,
+    response_assertions: Vec<FieldAssertion>,
 }
 
 impl ValidatorBuilder {
@@ -100,14 +206,38 @@ impl ValidatorBuilder {
     }
 
     #[must_use]
-    pub fn min_sent_data(mut self, min: usize) -> Self {
-        self.min_sent_data = Some(min);
+    pub fn request_header_equals(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.request_assertions.push(FieldAssertion::HeaderEquals {
+            key: key.into(),
+            value: value.into(),
+        });
         self
     }
 
     #[must_use]
-    pub fn min_received_data(mut self, min: usize) -> Self {
-        self.min_received_data = Some(min);
+    pub fn response_header_equals(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.response_assertions.push(FieldAssertion::HeaderEquals {
+            key: key.into(),
+            value: value.into(),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn request_body_field_equals(mut self, key: impl Into<String>, value: ExpectedValue) -> Self {
+        self.request_assertions.push(FieldAssertion::BodyFieldEquals {
+            key: key.into(),
+            value,
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn response_body_field_equals(mut self, key: impl Into<String>, value: ExpectedValue) -> Self {
+        self.response_assertions.push(FieldAssertion::BodyFieldEquals {
+            key: key.into(),
+            value,
+        });
         self
     }
 
@@ -116,8 +246,8 @@ impl ValidatorBuilder {
         Validator {
             expected_server_name: self.expected_server_name,
             expected_hash_alg: self.expected_hash_alg,
-            min_sent_data: self.min_sent_data,
-            min_received_data: self.min_received_data,
+            request_assertions: self.request_assertions,
+            response_assertions: self.response_assertions,
         }
     }
 }

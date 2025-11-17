@@ -17,7 +17,7 @@ use tlsn::{
 };
 
 use crate::{
-    MAX_RECV_DATA, MAX_SENT_DATA, ProverOutput, Validator, prover::RevealConfig,
+    ExpectedValue, MAX_RECV_DATA, MAX_SENT_DATA, ProverOutput, Validator, prover::RevealConfig,
     verifier::VerifierOutput,
 };
 
@@ -483,8 +483,8 @@ mod tests {
             let validator = Validator::builder()
                 .expected_server_name("localhost")
                 .expected_hash_alg(tlsn::hash::HashAlgId::SHA256)
-                .min_sent_data(50)
-                .min_received_data(50)
+                .request_header_equals("content-type", "application/json")
+                .response_body_field_equals("username", ExpectedValue::String("alice".to_string()))
                 .build();
 
             validator
@@ -501,14 +501,24 @@ mod tests {
                 "Validation should fail with wrong server name"
             );
 
-            // Test validator with insufficient data
-            let min_data_validator = Validator::builder()
-                .min_sent_data(10000)
+            // Test validator with wrong header value
+            let wrong_header_validator = Validator::builder()
+                .request_header_equals("content-type", "text/html")
                 .build();
 
             assert!(
-                min_data_validator.validate(&verifier_output).is_err(),
-                "Validation should fail with insufficient sent data"
+                wrong_header_validator.validate(&verifier_output).is_err(),
+                "Validation should fail with wrong header value"
+            );
+
+            // Test validator with wrong body field value
+            let wrong_body_validator = Validator::builder()
+                .response_body_field_equals("username", ExpectedValue::String("bob".to_string()))
+                .build();
+
+            assert!(
+                wrong_body_validator.validate(&verifier_output).is_err(),
+                "Validation should fail with wrong body field value"
             );
         });
     }

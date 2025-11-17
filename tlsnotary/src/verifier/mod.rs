@@ -7,7 +7,7 @@ use tlsn::{
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
 };
 
-pub use validator::{Validator, ValidatorBuilder};
+pub use validator::{ExpectedValue, FieldAssertion, Validator, ValidatorBuilder};
 
 use crate::error::Error;
 
