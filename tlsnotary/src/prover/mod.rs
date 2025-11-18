@@ -16,6 +16,8 @@ use crate::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct ProverOutput {
+    pub sent: Vec<u8>,
+    pub received: Vec<u8>,
     pub transcript_commitments: Vec<tlsn::transcript::TranscriptCommitment>,
     pub transcript_secrets: Vec<tlsn::transcript::TranscriptSecret>,
     pub response_body: Vec<u8>,
@@ -59,11 +61,16 @@ impl Prover {
             &self.response_reveal_config,
         )?;
 
+        let sent = prover.transcript().sent().to_owned();
+        let received = prover.transcript().received().to_owned();
+
         let prover_output = Self::generate_and_finalize_proof(prover, &prove_config).await?;
 
         tracing::info!(component = "prover", phase = "prove", status = "completed");
 
         Ok(ProverOutput {
+            sent,
+            received,
             transcript_commitments: prover_output.transcript_commitments,
             transcript_secrets: prover_output.transcript_secrets,
             response_body,

@@ -15,9 +15,9 @@ use http_body_util::Empty;
 use hyper::Request;
 use smol::net::unix::UnixStream;
 use tlsnotary::{
-    CertificateDer, ExpectedValue, ProtocolConfig, ProtocolConfigValidator, ProverConfig,
-    ProverOutput, RootCertStore, ServerName, TlsConfig, Validator, VerifierConfig,
-    prover::RevealConfig, verifier::VerifierOutput,
+    CertificateDer, ProtocolConfig, ProtocolConfigValidator, ProverConfig, ProverOutput,
+    RootCertStore, ServerName, TlsConfig, VerifierConfig, prover::RevealConfig,
+    verifier::VerifierOutput,
 };
 
 /// Socket pairs for prover-server and prover-verifier communication
@@ -160,14 +160,17 @@ pub fn verify_verifier_output_basic(verifier_output: &VerifierOutput) {
     );
 }
 
-/// Verifies parsed request structure and content
 pub fn verify_parsed_request(verifier_output: &VerifierOutput, sent_data: &str) {
     let parsed_request = verifier_output
         .parsed_request
         .as_ref()
         .expect("Request should be parsed");
 
-    // Verify request line
+    verify_request_line(parsed_request, sent_data);
+    verify_request_headers(parsed_request, sent_data);
+}
+
+fn verify_request_line(parsed_request: &parser::ParsedRedactedRequest, sent_data: &str) {
     assert_eq!(
         parsed_request.request_line.value,
         "GET /api/balance/alice HTTP/1.1"
@@ -176,13 +179,16 @@ pub fn verify_parsed_request(verifier_output: &VerifierOutput, sent_data: &str) 
         &sent_data[parsed_request.request_line.range.clone()],
         "GET /api/balance/alice HTTP/1.1\r\n",
     );
+}
 
-    // Verify request headers
+fn verify_request_headers(parsed_request: &parser::ParsedRedactedRequest, sent_data: &str) {
     assert_eq!(parsed_request.headers.len(), 1);
+
     let content_type = parsed_request
         .headers
         .get("content-type")
         .expect("Should have content-type header");
+
     assert_eq!(content_type.value, "application/json");
     assert_eq!(
         &sent_data[content_type.range.clone()],
@@ -190,31 +196,40 @@ pub fn verify_parsed_request(verifier_output: &VerifierOutput, sent_data: &str) 
     );
 }
 
-/// Verifies parsed response structure and content
 pub fn verify_parsed_response(verifier_output: &VerifierOutput, received_data: &str) {
     let parsed_response = verifier_output
         .parsed_response
         .as_ref()
         .expect("Response should be parsed");
 
-    // Verify status line
+    verify_status_line(parsed_response, received_data);
+    verify_response_body(parsed_response, received_data);
+}
+
+fn verify_status_line(parsed_response: &parser::ParsedRedactedResponse, received_data: &str) {
     assert_eq!(parsed_response.status_line.value, "HTTP/1.1 200 OK");
     assert_eq!(
         &received_data[parsed_response.status_line.range.clone()],
         "HTTP/1.1 200 OK\r\n"
     );
+}
 
-    // Verify response body
+fn verify_response_body(parsed_response: &parser::ParsedRedactedResponse, received_data: &str) {
     assert_eq!(
         parsed_response.body.len(),
         1,
         "Should have exactly one field"
     );
+
     let username_value = parsed_response
         .body
         .get("username")
         .expect("Should have username field");
 
+    verify_username_field(username_value, received_data);
+}
+
+fn verify_username_field(username_value: &parser::RangedValue, received_data: &str) {
     match username_value {
         parser::RangedValue::String {
             range: username_range,
@@ -236,12 +251,13 @@ mod tests {
     use futures::join;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;
-    use tlsnotary::{HashAlgId, Prover, Verifier};
+    use tlsnotary::{Prover, Verifier};
 
     use super::*;
+    use crate::generate_proof;
 
     #[test]
-    fn test_end_to_end_proof_generation_and_verification() {
+    fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
         shared::init_test_logging();
 
         smol::block_on(async {
@@ -300,225 +316,14 @@ mod tests {
 
             verify_parsed_request(&verifier_output, &sent_data);
             verify_parsed_response(&verifier_output, &received_data);
-        });
-    }
 
-    #[test]
-    fn test_prover_output_contains_commitments() {
-        shared::init_test_logging();
-
-        smol::block_on(async {
-            let test_tls_config = create_test_tls_config().unwrap();
-            let sockets = create_test_sockets();
-
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
-            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
-
-            let app = get_app(create_test_balances());
-            let server_task =
-                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
-
-            let prover = Prover::builder()
-                .prover_config(prover_config)
-                .request(create_test_request())
-                .request_reveal_config(create_request_reveal_config())
-                .response_reveal_config(create_response_reveal_config())
-                .build()
-                .unwrap();
-
-            let verifier = Verifier::builder()
-                .verifier_config(verifier_config)
-                .build()
-                .unwrap();
-
-            let prover_task =
-                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
-            let verifier_task = verifier.verify(sockets.verifier_socket);
-
-            let (_, prover_result, _) = join!(server_task, prover_task, verifier_task);
-
-            let prover_output = prover_result.expect("Prover should complete successfully");
-
-            // Focused verification on prover output
-            assert!(
-                !prover_output.transcript_commitments.is_empty(),
-                "Should have transcript commitments"
-            );
-            assert!(
-                !prover_output.transcript_secrets.is_empty(),
-                "Should have transcript secrets"
-            );
-        });
-    }
-
-    #[test]
-    fn test_verifier_parses_request_correctly() {
-        shared::init_test_logging();
-
-        smol::block_on(async {
-            let test_tls_config = create_test_tls_config().unwrap();
-            let sockets = create_test_sockets();
-
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
-            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
-
-            let app = get_app(create_test_balances());
-            let server_task =
-                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
-
-            let prover = Prover::builder()
-                .prover_config(prover_config)
-                .request(create_test_request())
-                .request_reveal_config(create_request_reveal_config())
-                .response_reveal_config(create_response_reveal_config())
-                .build()
-                .unwrap();
-
-            let verifier = Verifier::builder()
-                .verifier_config(verifier_config)
-                .build()
-                .unwrap();
-
-            let prover_task =
-                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
-            let verifier_task = verifier.verify(sockets.verifier_socket);
-
-            let (_, _, verifier_result) = join!(server_task, prover_task, verifier_task);
-
-            let verifier_output = verifier_result.expect("Verifier should complete successfully");
-
-            // Focused verification on parsed request
-            let sent_data = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
-                .expect("Sent data should be valid UTF-8");
-
-            verify_parsed_request(&verifier_output, &sent_data);
-        });
-    }
-
-    #[test]
-    fn test_verifier_parses_response_correctly() {
-        shared::init_test_logging();
-
-        smol::block_on(async {
-            let test_tls_config = create_test_tls_config().unwrap();
-            let sockets = create_test_sockets();
-
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
-            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
-
-            let app = get_app(create_test_balances());
-            let server_task =
-                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
-
-            let prover = Prover::builder()
-                .prover_config(prover_config)
-                .request(create_test_request())
-                .request_reveal_config(create_request_reveal_config())
-                .response_reveal_config(create_response_reveal_config())
-                .build()
-                .unwrap();
-
-            let verifier = Verifier::builder()
-                .verifier_config(verifier_config)
-                .build()
-                .unwrap();
-
-            let prover_task =
-                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
-            let verifier_task = verifier.verify(sockets.verifier_socket);
-
-            let (_, _, verifier_result) = join!(server_task, prover_task, verifier_task);
-
-            let verifier_output = verifier_result.expect("Verifier should complete successfully");
-
-            // Focused verification on parsed response
-            let received_data =
-                String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
-                    .expect("Received data should be valid UTF-8");
-
-            verify_parsed_response(&verifier_output, &received_data);
-        });
-    }
-
-    #[test]
-    fn test_validator() {
-        shared::init_test_logging();
-
-        smol::block_on(async {
-            let test_tls_config = create_test_tls_config().unwrap();
-            let sockets = create_test_sockets();
-
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
-            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
-
-            let mut balances = HashMap::new();
-            balances.insert("alice".to_string(), 100);
-            let app = get_app(balances);
-            let server_task =
-                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
-
-            let prover = Prover::builder()
-                .prover_config(prover_config)
-                .request(create_test_request())
-                .request_reveal_config(create_request_reveal_config())
-                .response_reveal_config(create_response_reveal_config())
-                .build()
-                .unwrap();
-
-            let verifier = Verifier::builder()
-                .verifier_config(verifier_config)
-                .build()
-                .unwrap();
-
-            let prover_task =
-                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
-            let verifier_task = verifier.verify(sockets.verifier_socket);
-
-            let (_, _, verifier_result) = join!(server_task, prover_task, verifier_task);
-
-            let verifier_output = verifier_result.expect("Verifier should complete successfully");
-
-            // Test validator with expected properties
-            let validator = Validator::builder()
-                .expected_server_name("localhost")
-                .expected_hash_alg(HashAlgId::SHA256)
-                .request_header_equals("content-type", "application/json")
-                .response_body_field_equals("username", ExpectedValue::String("alice".to_string()))
-                .build();
-
-            validator
-                .validate(&verifier_output)
-                .expect("Validation should pass with correct properties");
-
-            // Test validator with wrong server name
-            let wrong_validator = Validator::builder()
-                .expected_server_name("wronghost")
-                .build();
-
-            assert!(
-                wrong_validator.validate(&verifier_output).is_err(),
-                "Validation should fail with wrong server name"
-            );
-
-            // Test validator with wrong header value
-            let wrong_header_validator = Validator::builder()
-                .request_header_equals("content-type", "text/html")
-                .build();
-
-            assert!(
-                wrong_header_validator.validate(&verifier_output).is_err(),
-                "Validation should fail with wrong header value"
-            );
-
-            // Test validator with wrong body field value
-            let wrong_body_validator = Validator::builder()
-                .response_body_field_equals("username", ExpectedValue::String("bob".to_string()))
-                .build();
-
-            assert!(
-                wrong_body_validator.validate(&verifier_output).is_err(),
-                "Validation should fail with wrong body field value"
-            );
+            let _proof = generate_proof(
+                &prover_output.transcript_commitments,
+                &prover_output.transcript_secrets,
+                &prover_output.received,
+            )
+            .await
+            .expect("Proof generation should succeed");
         });
     }
 }

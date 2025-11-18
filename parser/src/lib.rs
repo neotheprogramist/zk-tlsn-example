@@ -111,9 +111,11 @@ pub mod standard;
 // Re-export public API
 pub use error::ParserError;
 pub use ranged::{RangedText, RangedValue};
-pub use redacted::{RedactedRequestParser, RedactedResponseParser};
+pub use redacted::{
+    ParsedRedactedRequest, ParsedRedactedResponse, RedactedRequestParser, RedactedResponseParser,
+};
 pub use search::{BodySearchable, HeaderSearchable};
-pub use standard::{RequestParser, ResponseParser};
+pub use standard::{ParsedRequest, ParsedResponse, RequestParser, ResponseParser};
 
 #[cfg(test)]
 mod tests {

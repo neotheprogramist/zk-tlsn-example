@@ -7,4 +7,4 @@ mod tests;
 
 pub use request::RequestParser;
 pub use response::ResponseParser;
-pub use types::{Request, Response};
+pub use types::{Request, Request as ParsedRequest, Response, Response as ParsedResponse};
