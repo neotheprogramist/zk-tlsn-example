@@ -26,11 +26,7 @@ fn build_params() -> Result<CertificateParams, CertificateError> {
     params.distinguished_name = dn;
 
     params.subject_alt_names = vec![
-        SanType::DnsName(
-            "localhost"
-                .try_into()
-                .map_err(CertificateError::Generation)?,
-        ),
+        SanType::DnsName("localhost".try_into()?),
         SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
         SanType::IpAddress(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
     ];

@@ -172,20 +172,17 @@ fn create_proof(bytecode: &str, proof_input: &ProofInput) -> Result<(Vec<u8>, Ve
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
     tracing::debug!("Creating witness map from inputs");
-    let witness = from_vec_str_to_witness_map(input_refs)
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+    let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
 
     tracing::debug!("Setting up SRS from bytecode");
-    setup_srs_from_bytecode(bytecode, None, false)
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+    setup_srs_from_bytecode(bytecode, None, false).map_err(ZkTlsnError::NoirError)?;
 
     tracing::debug!("Generating verification key");
-    let vk = get_ultra_honk_verification_key(bytecode, false)
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+    let vk = get_ultra_honk_verification_key(bytecode, false).map_err(ZkTlsnError::NoirError)?;
 
     tracing::debug!("Proving with UltraHonk");
-    let proof = prove_ultra_honk(bytecode, witness, vk.clone(), false)
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+    let proof =
+        prove_ultra_honk(bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
 
     Ok((vk, proof))
 }

@@ -2,15 +2,12 @@ use noir::barretenberg::verify::{get_ultra_honk_verification_key, verify_ultra_h
 use tlsnotary::{Direction, PlaintextHash, TranscriptCommitment};
 
 use crate::{
+    Proof,
     error::{Result, ZkTlsnError},
     prover::load_circuit_bytecode,
-    Proof,
 };
 
-pub fn verify_proof(
-    transcript_commitments: &[TranscriptCommitment],
-    proof: &Proof,
-) -> Result<()> {
+pub fn verify_proof(transcript_commitments: &[TranscriptCommitment], proof: &Proof) -> Result<()> {
     let commitment = extract_received_commitment(transcript_commitments)?;
 
     verify_verification_key(&proof.verification_key)?;
@@ -35,8 +32,8 @@ fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<P
 
 fn verify_verification_key(provided_vk: &[u8]) -> Result<()> {
     let bytecode = load_circuit_bytecode()?;
-    let computed_vk = get_ultra_honk_verification_key(&bytecode, false)
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+    let computed_vk =
+        get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
 
     if computed_vk != provided_vk {
         return Err(ZkTlsnError::VerificationKeyMismatch);
@@ -67,7 +64,7 @@ fn extract_hash_from_proof(proof_bytes: &[u8]) -> Vec<u8> {
 
 fn verify_proof_validity(proof: &Proof) -> Result<()> {
     let is_valid = verify_ultra_honk(proof.proof.clone(), proof.verification_key.clone())
-        .map_err(|e| ZkTlsnError::ProofGenerationFailed(e.to_string()))?;
+        .map_err(ZkTlsnError::NoirError)?;
 
     if !is_valid {
         return Err(ZkTlsnError::InvalidProof);

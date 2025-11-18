@@ -20,10 +20,7 @@ pub enum ZkTlsnError {
     #[error("Circuit bytecode not found in program.json")]
     BytecodeNotFound,
 
-    #[error("Failed to generate ZK proof: {0}")]
-    ProofGenerationFailed(String),
-
-    #[error("Failed to parse JSON: {0}")]
+    #[error(transparent)]
     JsonParseError(#[from] serde_json::Error),
 
     #[error("Verification key mismatch")]
@@ -34,6 +31,9 @@ pub enum ZkTlsnError {
 
     #[error("Proof is invalid")]
     InvalidProof,
+
+    #[error("Noir error: {0}")]
+    NoirError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ZkTlsnError>;
