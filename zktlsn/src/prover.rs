@@ -38,7 +38,7 @@ impl Proof {
     }
 }
 
-pub async fn generate_proof(
+pub fn generate_proof(
     transcript_commitments: &[TranscriptCommitment],
     transcript_secrets: &[TranscriptSecret],
     received_data: &[u8],
@@ -150,7 +150,7 @@ fn generate_zk_proof(proof_input: &ProofInput) -> Result<Proof> {
     Ok(Proof::new(vk, proof))
 }
 
-fn load_circuit_bytecode() -> Result<String> {
+pub(crate) fn load_circuit_bytecode() -> Result<String> {
     const PROGRAM_JSON: &str = include_str!("../../target/circuit.json");
     let json: Value = serde_json::from_str(PROGRAM_JSON)?;
     json["bytecode"]

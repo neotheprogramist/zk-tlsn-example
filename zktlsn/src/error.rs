@@ -25,6 +25,15 @@ pub enum ZkTlsnError {
 
     #[error("Failed to parse JSON: {0}")]
     JsonParseError(#[from] serde_json::Error),
+
+    #[error("Verification key mismatch")]
+    VerificationKeyMismatch,
+
+    #[error("Committed hash does not match proof")]
+    CommittedHashMismatch,
+
+    #[error("Proof is invalid")]
+    InvalidProof,
 }
 
 pub type Result<T> = std::result::Result<T, ZkTlsnError>;

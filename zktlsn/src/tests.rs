@@ -254,7 +254,7 @@ mod tests {
     use tlsnotary::{Prover, Verifier};
 
     use super::*;
-    use crate::generate_proof;
+    use crate::{generate_proof, verify_proof};
 
     #[test]
     fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
@@ -317,13 +317,15 @@ mod tests {
             verify_parsed_request(&verifier_output, &sent_data);
             verify_parsed_response(&verifier_output, &received_data);
 
-            let _proof = generate_proof(
+            let proof = generate_proof(
                 &prover_output.transcript_commitments,
                 &prover_output.transcript_secrets,
                 &prover_output.received,
             )
-            .await
             .expect("Proof generation should succeed");
+
+            verify_proof(&verifier_output.transcript_commitments, &proof)
+                .expect("Proof verification should succeed");
         });
     }
 }
