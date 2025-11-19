@@ -1,175 +1,70 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
-use pest::{RuleType, iterators::Pair};
+use pest::{RuleType, iterators::Pairs};
 
 use crate::{
-    error::ParserError,
-    ranged::{RangedText, RangedValue},
+    error::Result,
+    traits::RangeExtractor,
+    traversal::{BodyConfig, BodyTraverser, HeaderConfig, HeaderTraverser, assert_rule},
+    types::{Body, Header},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CommonRuleType {
-    Object,
-    Array,
-    String,
-    Number,
-    Boolean,
-    Null,
-}
+pub trait HttpMessageBuilder: Sized {
+    type Rule: RuleType + PartialEq + Copy;
+    type Message;
 
-pub trait CommonRule: RuleType {
-    fn rule_type(&self) -> Result<CommonRuleType, ParserError>;
-}
+    fn header_config(&self) -> HeaderConfig<Self::Rule>;
+    fn body_config(&self) -> BodyConfig<Self::Rule>;
+    fn chunk_size_rule(&self) -> Self::Rule;
 
-pub struct CommonParser;
+    fn build_message(
+        &self,
+        first_line: (Range<usize>, Range<usize>, Range<usize>),
+        headers: HashMap<String, Vec<Header>>,
+        chunk_size: Range<usize>,
+        body: HashMap<String, Body>,
+    ) -> Self::Message;
 
-impl CommonParser {
-    pub fn parse_header<R: CommonRule>(pair: Pair<R>) -> Result<(String, RangedText), ParserError> {
-        let range = pair.as_span().start()..pair.as_span().end();
-        let mut inner = pair.into_inner();
+    fn parse_first_line(
+        &self,
+        pair: pest::iterators::Pair<'_, Self::Rule>,
+    ) -> Result<(Range<usize>, Range<usize>, Range<usize>)>;
 
-        let key = inner
-            .next()
-            .ok_or(ParserError::MissingField("header key"))?
-            .as_str()
-            .to_string();
-
-        let value = inner
-            .next()
-            .ok_or(ParserError::MissingField("header value"))?
-            .as_str()
-            .to_string();
-
-        Ok((key, RangedText { range, value }))
+    fn parse_headers(
+        &self,
+        headers_pair: pest::iterators::Pair<'_, Self::Rule>,
+    ) -> Result<HashMap<String, Vec<Header>>> {
+        HeaderTraverser::new(self.header_config(), headers_pair)?.traverse()
     }
 
-    pub fn parse_value<R: CommonRule>(pair: Pair<R>) -> Result<RangedValue, ParserError> {
-        let range = pair.as_span().start()..pair.as_span().end();
-
-        match pair.as_rule().rule_type()? {
-            CommonRuleType::Object => {
-                let mut map = HashMap::new();
-                for p in pair.into_inner() {
-                    let (key, value) = Self::parse_object_entry(p)?;
-                    map.insert(key, value);
-                }
-                Ok(RangedValue::Object { range, value: map })
-            }
-            CommonRuleType::Array => {
-                let mut values = Vec::new();
-                for p in pair.into_inner() {
-                    values.push(Self::parse_value(p)?);
-                }
-                Ok(RangedValue::Array {
-                    range,
-                    value: values,
-                })
-            }
-            CommonRuleType::String => Ok(RangedValue::String {
-                range,
-                value: pair
-                    .into_inner()
-                    .next()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default(),
-            }),
-            CommonRuleType::Number => Ok(RangedValue::Number {
-                range,
-                value: pair.as_str().parse()?,
-            }),
-            CommonRuleType::Boolean => Ok(RangedValue::Bool {
-                range,
-                value: pair.as_str().parse()?,
-            }),
-            CommonRuleType::Null => Ok(RangedValue::Null),
-        }
+    fn parse_body(
+        &self,
+        body_pair: pest::iterators::Pair<'_, Self::Rule>,
+    ) -> Result<HashMap<String, Body>> {
+        BodyTraverser::new(self.body_config(), body_pair)?.traverse()
     }
 
-    pub fn parse_pair<R: CommonRule>(pair: Pair<R>) -> Result<(String, RangedValue), ParserError> {
-        let pair_span = pair.as_span();
-        let mut inner = pair.into_inner();
-
-        let key_pair = inner.next().ok_or(ParserError::MissingField("pair key"))?;
-        let key = key_pair
-            .into_inner()
+    fn parse(&self, mut pairs: Pairs<'_, Self::Rule>) -> Result<Self::Message> {
+        let first_line_pair = pairs
             .next()
-            .map(|p| p.as_str().to_string())
-            .unwrap_or_default();
-
-        let value_pair = inner
+            .ok_or_else(|| crate::error::ParseError::MissingField("first line".to_string()))?;
+        let headers_pair = pairs
             .next()
-            .ok_or(ParserError::MissingField("pair value"))?;
-
-        let value = Self::parse_value_with_span(value_pair, pair_span)?;
-
-        Ok((key, value))
-    }
-
-    fn parse_value_with_span<R: CommonRule>(
-        pair: Pair<R>,
-        span: pest::Span,
-    ) -> Result<RangedValue, ParserError> {
-        let range = span.start()..span.end();
-
-        match pair.as_rule().rule_type()? {
-            CommonRuleType::Object => {
-                let mut map = HashMap::new();
-                for p in pair.into_inner() {
-                    let (key, value) = Self::parse_object_entry(p)?;
-                    map.insert(key, value);
-                }
-                Ok(RangedValue::Object { range, value: map })
-            }
-            CommonRuleType::Array => {
-                let mut values = Vec::new();
-                for p in pair.into_inner() {
-                    values.push(Self::parse_value(p)?);
-                }
-                Ok(RangedValue::Array {
-                    range,
-                    value: values,
-                })
-            }
-            CommonRuleType::String => Ok(RangedValue::String {
-                range,
-                value: pair
-                    .into_inner()
-                    .next()
-                    .map(|p| p.as_str().to_string())
-                    .unwrap_or_default(),
-            }),
-            CommonRuleType::Number => Ok(RangedValue::Number {
-                range,
-                value: pair.as_str().parse()?,
-            }),
-            CommonRuleType::Boolean => Ok(RangedValue::Bool {
-                range,
-                value: pair.as_str().parse()?,
-            }),
-            CommonRuleType::Null => Ok(RangedValue::Null),
-        }
-    }
-
-    fn parse_object_entry<R: CommonRule>(
-        pair: Pair<R>,
-    ) -> Result<(String, RangedValue), ParserError> {
-        let mut inner_rules = pair.into_inner();
-
-        let key = inner_rules
+            .ok_or_else(|| crate::error::ParseError::MissingField("headers section".to_string()))?;
+        let chunk_size_pair = pairs.next().ok_or_else(|| {
+            crate::error::ParseError::MissingField("chunk size or body".to_string())
+        })?;
+        let body_pair = pairs
             .next()
-            .ok_or(ParserError::MissingField("object entry key"))?
-            .into_inner()
-            .next()
-            .ok_or(ParserError::MissingField("inner object entry key"))?
-            .as_str()
-            .to_string();
+            .ok_or_else(|| crate::error::ParseError::MissingField("body".to_string()))?;
 
-        let value = Self::parse_value(
-            inner_rules
-                .next()
-                .ok_or(ParserError::MissingField("object entry value"))?,
-        )?;
+        assert_rule(&chunk_size_pair, self.chunk_size_rule(), "chunk_size")?;
 
-        Ok((key, value))
+        let first_line = self.parse_first_line(first_line_pair)?;
+        let headers = self.parse_headers(headers_pair)?;
+        let chunk_size = chunk_size_pair.extract_range();
+        let body = self.parse_body(body_pair)?;
+
+        Ok(self.build_message(first_line, headers, chunk_size, body))
     }
 }

@@ -1,10 +1,8 @@
 mod request;
 mod response;
-mod types;
+
+pub use request::Request;
+pub use response::Response;
 
 #[cfg(test)]
 mod tests;
-
-pub use request::RequestParser;
-pub use response::ResponseParser;
-pub use types::{Request, Request as ParsedRequest, Response, Response as ParsedResponse};

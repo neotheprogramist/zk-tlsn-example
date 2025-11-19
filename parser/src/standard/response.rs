@@ -1,77 +1,149 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range, str::FromStr};
 
-use pest::{Parser, iterators::Pairs};
+use pest::Parser;
 use pest_derive::Parser;
 
-use super::types::Response;
 use crate::{
-    common::{CommonParser, CommonRule, CommonRuleType},
-    error::ParserError,
-    ranged::RangedValue,
+    HttpMessage, HttpMessageBuilder,
+    error::{ParseError, Result},
+    traits::RangeExtractor,
+    traversal::{BodyConfig, HeaderConfig, assert_end_of_iterator, assert_rule},
+    types::{Body, Header},
 };
 
 #[derive(Parser)]
 #[grammar = "./standard/response.pest"]
 pub struct ResponseParser;
 
-impl ResponseParser {
-    pub fn parse_response(input: &str) -> Result<Response, ParserError> {
-        let pairs = Self::parse(Rule::response, input)
-            .map_err(|e| ParserError::ResponseParseFailed(Box::new(e)))?;
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub protocol_version: Range<usize>,
+    pub status_code: Range<usize>,
+    pub status: Range<usize>,
+    pub headers: HashMap<String, Vec<Header>>,
+    pub chunk_size: Range<usize>,
+    pub body: HashMap<String, Body>,
+}
 
-        Self::build_response(pairs)
+pub struct ResponseBuilder {
+    header_config: HeaderConfig<Rule>,
+    body_config: BodyConfig<Rule>,
+}
+
+impl ResponseBuilder {
+    pub fn new() -> Self {
+        Self {
+            header_config: HeaderConfig::new(
+                Rule::headers,
+                Rule::header,
+                Rule::header_name,
+                Rule::header_value,
+            ),
+            body_config: BodyConfig::new(Rule::object, Rule::pair, Rule::array),
+        }
     }
 
-    fn build_response(pairs: Pairs<Rule>) -> Result<Response, ParserError> {
-        let mut status_line = None;
-        let mut headers = HashMap::new();
-        let mut body = RangedValue::default();
+    pub fn parse(&self, input: &str) -> Result<Response> {
+        let pairs = ResponseParser::parse(Rule::response, input).map_err(|e| {
+            ParseError::InvalidSyntax(format!("Failed to parse HTTP response: {e}"))
+        })?;
 
-        for pair in pairs {
-            match pair.as_rule() {
-                Rule::status_line => {
-                    let span = pair.as_span();
-                    let range = span.start()..span.end();
-                    let value = span.as_str().trim_end().to_string();
-                    status_line = Some(crate::ranged::RangedText { range, value });
-                }
-                Rule::header => {
-                    let (key, value) = CommonParser::parse_header(pair)?;
-                    headers.insert(key, value);
-                }
-                Rule::chunked_body | Rule::content_length_body => {
-                    let body_pair = pair
-                        .into_inner()
-                        .find(|p| p.as_rule() == Rule::json)
-                        .ok_or(ParserError::MissingField("response body"))?;
-
-                    body = CommonParser::parse_value(
-                        body_pair
-                            .into_inner()
-                            .next()
-                            .ok_or(ParserError::MissingField("response body content"))?,
-                    )?;
-                }
-                _ => continue,
-            }
-        }
-
-        let status_line = status_line.ok_or(ParserError::MissingField("response status line"))?;
-
-        Ok(Response::new(status_line, headers, body))
+        HttpMessageBuilder::parse(self, pairs)
     }
 }
 
-impl CommonRule for Rule {
-    fn rule_type(&self) -> Result<CommonRuleType, ParserError> {
-        match self {
-            Rule::object => Ok(CommonRuleType::Object),
-            Rule::array => Ok(CommonRuleType::Array),
-            Rule::string => Ok(CommonRuleType::String),
-            Rule::number => Ok(CommonRuleType::Number),
-            Rule::boolean => Ok(CommonRuleType::Boolean),
-            Rule::null => Ok(CommonRuleType::Null),
-            _ => Err(ParserError::InvalidValue),
+impl HttpMessageBuilder for ResponseBuilder {
+    type Rule = Rule;
+    type Message = Response;
+
+    fn header_config(&self) -> HeaderConfig<Self::Rule> {
+        self.header_config
+    }
+
+    fn body_config(&self) -> BodyConfig<Self::Rule> {
+        self.body_config
+    }
+
+    fn chunk_size_rule(&self) -> Self::Rule {
+        Rule::chunk_size
+    }
+
+    fn build_message(
+        &self,
+        first_line: (Range<usize>, Range<usize>, Range<usize>),
+        headers: HashMap<String, Vec<Header>>,
+        chunk_size: Range<usize>,
+        body: HashMap<String, Body>,
+    ) -> Self::Message {
+        Response {
+            protocol_version: first_line.0,
+            status_code: first_line.1,
+            status: first_line.2,
+            headers,
+            chunk_size,
+            body,
         }
+    }
+
+    fn parse_first_line(
+        &self,
+        status_line: pest::iterators::Pair<'_, Self::Rule>,
+    ) -> Result<(Range<usize>, Range<usize>, Range<usize>)> {
+        assert_rule(&status_line, Rule::status_line, "status_line")?;
+
+        let mut inner = status_line.into_inner();
+        let protocol_version = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("protocol version".to_string()))?;
+        let status_code = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("status code".to_string()))?;
+        let status = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("status".to_string()))?;
+
+        assert_rule(
+            &protocol_version,
+            Rule::protocol_version,
+            "protocol_version",
+        )?;
+        assert_rule(&status_code, Rule::status_code, "status_code")?;
+        assert_rule(&status, Rule::status, "status")?;
+
+        assert_end_of_iterator(&mut inner, "status_line")?;
+
+        Ok((
+            protocol_version.extract_range(),
+            status_code.extract_range(),
+            status.extract_range(),
+        ))
+    }
+}
+
+impl Default for ResponseBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FromStr for Response {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        ResponseBuilder::new().parse(s)
+    }
+}
+
+impl HttpMessage for Response {
+    fn headers(&self) -> &HashMap<String, Vec<Header>> {
+        &self.headers
+    }
+
+    fn chunk_size(&self) -> &Range<usize> {
+        &self.chunk_size
+    }
+
+    fn body(&self) -> &HashMap<String, Body> {
+        &self.body
     }
 }

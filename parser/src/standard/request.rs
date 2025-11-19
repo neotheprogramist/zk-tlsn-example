@@ -1,80 +1,148 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range, str::FromStr};
 
-use pest::{Parser, iterators::Pairs};
+use pest::Parser;
 use pest_derive::Parser;
 
-use super::types::Request;
 use crate::{
-    common::{CommonParser, CommonRule, CommonRuleType},
-    error::ParserError,
-    ranged::RangedText,
+    HttpMessage, HttpMessageBuilder,
+    error::{ParseError, Result},
+    traits::RangeExtractor,
+    traversal::{BodyConfig, HeaderConfig, assert_end_of_iterator, assert_rule},
+    types::{Body, Header},
 };
 
 #[derive(Parser)]
 #[grammar = "./standard/request.pest"]
 pub struct RequestParser;
 
-impl RequestParser {
-    pub fn parse_request(input: &str) -> Result<Request, ParserError> {
-        let pairs = Self::parse(Rule::request, input)
-            .map_err(|e| ParserError::RequestParseFailed(Box::new(e)))?;
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: Range<usize>,
+    pub url: Range<usize>,
+    pub protocol_version: Range<usize>,
+    pub headers: HashMap<String, Vec<Header>>,
+    pub chunk_size: Range<usize>,
+    pub body: HashMap<String, Body>,
+}
 
-        Self::build_request(pairs)
+pub struct RequestBuilder {
+    header_config: HeaderConfig<Rule>,
+    body_config: BodyConfig<Rule>,
+}
+
+impl RequestBuilder {
+    pub fn new() -> Self {
+        Self {
+            header_config: HeaderConfig::new(
+                Rule::headers,
+                Rule::header,
+                Rule::header_name,
+                Rule::header_value,
+            ),
+            body_config: BodyConfig::new(Rule::object, Rule::pair, Rule::array),
+        }
     }
 
-    fn build_request(pairs: Pairs<Rule>) -> Result<Request, ParserError> {
-        let mut request_line = None;
-        let mut headers = HashMap::new();
-        let mut body = None;
+    pub fn parse(&self, input: &str) -> Result<Request> {
+        let pairs = RequestParser::parse(Rule::request, input)
+            .map_err(|e| ParseError::InvalidSyntax(format!("Failed to parse HTTP request: {e}")))?;
 
-        for pair in pairs {
-            match pair.as_rule() {
-                Rule::request_line => {
-                    let range = pair.as_span().start()..pair.as_span().end();
-                    request_line = Some(RangedText {
-                        range,
-                        value: pair.as_str().to_string(),
-                    });
-                }
-                Rule::header => {
-                    let (key, value) = CommonParser::parse_header(pair)?;
-                    headers.insert(key, value);
-                }
-                Rule::body => {
-                    let json_pair = pair
-                        .into_inner()
-                        .find(|p| p.as_rule() == Rule::json)
-                        .ok_or(ParserError::MissingField("request body"))?;
+        HttpMessageBuilder::parse(self, pairs)
+    }
+}
 
-                    body = Some(CommonParser::parse_value(
-                        json_pair
-                            .into_inner()
-                            .next()
-                            .ok_or(ParserError::MissingField("request body content"))?,
-                    )?);
-                }
-                _ => continue,
-            }
-        }
+impl HttpMessageBuilder for RequestBuilder {
+    type Rule = Rule;
+    type Message = Request;
 
-        Ok(Request::new(
-            request_line.ok_or(ParserError::MissingField("request line"))?,
+    fn header_config(&self) -> HeaderConfig<Self::Rule> {
+        self.header_config
+    }
+
+    fn body_config(&self) -> BodyConfig<Self::Rule> {
+        self.body_config
+    }
+
+    fn chunk_size_rule(&self) -> Self::Rule {
+        Rule::chunk_size
+    }
+
+    fn build_message(
+        &self,
+        first_line: (Range<usize>, Range<usize>, Range<usize>),
+        headers: HashMap<String, Vec<Header>>,
+        chunk_size: Range<usize>,
+        body: HashMap<String, Body>,
+    ) -> Self::Message {
+        Request {
+            method: first_line.0,
+            url: first_line.1,
+            protocol_version: first_line.2,
             headers,
+            chunk_size,
             body,
+        }
+    }
+
+    fn parse_first_line(
+        &self,
+        request_line: pest::iterators::Pair<'_, Self::Rule>,
+    ) -> Result<(Range<usize>, Range<usize>, Range<usize>)> {
+        assert_rule(&request_line, Rule::request_line, "request_line")?;
+
+        let mut inner = request_line.into_inner();
+        let method = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("method".to_string()))?;
+        let url = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("url".to_string()))?;
+        let protocol_version = inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField("protocol version".to_string()))?;
+
+        assert_rule(&method, Rule::method, "method")?;
+        assert_rule(&url, Rule::url, "url")?;
+        assert_rule(
+            &protocol_version,
+            Rule::protocol_version,
+            "protocol_version",
+        )?;
+
+        assert_end_of_iterator(&mut inner, "request_line")?;
+
+        Ok((
+            method.extract_range(),
+            url.extract_range(),
+            protocol_version.extract_range(),
         ))
     }
 }
 
-impl CommonRule for Rule {
-    fn rule_type(&self) -> Result<CommonRuleType, ParserError> {
-        match self {
-            Rule::object => Ok(CommonRuleType::Object),
-            Rule::array => Ok(CommonRuleType::Array),
-            Rule::string => Ok(CommonRuleType::String),
-            Rule::number => Ok(CommonRuleType::Number),
-            Rule::boolean => Ok(CommonRuleType::Boolean),
-            Rule::null => Ok(CommonRuleType::Null),
-            _ => Err(ParserError::InvalidValue),
-        }
+impl Default for RequestBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FromStr for Request {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        RequestBuilder::new().parse(s)
+    }
+}
+
+impl HttpMessage for Request {
+    fn headers(&self) -> &HashMap<String, Vec<Header>> {
+        &self.headers
+    }
+
+    fn chunk_size(&self) -> &Range<usize> {
+        &self.chunk_size
+    }
+
+    fn body(&self) -> &HashMap<String, Body> {
+        &self.body
     }
 }

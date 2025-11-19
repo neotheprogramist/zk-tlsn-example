@@ -1,34 +1,15 @@
 use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum ParserError {
-    #[error("Failed to parse HTTP request")]
-    RequestParseFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+#[derive(Debug, Clone, Error)]
+pub enum ParseError {
+    #[error("Invalid syntax: {0}")]
+    InvalidSyntax(String),
 
-    #[error("Failed to parse HTTP response")]
-    ResponseParseFailed(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("Unexpected rule: {0}")]
+    UnexpectedRule(String),
 
-    #[error("Missing required field: {0}")]
-    MissingField(&'static str),
-
-    #[error("Invalid header format")]
-    InvalidHeader,
-
-    #[error("Invalid value format")]
-    InvalidValue,
-
-    #[error("Header not found: {0}")]
-    HeaderNotFound(String),
-
-    #[error("Keypath not found: {0}")]
-    KeypathNotFound(String),
-
-    #[error(transparent)]
-    ParseInt(#[from] std::num::ParseIntError),
-
-    #[error(transparent)]
-    ParseBool(#[from] std::str::ParseBoolError),
-
-    #[error(transparent)]
-    ParseFloat(#[from] std::num::ParseFloatError),
+    #[error("Missing field: {0}")]
+    MissingField(String),
 }
+
+pub type Result<T> = std::result::Result<T, ParseError>;

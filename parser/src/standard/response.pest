@@ -1,44 +1,49 @@
+WHITESPACE = _{ " " | "\t" | "\r" | NEWLINE }
+
 response = _{
-    SOI ~ status_line ~ headers ~ NEWLINE* ~ (chunked_body | content_length_body) ~ NEWLINE* ~ EOI
+    SOI ~ status_line ~ headers ~ body ~ EOI
 }
 
-status_line = { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ " " ~ ASCII_DIGIT+ ~ " " ~ (!NEWLINE ~ ANY)+ ~ NEWLINE }
+protocol_version =  { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+status_code      =  { ASCII_DIGIT{3} }
+status           =  { ASCII_ALPHA_UPPER+ }
+status_line      = ${ protocol_version ~ " " ~ status_code ~ " " ~ status }
 
-headers      = _{ header* }
-header       =  { header_name ~ ": " ~ header_value ~ NEWLINE }
+headers      =  { header* }
+header       = ${ header_name ~ ": " ~ header_value ~ NEWLINE }
 header_name  =  { (ASCII_ALPHANUMERIC | "-")+ }
 header_value =  { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" | "\"" | "." | "=" | "+" | "*" | "_" | "{" | "}")+ }
 
-// Chunked transfer encoding: hex_size \n body \n 0 \n
-chunked_body = {
-    ASCII_HEX_DIGIT+ ~ NEWLINE* ~ json ~ NEWLINE* ~ ASCII_HEX_DIGIT+ ~ NEWLINE*
-}
+body = _{ chunked_body | content_length_body }
+
+// Chunked transfer encoding: hex_size \r\n body \r\n 0 \n
+chunk_size   =  { ASCII_HEX_DIGIT+ }
+chunked_body = _{ chunk_size ~ json ~ "0" }
 
 // Content-length encoding: just the body directly
-content_length_body = { json }
+content_length_body = _{ json }
 
-ws = _{ " " | "\t" }
+json = _{ object | array }
 
-object  =  {
-    "{" ~ ws* ~ "}"
-  | "{" ~ ws* ~ pair ~ (ws* ~ "," ~ ws* ~ pair)* ~ ws* ~ "}"
+pair   = { quoted_key ~ ":" ~ value }
+object = {
+    "{" ~ "}"
+  | "{" ~ pair ~ ("," ~ pair)* ~ "}"
 }
-pair    =  { string ~ ws* ~ ":" ~ ws* ~ value }
-array   =  {
-    "[" ~ ws* ~ "]"
-  | "[" ~ ws* ~ value ~ (ws* ~ "," ~ ws* ~ value)* ~ ws* ~ "]"
+array  = {
+    "[" ~ "]"
+  | "[" ~ value ~ ("," ~ value)* ~ "]"
 }
-value   = _{ object | array | string | number | boolean | null }
-boolean =  { "true" | "false" }
-null    =  { "null" }
-string  = ${ "\"" ~ inner ~ "\"" }
-inner   = @{ char* }
-char    =  {
-    !("\"" | "\\") ~ ANY
-  | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
-  | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
-}
-number  = @{
+
+quoted_key = _{ "\"" ~ key ~ "\"" }
+key        =  { ASCII_ALPHANUMERIC+ }
+value      = _{ object | array | quoted_string | number | boolean | null }
+boolean    =  { "true" | "false" }
+null       =  { "null" }
+
+quoted_string = _{ "\"" ~ string ~ "\"" }
+string        =  { (ASCII_ALPHANUMERIC | "@" | "." | "-" | "_" | " " | ":" | "/" | "," | ";" | "=" | "+" | "*" | "%" | "~" | "!" | "#" | "$" | "&" | "'" | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" | "?" | "|" | "\\" | "^" | "`")* }
+
+number = @{
     "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
 }
-json    =  { object | array }
