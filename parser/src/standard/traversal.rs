@@ -6,6 +6,7 @@ use pest::{
 };
 
 use crate::{
+    common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     path::{PathSegment, PathStack},
     traits::RangeExtractor,
@@ -46,33 +47,6 @@ impl<R: Copy> BodyConfig<R> {
             array,
         }
     }
-}
-
-pub fn assert_rule<R: RuleType + PartialEq>(
-    pair: &Pair<'_, R>,
-    expected: R,
-    field: &str,
-) -> Result<()> {
-    if pair.as_rule() != expected {
-        return Err(ParseError::UnexpectedRule(format!(
-            "Expected {}, got {:?}",
-            field,
-            pair.as_rule()
-        )));
-    }
-    Ok(())
-}
-
-pub fn assert_end_of_iterator<'a, R: RuleType>(
-    iter: &mut impl Iterator<Item = Pair<'a, R>>,
-    context: &str,
-) -> Result<()> {
-    if iter.next().is_some() {
-        return Err(ParseError::UnexpectedRule(format!(
-            "Expected end of iterator in {context}, but found additional elements"
-        )));
-    }
-    Ok(())
 }
 
 pub struct HeaderTraverser<'a, R> {
@@ -139,9 +113,10 @@ pub struct BodyTraverser<'a, R> {
 impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
     pub fn new(config: BodyConfig<R>, body_pair: Pair<'a, R>) -> Result<Self> {
         let rule = body_pair.as_rule();
+
         if rule != config.object && rule != config.array {
             return Err(ParseError::UnexpectedRule(format!(
-                "Expected object or array, got {rule:?}"
+                "Standard parser expects object or array at root, got {rule:?}"
             )));
         }
 

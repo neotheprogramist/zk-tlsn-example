@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Parser)]
-#[grammar = "./standard/request.pest"]
+#[grammar = "./redacted/request.pest"]
 pub struct RequestParser;
 
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ impl RequestBuilder {
                 Rule::header_name,
                 Rule::header_value,
             ),
-            body_config: BodyConfig::new(Rule::object, Rule::pair, Rule::array),
+            body_config: BodyConfig::new(Rule::pair),
         }
     }
 
@@ -107,6 +107,7 @@ impl HttpMessageBuilder for RequestBuilder {
         ))
     }
 
+    // Override parse to handle redacted structure where pairs come directly after chunk_size
     fn parse(&self, mut pairs: pest::iterators::Pairs<'_, Self::Rule>) -> Result<Self::Message> {
         use super::traversal::{BodyTraverser, HeaderTraverser};
 
@@ -119,16 +120,15 @@ impl HttpMessageBuilder for RequestBuilder {
         let chunk_size_pair = pairs
             .next()
             .ok_or_else(|| ParseError::MissingField("chunk size".to_string()))?;
-        let body_pair = pairs
-            .next()
-            .ok_or_else(|| ParseError::MissingField("body".to_string()))?;
 
         assert_rule(&chunk_size_pair, Rule::chunk_size, "chunk_size")?;
 
         let first_line = self.parse_first_line(first_line_pair)?;
         let headers = HeaderTraverser::new(self.header_config, headers_pair)?.traverse()?;
         let chunk_size = chunk_size_pair.extract_range();
-        let body = BodyTraverser::new(self.body_config, body_pair)?.traverse()?;
+
+        let body_traverser = BodyTraverser::new(self.body_config);
+        let body = body_traverser.traverse(pairs)?;
 
         Ok(self.build_message(first_line, headers, chunk_size, body))
     }

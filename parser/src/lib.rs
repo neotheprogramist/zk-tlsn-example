@@ -17,24 +17,24 @@
 
 mod common;
 mod error;
-mod message;
 mod path;
 mod traits;
-mod traversal;
 mod types;
 
+pub mod redacted;
 pub mod standard;
 
-pub use common::HttpMessageBuilder;
+pub use common::{HttpMessageBuilder, assert_end_of_iterator, assert_rule};
 pub use error::{ParseError, Result};
-pub use message::HttpMessage;
-pub use standard::{Request, Response};
 pub use types::{Body, Header};
+
+#[cfg(test)]
+mod tests;
 
 pub mod prelude {
     pub use crate::{
-        HttpMessage, Request, Response,
         error::{ParseError, Result},
+        redacted, standard,
         types::{Body, Header},
     };
 }

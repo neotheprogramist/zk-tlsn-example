@@ -1,0 +1,47 @@
+WHITESPACE = _{ " " | "\t" | "\r" | NEWLINE | "\0" }
+
+response = _{
+    SOI ~ status_line ~ headers ~ body ~ EOI
+}
+
+protocol_version =  { "HTTP/" ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+status_code      =  { ASCII_DIGIT{3} }
+status           =  { ASCII_ALPHA_UPPER+ }
+status_line      = ${ protocol_version ~ " " ~ status_code ~ " " ~ status }
+
+headers      =  { header* }
+header       = ${ header_name ~ ": " ~ header_value ~ NEWLINE }
+header_name  =  { (ASCII_ALPHANUMERIC | "-")+ }
+header_value =  { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" | "\"" | "." | "=" | "+" | "*" | "_" | "{" | "}")+ }
+
+body = _{ chunked_body | content_length_body }
+
+// Chunked transfer encoding: hex_size \r\n body \r\n 0 \n
+chunk_size   =  { ASCII_HEX_DIGIT+ }
+chunked_body = _{ chunk_size ~ pair* ~ "0" }
+
+// Content-length encoding: just the body directly
+content_length_body = _{ pair* }
+
+pair   = { quoted_key ~ ":" ~ value }
+object = {
+    "{" ~ "}"
+  | "{" ~ pair ~ ("," ~ pair)* ~ "}"
+}
+array  = {
+    "[" ~ "]"
+  | "[" ~ value ~ ("," ~ value)* ~ "]"
+}
+
+quoted_key = _{ "\"" ~ key ~ "\"" }
+key        =  { ASCII_ALPHANUMERIC+ }
+value      = _{ object | array | quoted_string | number | boolean | null }
+boolean    =  { "true" | "false" }
+null       =  { "null" }
+
+quoted_string = _{ "\"" ~ string ~ "\"" }
+string        =  { (ASCII_ALPHANUMERIC | "@" | "." | "-" | "_" | " " | ":" | "/" | "," | ";" | "=" | "+" | "*" | "%" | "~" | "!" | "#" | "$" | "&" | "'" | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" | "?" | "|" | "\\" | "^" | "`")* }
+
+number = @{
+    "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}

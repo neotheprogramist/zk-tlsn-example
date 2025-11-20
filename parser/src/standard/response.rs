@@ -3,11 +3,12 @@ use std::{collections::HashMap, ops::Range, str::FromStr};
 use pest::Parser;
 use pest_derive::Parser;
 
+use super::traversal::{BodyConfig, HeaderConfig};
 use crate::{
-    HttpMessage, HttpMessageBuilder,
+    HttpMessageBuilder,
+    common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     traits::RangeExtractor,
-    traversal::{BodyConfig, HeaderConfig, assert_end_of_iterator, assert_rule},
     types::{Body, Header},
 };
 
@@ -55,18 +56,6 @@ impl ResponseBuilder {
 impl HttpMessageBuilder for ResponseBuilder {
     type Rule = Rule;
     type Message = Response;
-
-    fn header_config(&self) -> HeaderConfig<Self::Rule> {
-        self.header_config
-    }
-
-    fn body_config(&self) -> BodyConfig<Self::Rule> {
-        self.body_config
-    }
-
-    fn chunk_size_rule(&self) -> Self::Rule {
-        Rule::chunk_size
-    }
 
     fn build_message(
         &self,
@@ -118,6 +107,32 @@ impl HttpMessageBuilder for ResponseBuilder {
             status.extract_range(),
         ))
     }
+
+    fn parse(&self, mut pairs: pest::iterators::Pairs<'_, Self::Rule>) -> Result<Self::Message> {
+        use super::traversal::{BodyTraverser, HeaderTraverser};
+
+        let first_line_pair = pairs
+            .next()
+            .ok_or_else(|| ParseError::MissingField("first line".to_string()))?;
+        let headers_pair = pairs
+            .next()
+            .ok_or_else(|| ParseError::MissingField("headers section".to_string()))?;
+        let chunk_size_pair = pairs
+            .next()
+            .ok_or_else(|| ParseError::MissingField("chunk size".to_string()))?;
+        let body_pair = pairs
+            .next()
+            .ok_or_else(|| ParseError::MissingField("body".to_string()))?;
+
+        assert_rule(&chunk_size_pair, Rule::chunk_size, "chunk_size")?;
+
+        let first_line = self.parse_first_line(first_line_pair)?;
+        let headers = HeaderTraverser::new(self.header_config, headers_pair)?.traverse()?;
+        let chunk_size = chunk_size_pair.extract_range();
+        let body = BodyTraverser::new(self.body_config, body_pair)?.traverse()?;
+
+        Ok(self.build_message(first_line, headers, chunk_size, body))
+    }
 }
 
 impl Default for ResponseBuilder {
@@ -131,19 +146,5 @@ impl FromStr for Response {
 
     fn from_str(s: &str) -> Result<Self> {
         ResponseBuilder::new().parse(s)
-    }
-}
-
-impl HttpMessage for Response {
-    fn headers(&self) -> &HashMap<String, Vec<Header>> {
-        &self.headers
-    }
-
-    fn chunk_size(&self) -> &Range<usize> {
-        &self.chunk_size
-    }
-
-    fn body(&self) -> &HashMap<String, Body> {
-        &self.body
     }
 }
