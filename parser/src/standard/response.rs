@@ -8,7 +8,7 @@ use crate::{
     HttpMessageBuilder,
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
-    traits::RangeExtractor,
+    traits::{RangeExtractor, Traverser},
     types::{Body, Header},
 };
 

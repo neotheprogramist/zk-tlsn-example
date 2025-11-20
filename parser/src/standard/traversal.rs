@@ -9,7 +9,7 @@ use crate::{
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     path::{PathSegment, PathStack},
-    traits::RangeExtractor,
+    traits::{RangeExtractor, Traverser},
     types::{Body, Header},
 };
 
@@ -65,22 +65,6 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
         })
     }
 
-    pub fn traverse(mut self) -> Result<HashMap<String, Vec<Header>>> {
-        for pair in self.pairs.by_ref() {
-            assert_rule(&pair, self.config.header, "header")?;
-
-            let name_pair =
-                pair.clone().into_inner().next().ok_or_else(|| {
-                    ParseError::MissingField("header name in traverse".to_string())
-                })?;
-            let name = name_pair.as_str().to_lowercase();
-            let header = Self::parse_header_inner(pair, &self.config)?;
-            self.headers.entry(name).or_default().push(header);
-        }
-
-        Ok(self.headers)
-    }
-
     fn parse_header_inner(pair: Pair<'_, R>, config: &HeaderConfig<R>) -> Result<Header> {
         let mut inner = pair.into_inner();
 
@@ -100,6 +84,26 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
             name: name_pair.extract_range(),
             value: value_pair.extract_range(),
         })
+    }
+}
+
+impl<'a, R: RuleType + PartialEq + Copy> Traverser for HeaderTraverser<'a, R> {
+    type Output = Vec<Header>;
+
+    fn traverse(mut self) -> Result<HashMap<String, Self::Output>> {
+        for pair in self.pairs.by_ref() {
+            assert_rule(&pair, self.config.header, "header")?;
+
+            let name_pair =
+                pair.clone().into_inner().next().ok_or_else(|| {
+                    ParseError::MissingField("header name in traverse".to_string())
+                })?;
+            let name = name_pair.as_str().to_lowercase();
+            let header = Self::parse_header_inner(pair, &self.config)?;
+            self.headers.entry(name).or_default().push(header);
+        }
+
+        Ok(self.headers)
     }
 }
 
@@ -129,11 +133,6 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
             body,
             pathstack: PathStack::default(),
         })
-    }
-
-    pub fn traverse(mut self) -> Result<HashMap<String, Body>> {
-        self.traverse_value(self.root.clone())?;
-        Ok(self.body)
     }
 
     fn traverse_value(&mut self, value: Pair<'_, R>) -> Result<()> {
@@ -195,5 +194,14 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
         }
 
         Ok(())
+    }
+}
+
+impl<'a, R: RuleType + PartialEq + Copy> Traverser for BodyTraverser<'a, R> {
+    type Output = Body;
+
+    fn traverse(mut self) -> Result<HashMap<String, Self::Output>> {
+        self.traverse_value(self.root.clone())?;
+        Ok(self.body)
     }
 }
