@@ -44,7 +44,6 @@ pub trait HttpMessageBuilder: Sized {
         &self,
         first_line: (Range<usize>, Range<usize>, Range<usize>),
         headers: HashMap<String, Vec<Self::Header>>,
-        chunk_size: Range<usize>,
         body: HashMap<String, Self::Body>,
     ) -> Self::Message;
 

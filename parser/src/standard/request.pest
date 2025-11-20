@@ -1,7 +1,7 @@
 WHITESPACE = _{ " " | "\t" | "\r" | NEWLINE }
 
 request = _{
-    SOI ~ request_line ~ headers ~ body ~ EOI
+    SOI ~ request_line ~ headers ~ body? ~ EOI
 }
 
 method           =  { "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS" }
@@ -17,7 +17,7 @@ header_value =  { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" 
 body = _{ chunked_body | content_length_body }
 
 // Chunked transfer encoding: hex_size \r\n body \r\n 0 \n
-chunk_size   =  { ASCII_HEX_DIGIT+ }
+chunk_size   = _{ ASCII_HEX_DIGIT+ }
 chunked_body = _{ chunk_size ~ json ~ "0" }
 
 // Content-length encoding: just the body directly

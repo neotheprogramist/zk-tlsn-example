@@ -24,7 +24,6 @@ pub struct Response {
     pub status_code: Range<usize>,
     pub status: Range<usize>,
     pub headers: HashMap<String, Vec<Header>>,
-    pub chunk_size: Range<usize>,
     pub body: HashMap<String, Body>,
 }
 
@@ -55,10 +54,6 @@ impl HttpMessage for Response {
 
     fn body(&self) -> &HashMap<String, Self::Body> {
         &self.body
-    }
-
-    fn chunk_size(&self) -> &Range<usize> {
-        &self.chunk_size
     }
 }
 
@@ -100,7 +95,6 @@ impl HttpMessageBuilder for ResponseBuilder {
         &self,
         first_line: (Range<usize>, Range<usize>, Range<usize>),
         headers: HashMap<String, Vec<Header>>,
-        chunk_size: Range<usize>,
         body: HashMap<String, Body>,
     ) -> Self::Message {
         Response {
@@ -108,7 +102,6 @@ impl HttpMessageBuilder for ResponseBuilder {
             status_code: first_line.1,
             status: first_line.2,
             headers,
-            chunk_size,
             body,
         }
     }
@@ -156,21 +149,17 @@ impl HttpMessageBuilder for ResponseBuilder {
         let headers_pair = pairs
             .next()
             .ok_or_else(|| ParseError::MissingField("headers section".to_string()))?;
-        let chunk_size_pair = pairs
-            .next()
-            .ok_or_else(|| ParseError::MissingField("chunk size".to_string()))?;
-        let body_pair = pairs
-            .next()
-            .ok_or_else(|| ParseError::MissingField("body".to_string()))?;
-
-        assert_rule(&chunk_size_pair, Rule::chunk_size, "chunk_size")?;
 
         let first_line = self.parse_first_line(first_line_pair)?;
         let headers = HeaderTraverser::new(self.header_config, headers_pair)?.traverse()?;
-        let chunk_size = chunk_size_pair.extract_range();
-        let body = BodyTraverser::new(self.body_config, body_pair)?.traverse()?;
 
-        Ok(self.build_message(first_line, headers, chunk_size, body))
+        let body = if let Some(body_pair) = pairs.next() {
+            BodyTraverser::new(self.body_config, body_pair)?.traverse()?
+        } else {
+            HashMap::new()
+        };
+
+        Ok(self.build_message(first_line, headers, body))
     }
 }
 

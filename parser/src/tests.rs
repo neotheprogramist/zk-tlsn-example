@@ -2,7 +2,7 @@ use std::{ops::Range, str::FromStr};
 
 use crate::{
     redacted, standard,
-    traits::{HttpBody, HttpHeader, HttpMessage},
+    traits::{HttpBody, HttpHeader},
 };
 
 fn redact_string(input: &str, keep_ranges: &[Range<usize>]) -> String {
@@ -77,8 +77,6 @@ User-Agent: TestClient/1.0
     let user_agent_header = &user_agent_headers[0];
     assert_eq!(&input[user_agent_header.name.clone()], "User-Agent");
     assert_eq!(&input[user_agent_header.value.clone()], "TestClient/1.0");
-
-    assert_eq!(&input[request.chunk_size.clone()], "3e");
 
     let root_body = request.body.get("").expect("Root body should exist");
     match root_body {
@@ -197,8 +195,6 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         "Mon, 01 Jan 2024 00:00:00 GMT"
     );
 
-    assert_eq!(&input[response.chunk_size.clone()], "3e");
-
     let root_body = response.body.get("").expect("Root body should exist");
     match root_body {
         standard::Body::Value(range) => {
@@ -313,8 +309,6 @@ User-Agent: TestClient/1.0
         standard_request.method_with_space(),
         standard_request.url_with_space(),
         standard_request.protocol_version_with_newline(),
-        standard_request.chunk_size_with_newline(),
-        input.len() - 2..input.len(),
     ];
 
     let host_header = &standard_request.headers.get("host").unwrap()[0];
@@ -374,8 +368,6 @@ User-Agent: TestClient/1.0
         user_agent_header.value.is_none(),
         "User-Agent header value should be None"
     );
-
-    assert_eq!(&redacted_input[redacted_request.chunk_size.clone()], "3e");
 
     let name_field = redacted_request
         .body
@@ -440,8 +432,6 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         standard_response.protocol_version_with_space(),
         standard_response.status_code_with_space(),
         standard_response.status_with_newline(),
-        standard_response.chunk_size_with_newline(),
-        input.len() - 2..input.len(),
     ];
 
     let server_header = &standard_response.headers.get("server").unwrap()[0];
@@ -504,8 +494,6 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         content_type_header.value.is_none(),
         "Content-Type header value should be None"
     );
-
-    assert_eq!(&redacted_input[redacted_response.chunk_size.clone()], "3e");
 
     let status_field = redacted_response
         .body
