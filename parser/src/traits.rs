@@ -34,7 +34,7 @@ pub trait HttpHeader {
 
 /// Trait for HTTP body operations
 pub trait HttpBody {
-    /// Returns the key with surrounding quotes and colon for KeyValue variants
+    /// Returns the key with surrounding quotes and colon for `KeyValue` variants
     fn key_with_quotes_and_colon(&self) -> Option<Range<usize>>;
 
     /// Returns the full range of a key-value pair or value

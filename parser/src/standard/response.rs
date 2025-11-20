@@ -29,14 +29,17 @@ pub struct Response {
 }
 
 impl Response {
+    #[must_use]
     pub fn protocol_version_with_space(&self) -> Range<usize> {
         self.protocol_version.start..self.protocol_version.end + 1
     }
 
+    #[must_use]
     pub fn status_code_with_space(&self) -> Range<usize> {
         self.status_code.start..self.status_code.end + 1
     }
 
+    #[must_use]
     pub fn status_with_newline(&self) -> Range<usize> {
         self.status.start..self.status.end + 1
     }
@@ -65,6 +68,7 @@ pub struct ResponseBuilder {
 }
 
 impl ResponseBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             header_config: HeaderConfig::new(

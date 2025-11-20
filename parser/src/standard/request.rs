@@ -29,14 +29,17 @@ pub struct Request {
 }
 
 impl Request {
+    #[must_use]
     pub fn method_with_space(&self) -> Range<usize> {
         self.method.start..self.method.end + 1
     }
 
+    #[must_use]
     pub fn url_with_space(&self) -> Range<usize> {
         self.url.start..self.url.end + 1
     }
 
+    #[must_use]
     pub fn protocol_version_with_newline(&self) -> Range<usize> {
         self.protocol_version.start..self.protocol_version.end + 1
     }
@@ -65,6 +68,7 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             header_config: HeaderConfig::new(

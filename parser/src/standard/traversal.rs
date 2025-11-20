@@ -87,7 +87,7 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
     }
 }
 
-impl<'a, R: RuleType + PartialEq + Copy> Traverser for HeaderTraverser<'a, R> {
+impl<R: RuleType + PartialEq + Copy> Traverser for HeaderTraverser<'_, R> {
     type Output = Vec<Header>;
 
     fn traverse(mut self) -> Result<HashMap<String, Self::Output>> {
@@ -197,7 +197,7 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
     }
 }
 
-impl<'a, R: RuleType + PartialEq + Copy> Traverser for BodyTraverser<'a, R> {
+impl<R: RuleType + PartialEq + Copy> Traverser for BodyTraverser<'_, R> {
     type Output = Body;
 
     fn traverse(mut self) -> Result<HashMap<String, Self::Output>> {

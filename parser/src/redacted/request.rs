@@ -51,6 +51,7 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             header_config: HeaderConfig::new(

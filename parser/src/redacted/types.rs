@@ -9,6 +9,7 @@ pub struct Header {
 }
 
 impl Header {
+    #[must_use]
     pub fn value_with_newline(&self) -> Option<Range<usize>> {
         self.value.as_ref().map(|v| v.start..v.end + 1)
     }
@@ -41,6 +42,7 @@ pub enum Body {
 }
 
 impl Body {
+    #[must_use]
     pub fn value_with_quotes(&self) -> Option<Range<usize>> {
         match self {
             Body::KeyValue { value, .. } => value.as_ref().map(|v| v.start - 1..v.end + 1),

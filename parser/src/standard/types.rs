@@ -9,6 +9,7 @@ pub struct Header {
 }
 
 impl Header {
+    #[must_use]
     pub fn value_with_newline(&self) -> Range<usize> {
         self.value.start..self.value.end + 1
     }
@@ -38,6 +39,7 @@ pub enum Body {
 }
 
 impl Body {
+    #[must_use]
     pub fn value_with_quotes(&self) -> Range<usize> {
         match self {
             Body::KeyValue { value, .. } => value.start - 1..value.end + 1,

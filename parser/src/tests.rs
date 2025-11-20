@@ -297,7 +297,6 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
 fn test_redacted_request_full_flow() {
     shared::init_test_logging();
 
-    // Use the same input as the standard test
     let input = r#"POST /api/users HTTP/1.1
 Host: api.example.com
 Content-Type: application/json
@@ -308,10 +307,8 @@ User-Agent: TestClient/1.0
 0
 "#;
 
-    // Parse with standard parser to get ranges
     let standard_request = standard::Request::from_str(input).unwrap();
 
-    // Collect ranges we want to keep: request line, Host header, and specific body fields
     let mut keep_ranges = vec![
         standard_request.method_with_space(),
         standard_request.url_with_space(),
@@ -324,6 +321,9 @@ User-Agent: TestClient/1.0
     keep_ranges.push(host_header.name_with_separator());
     keep_ranges.push(host_header.value_with_newline());
 
+    let user_agent_header = &standard_request.headers.get("user-agent").unwrap()[0];
+    keep_ranges.push(user_agent_header.name_with_separator());
+
     let name_field = standard_request.body.get(".user.name").unwrap();
     keep_ranges.push(name_field.key_with_quotes_and_colon().unwrap());
     keep_ranges.push(name_field.value_with_quotes());
@@ -332,10 +332,11 @@ User-Agent: TestClient/1.0
     keep_ranges.push(email_field.key_with_quotes_and_colon().unwrap());
     keep_ranges.push(email_field.value_with_quotes());
 
-    // Create redacted version
+    let age_field = standard_request.body.get(".user.age").unwrap();
+    keep_ranges.push(age_field.key_with_quotes_and_colon().unwrap());
+
     let redacted_input = redact_string(input, &keep_ranges);
 
-    // Parse with redacted parser
     let redacted_request = redacted::Request::from_str(&redacted_input).unwrap();
 
     assert_eq!(&redacted_input[redacted_request.method.clone()], "POST");
@@ -345,7 +346,7 @@ User-Agent: TestClient/1.0
         "HTTP/1.1"
     );
 
-    assert_eq!(redacted_request.headers.len(), 1);
+    assert_eq!(redacted_request.headers.len(), 2);
 
     let host_headers = redacted_request
         .headers
@@ -359,6 +360,21 @@ User-Agent: TestClient/1.0
         "api.example.com"
     );
 
+    let user_agent_headers = redacted_request
+        .headers
+        .get("user-agent")
+        .expect("User-Agent header should exist");
+    assert_eq!(user_agent_headers.len(), 1);
+    let user_agent_header = &user_agent_headers[0];
+    assert_eq!(
+        &redacted_input[user_agent_header.name.clone()],
+        "User-Agent"
+    );
+    assert!(
+        user_agent_header.value.is_none(),
+        "User-Agent header value should be None"
+    );
+
     assert_eq!(&redacted_input[redacted_request.chunk_size.clone()], "3e");
 
     let name_field = redacted_request
@@ -366,7 +382,10 @@ User-Agent: TestClient/1.0
         .get(".name")
         .expect(".name field should exist");
     match name_field {
-        redacted::Body::KeyValue { key, value: Some(value) } => {
+        redacted::Body::KeyValue {
+            key,
+            value: Some(value),
+        } => {
             assert_eq!(&redacted_input[key.clone()], "name");
             assert_eq!(&redacted_input[value.clone()], "Alice");
         }
@@ -378,11 +397,26 @@ User-Agent: TestClient/1.0
         .get(".email")
         .expect(".email field should exist");
     match email_field {
-        redacted::Body::KeyValue { key, value: Some(value) } => {
+        redacted::Body::KeyValue {
+            key,
+            value: Some(value),
+        } => {
             assert_eq!(&redacted_input[key.clone()], "email");
             assert_eq!(&redacted_input[value.clone()], "alice@example.com");
         }
         _ => panic!(".email should be a KeyValue"),
+    }
+
+    let age_field = redacted_request
+        .body
+        .get(".age")
+        .expect(".age field should exist");
+    match age_field {
+        redacted::Body::KeyValue { key, value } => {
+            assert_eq!(&redacted_input[key.clone()], "age");
+            assert!(value.is_none(), "age field value should be None");
+        }
+        _ => panic!(".age should be a KeyValue"),
     }
 }
 
@@ -390,7 +424,6 @@ User-Agent: TestClient/1.0
 fn test_redacted_response_full_flow() {
     shared::init_test_logging();
 
-    // Use the same input as the standard test
     let input = r#"HTTP/1.1 200 OK
 Content-Type: application/json
 Server: nginx/1.18.0
@@ -401,10 +434,8 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
 0
 "#;
 
-    // Parse with standard parser to get ranges
     let standard_response = standard::Response::from_str(input).unwrap();
 
-    // Collect ranges we want to keep: status line, Server header, and specific body fields
     let mut keep_ranges = vec![
         standard_response.protocol_version_with_space(),
         standard_response.status_code_with_space(),
@@ -417,6 +448,9 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     keep_ranges.push(server_header.name_with_separator());
     keep_ranges.push(server_header.value_with_newline());
 
+    let content_type_header = &standard_response.headers.get("content-type").unwrap()[0];
+    keep_ranges.push(content_type_header.name_with_separator());
+
     let status_field = standard_response.body.get(".status").unwrap();
     keep_ranges.push(status_field.key_with_quotes_and_colon().unwrap());
     keep_ranges.push(status_field.value_with_quotes());
@@ -425,10 +459,11 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         keep_ranges.push(value.start + 1..value.end - 1);
     }
 
-    // Create redacted version
+    let data_field = standard_response.body.get(".data").unwrap();
+    keep_ranges.push(data_field.key_with_quotes_and_colon().unwrap());
+
     let redacted_input = redact_string(input, &keep_ranges);
 
-    // Parse with redacted parser
     let redacted_response = redacted::Response::from_str(&redacted_input).unwrap();
 
     assert_eq!(
@@ -441,7 +476,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     );
     assert_eq!(&redacted_input[redacted_response.status.clone()], "OK");
 
-    assert_eq!(redacted_response.headers.len(), 1);
+    assert_eq!(redacted_response.headers.len(), 2);
 
     let server_headers = redacted_response
         .headers
@@ -450,7 +485,25 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     assert_eq!(server_headers.len(), 1);
     let server_header = &server_headers[0];
     assert_eq!(&redacted_input[server_header.name.clone()], "Server");
-    assert_eq!(&redacted_input[server_header.value.clone().unwrap()], "nginx/1.18.0");
+    assert_eq!(
+        &redacted_input[server_header.value.clone().unwrap()],
+        "nginx/1.18.0"
+    );
+
+    let content_type_headers = redacted_response
+        .headers
+        .get("content-type")
+        .expect("Content-Type header should exist");
+    assert_eq!(content_type_headers.len(), 1);
+    let content_type_header = &content_type_headers[0];
+    assert_eq!(
+        &redacted_input[content_type_header.name.clone()],
+        "Content-Type"
+    );
+    assert!(
+        content_type_header.value.is_none(),
+        "Content-Type header value should be None"
+    );
 
     assert_eq!(&redacted_input[redacted_response.chunk_size.clone()], "3e");
 
@@ -459,7 +512,10 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".status")
         .expect(".status field should exist");
     match status_field {
-        redacted::Body::KeyValue { key, value: Some(value) } => {
+        redacted::Body::KeyValue {
+            key,
+            value: Some(value),
+        } => {
             assert_eq!(&redacted_input[key.clone()], "status");
             assert_eq!(&redacted_input[value.clone()], "success");
         }
@@ -471,10 +527,25 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".id")
         .expect(".id field should exist");
     match id_field {
-        redacted::Body::KeyValue { key, value: Some(value) } => {
+        redacted::Body::KeyValue {
+            key,
+            value: Some(value),
+        } => {
             assert_eq!(&redacted_input[key.clone()], "id");
             assert_eq!(&redacted_input[value.clone()], "1");
         }
         _ => panic!(".id should be a KeyValue"),
+    }
+
+    let data_field = redacted_response
+        .body
+        .get(".data")
+        .expect(".data field should exist");
+    match data_field {
+        redacted::Body::KeyValue { key, value } => {
+            assert_eq!(&redacted_input[key.clone()], "data");
+            assert!(value.is_none(), "data field value should be None");
+        }
+        _ => panic!(".data should be a KeyValue"),
     }
 }

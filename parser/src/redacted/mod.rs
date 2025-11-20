@@ -1,7 +1,7 @@
-pub mod request;
-pub mod response;
-pub mod types;
-pub(crate) mod traversal;
+mod request;
+mod response;
+mod traversal;
+mod types;
 
 pub use request::Request;
 pub use response::Response;
