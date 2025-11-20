@@ -153,7 +153,9 @@ impl HttpMessageBuilder for ResponseBuilder {
         let first_line = self.parse_first_line(first_line_pair)?;
         let headers = HeaderTraverser::new(self.header_config, headers_pair)?.traverse()?;
 
-        let body = if let Some(body_pair) = pairs.next() {
+        let body = if let Some(body_pair) = pairs.next()
+            && (body_pair.as_rule() == Rule::object || body_pair.as_rule() == Rule::array)
+        {
             BodyTraverser::new(self.body_config, body_pair)?.traverse()?
         } else {
             HashMap::new()

@@ -9,10 +9,10 @@ pub use handler::{ConnectionError, handle_connection};
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, str::FromStr};
 
     use hyper::Uri;
-    use parser::{BodySearchable, HeaderSearchable, ResponseParser};
+    use parser::{HttpBody, standard::Response};
     use shared::create_test_tls_config;
     use smol::net::unix::UnixStream;
 
@@ -48,25 +48,40 @@ mod tests {
                 .expect("Response should be valid UTF-8");
 
             let parsed_response =
-                ResponseParser::parse_response(&raw_response_str).expect("Should parse response");
+                Response::from_str(&raw_response_str).expect("Should parse response");
 
-            // Check status line using exact equality
-            let status_line_range = parsed_response.get_status_line_range();
-            let status_line_str = &raw_response_str[status_line_range];
-            assert_eq!(status_line_str, "HTTP/1.1 200 OK\r\n");
+            assert_eq!(
+                &raw_response_str[parsed_response.protocol_version.clone()],
+                "HTTP/1.1"
+            );
+            assert_eq!(
+                &raw_response_str[parsed_response.status_code.clone()],
+                "200"
+            );
+            assert_eq!(&raw_response_str[parsed_response.status.clone()], "OK");
 
-            // Use parser to get exact body keypaths
-            let body_ranges = parsed_response
-                .get_body_keypaths_ranges(&["username", "balance"])
-                .expect("Should find username and balance fields");
+            let username_field = parsed_response
+                .body
+                .get(".username")
+                .expect("Should find username field");
+            let balance_field = parsed_response
+                .body
+                .get(".balance")
+                .expect("Should find balance field");
 
-            assert_eq!(body_ranges.len(), 2);
-
-            let username_str = &raw_response_str[body_ranges[0].clone()];
+            let username_key_range = username_field.key_with_quotes_and_colon().unwrap();
+            let username_val_range = username_field.value_with_quotes();
+            let username_str = &raw_response_str[username_key_range.start..username_val_range.end];
             assert_eq!(username_str, "\"username\":\"alice\"");
 
-            let balance_str = &raw_response_str[body_ranges[1].clone()];
-            assert_eq!(balance_str, "\"balance\":100");
+            let balance_key_range = balance_field.key_with_quotes_and_colon().unwrap();
+            match balance_field {
+                parser::standard::Body::KeyValue { value, .. } => {
+                    let balance_str = &raw_response_str[balance_key_range.start..value.end];
+                    assert_eq!(balance_str, "\"balance\":100");
+                }
+                _ => panic!("balance should be a KeyValue"),
+            }
         });
     }
 
@@ -98,57 +113,91 @@ mod tests {
             let raw_request_str = String::from_utf8(traffic.raw_request.clone())
                 .expect("Request should be valid UTF-8");
 
-            let parsed_request = parser::RequestParser::parse_request(&raw_request_str)
+            let parsed_request = parser::standard::Request::from_str(&raw_request_str)
                 .expect("Should parse request");
 
-            let request_line_range = parsed_request.get_request_line_range();
-            let request_line_str = &raw_request_str[request_line_range];
-            assert_eq!(request_line_str, "GET /api/balance/alice HTTP/1.1\r\n");
+            assert_eq!(&raw_request_str[parsed_request.method.clone()], "GET");
+            assert_eq!(
+                &raw_request_str[parsed_request.url.clone()],
+                "/api/balance/alice"
+            );
+            assert_eq!(
+                &raw_request_str[parsed_request.protocol_version.clone()],
+                "HTTP/1.1"
+            );
 
-            let request_header_ranges = parsed_request
-                .get_header_ranges(&["content-type"])
+            let content_type_headers = parsed_request
+                .headers
+                .get("content-type")
                 .expect("Should find content-type header in request");
 
-            assert_eq!(request_header_ranges.len(), 1);
+            assert_eq!(content_type_headers.len(), 1);
 
-            let request_content_type_str = &raw_request_str[request_header_ranges[0].clone()];
+            let content_type_header = &content_type_headers[0];
+            // Construct the full header range including name, separator, value, and newline
+            let request_content_type_str =
+                &raw_request_str[content_type_header.name.start..content_type_header.value.end + 2];
             assert_eq!(
                 request_content_type_str,
                 "content-type: application/json\r\n"
+            );
+
+            assert_eq!(
+                parsed_request.body.len(),
+                0,
+                "GET request should have no body fields"
             );
 
             let raw_response_str = String::from_utf8(traffic.raw_response.clone())
                 .expect("Response should be valid UTF-8");
 
             let parsed_response =
-                ResponseParser::parse_response(&raw_response_str).expect("Should parse response");
+                Response::from_str(&raw_response_str).expect("Should parse response");
 
-            // Check status line using exact equality
-            let status_line_range = parsed_response.get_status_line_range();
-            let status_line_str = &raw_response_str[status_line_range];
-            assert_eq!(status_line_str, "HTTP/1.1 200 OK\r\n");
+            assert_eq!(
+                &raw_response_str[parsed_response.protocol_version.clone()],
+                "HTTP/1.1"
+            );
+            assert_eq!(
+                &raw_response_str[parsed_response.status_code.clone()],
+                "200"
+            );
+            assert_eq!(&raw_response_str[parsed_response.status.clone()], "OK");
 
-            let header_ranges = parsed_response
-                .get_header_ranges(&["content-type"])
+            let content_type_headers = parsed_response
+                .headers
+                .get("content-type")
                 .expect("Should find content-type header");
 
-            assert_eq!(header_ranges.len(), 1);
+            assert_eq!(content_type_headers.len(), 1);
 
-            let content_type_range = &header_ranges[0];
-            let content_type_str = &raw_response_str[content_type_range.clone()];
-            assert_eq!(content_type_str, "content-type: application/json\r\n");
+            let content_type_header = &content_type_headers[0];
+            let header_full_str = &raw_response_str
+                [content_type_header.name.start..content_type_header.value.end + 2];
+            assert_eq!(header_full_str, "content-type: application/json\r\n");
 
-            let body_ranges = parsed_response
-                .get_body_keypaths_ranges(&["username", "balance"])
-                .expect("Should find username and balance fields");
+            let username_field = parsed_response
+                .body
+                .get(".username")
+                .expect("Should find username field");
+            let balance_field = parsed_response
+                .body
+                .get(".balance")
+                .expect("Should find balance field");
 
-            assert_eq!(body_ranges.len(), 2);
-
-            let username_str = &raw_response_str[body_ranges[0].clone()];
+            let username_key_range = username_field.key_with_quotes_and_colon().unwrap();
+            let username_val_range = username_field.value_with_quotes();
+            let username_str = &raw_response_str[username_key_range.start..username_val_range.end];
             assert_eq!(username_str, "\"username\":\"alice\"");
 
-            let balance_str = &raw_response_str[body_ranges[1].clone()];
-            assert_eq!(balance_str, "\"balance\":100");
+            let balance_key_range = balance_field.key_with_quotes_and_colon().unwrap();
+            match balance_field {
+                parser::standard::Body::KeyValue { value, .. } => {
+                    let balance_str = &raw_response_str[balance_key_range.start..value.end];
+                    assert_eq!(balance_str, "\"balance\":100");
+                }
+                _ => panic!("balance should be a KeyValue"),
+            }
         });
     }
 }
