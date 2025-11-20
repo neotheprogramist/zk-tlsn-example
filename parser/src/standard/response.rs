@@ -3,13 +3,15 @@ use std::{collections::HashMap, ops::Range, str::FromStr};
 use pest::Parser;
 use pest_derive::Parser;
 
-use super::traversal::{BodyConfig, HeaderConfig};
+use super::{
+    traversal::{BodyConfig, HeaderConfig},
+    types::{Body, Header},
+};
 use crate::{
     HttpMessageBuilder,
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     traits::{RangeExtractor, Traverser},
-    types::{Body, Header},
 };
 
 #[derive(Parser)]
@@ -74,6 +76,8 @@ impl ResponseBuilder {
 impl HttpMessageBuilder for ResponseBuilder {
     type Rule = Rule;
     type Message = Response;
+    type Header = Header;
+    type Body = Body;
 
     fn build_message(
         &self,

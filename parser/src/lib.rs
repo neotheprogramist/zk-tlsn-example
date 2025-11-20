@@ -19,7 +19,6 @@ mod common;
 mod error;
 mod path;
 mod traits;
-mod types;
 
 pub mod redacted;
 pub mod standard;
@@ -27,7 +26,6 @@ pub mod standard;
 pub use common::{HttpMessageBuilder, assert_end_of_iterator, assert_rule};
 pub use error::{ParseError, Result};
 pub use traits::Traverser;
-pub use types::{Body, Header};
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +35,5 @@ pub mod prelude {
         error::{ParseError, Result},
         redacted, standard,
         traits::Traverser,
-        types::{Body, Header},
     };
 }

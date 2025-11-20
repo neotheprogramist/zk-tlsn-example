@@ -5,12 +5,12 @@ use pest::{
     iterators::{Pair, Pairs},
 };
 
+use super::types::{Body, Header};
 use crate::{
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     path::{PathSegment, PathStack},
     traits::{RangeExtractor, Traverser},
-    types::{Body, Header},
 };
 
 #[derive(Debug, Clone, Copy)]

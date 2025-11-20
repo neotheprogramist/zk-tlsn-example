@@ -5,10 +5,7 @@ use pest::{
     iterators::{Pair, Pairs},
 };
 
-use crate::{
-    error::{ParseError, Result},
-    types::{Body, Header},
-};
+use crate::error::{ParseError, Result};
 
 pub fn assert_rule<R: RuleType + PartialEq>(
     pair: &Pair<'_, R>,
@@ -40,13 +37,15 @@ pub fn assert_end_of_iterator<'a, R: RuleType>(
 pub trait HttpMessageBuilder: Sized {
     type Rule: RuleType + PartialEq + Copy;
     type Message;
+    type Header;
+    type Body;
 
     fn build_message(
         &self,
         first_line: (Range<usize>, Range<usize>, Range<usize>),
-        headers: HashMap<String, Vec<Header>>,
+        headers: HashMap<String, Vec<Self::Header>>,
         chunk_size: Range<usize>,
-        body: HashMap<String, Body>,
+        body: HashMap<String, Self::Body>,
     ) -> Self::Message;
 
     fn parse_first_line(

@@ -5,12 +5,12 @@ use pest::{
     iterators::{Pair, Pairs},
 };
 
+use super::types::{Body, Header};
 use crate::{
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
     path::{PathSegment, PathStack},
     traits::{RangeExtractor, Traverser},
-    types::{Body, Header},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -82,7 +82,7 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
 
         Ok(Header {
             name: name_pair.extract_range(),
-            value: Some(value_pair.extract_range()),
+            value: value_pair.extract_range(),
         })
     }
 }
@@ -171,7 +171,7 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
                 self.pathstack.to_string(),
                 Body::KeyValue {
                     key: key_pair.extract_range(),
-                    value: Some(value_pair.extract_range()),
+                    value: value_pair.extract_range(),
                 },
             );
 
