@@ -11,7 +11,7 @@ use crate::{
     HttpMessageBuilder,
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
-    traits::{RangeExtractor, Traverser},
+    traits::{HttpMessage, RangeExtractor, Traverser},
 };
 
 #[derive(Parser)]
@@ -26,6 +26,23 @@ pub struct Response {
     pub headers: HashMap<String, Vec<Header>>,
     pub chunk_size: Range<usize>,
     pub body: HashMap<String, Body>,
+}
+
+impl HttpMessage for Response {
+    type Header = Header;
+    type Body = Body;
+
+    fn headers(&self) -> &HashMap<String, Vec<Self::Header>> {
+        &self.headers
+    }
+
+    fn body(&self) -> &HashMap<String, Self::Body> {
+        &self.body
+    }
+
+    fn chunk_size(&self) -> &Range<usize> {
+        &self.chunk_size
+    }
 }
 
 pub struct ResponseBuilder {

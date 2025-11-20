@@ -1,6 +1,9 @@
 use std::{ops::Range, str::FromStr};
 
-use crate::{redacted, standard};
+use crate::{
+    redacted, standard,
+    traits::{HttpBody, HttpHeader, HttpMessage},
+};
 
 fn redact_string(input: &str, keep_ranges: &[Range<usize>]) -> String {
     let mut bytes = input.as_bytes().to_vec();

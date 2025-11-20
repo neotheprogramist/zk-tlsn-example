@@ -11,7 +11,7 @@ use crate::{
     HttpMessageBuilder,
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
-    traits::{RangeExtractor, Traverser},
+    traits::{HttpMessage, RangeExtractor, Traverser},
 };
 
 #[derive(Parser)]
@@ -40,9 +40,22 @@ impl Response {
     pub fn status_with_newline(&self) -> Range<usize> {
         self.status.start..self.status.end + 1
     }
+}
 
-    pub fn chunk_size_with_newline(&self) -> Range<usize> {
-        self.chunk_size.start..self.chunk_size.end + 1
+impl HttpMessage for Response {
+    type Header = Header;
+    type Body = Body;
+
+    fn headers(&self) -> &HashMap<String, Vec<Self::Header>> {
+        &self.headers
+    }
+
+    fn body(&self) -> &HashMap<String, Self::Body> {
+        &self.body
+    }
+
+    fn chunk_size(&self) -> &Range<usize> {
+        &self.chunk_size
     }
 }
 

@@ -25,7 +25,7 @@ pub mod standard;
 
 pub use common::{HttpMessageBuilder, assert_end_of_iterator, assert_rule};
 pub use error::{ParseError, Result};
-pub use traits::Traverser;
+pub use traits::{HttpBody, HttpHeader, HttpMessage, Traverser};
 
 #[cfg(test)]
 mod tests;
@@ -34,6 +34,6 @@ pub mod prelude {
     pub use crate::{
         error::{ParseError, Result},
         redacted, standard,
-        traits::Traverser,
+        traits::{HttpBody, HttpHeader, HttpMessage, Traverser},
     };
 }
