@@ -82,7 +82,7 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
 
         Ok(Header {
             name: name_pair.extract_range(),
-            value: value_pair.extract_range(),
+            value: Some(value_pair.extract_range()),
         })
     }
 }
@@ -171,7 +171,7 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
                 self.pathstack.to_string(),
                 Body::KeyValue {
                     key: key_pair.extract_range(),
-                    value: value_pair.extract_range(),
+                    value: Some(value_pair.extract_range()),
                 },
             );
 

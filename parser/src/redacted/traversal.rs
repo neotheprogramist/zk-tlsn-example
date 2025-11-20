@@ -65,18 +65,21 @@ impl<'a, R: RuleType + PartialEq + Copy> HeaderTraverser<'a, R> {
         let name_pair = inner
             .next()
             .ok_or_else(|| ParseError::MissingField("header name".to_string()))?;
-        let value_pair = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("header value".to_string()))?;
 
         assert_rule(&name_pair, config.header_name, "header_name")?;
-        assert_rule(&value_pair, config.header_value, "header_value")?;
+
+        let value = if let Some(value_pair) = inner.next() {
+            assert_rule(&value_pair, config.header_value, "header_value")?;
+            Some(value_pair.extract_range())
+        } else {
+            None
+        };
 
         assert_end_of_iterator(&mut inner, "header")?;
 
         Ok(Header {
             name: name_pair.extract_range(),
-            value: value_pair.extract_range(),
+            value,
         })
     }
 }
@@ -138,9 +141,8 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
         let key_pair = inner
             .next()
             .ok_or_else(|| ParseError::MissingField("key in pair".to_string()))?;
-        let value_pair = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("value in pair".to_string()))?;
+
+        let value = inner.next().map(|v| v.extract_range());
 
         assert_end_of_iterator(&mut inner, "pair")?;
 
@@ -151,7 +153,7 @@ impl<'a, R: RuleType + PartialEq + Copy> BodyTraverser<'a, R> {
             self.pathstack.to_string(),
             Body::KeyValue {
                 key: key_pair.extract_range(),
-                value: value_pair.extract_range(),
+                value,
             },
         );
 

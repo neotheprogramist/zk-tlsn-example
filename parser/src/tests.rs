@@ -52,7 +52,7 @@ User-Agent: TestClient/1.0
     assert_eq!(host_headers.len(), 1);
     let host_header = &host_headers[0];
     assert_eq!(&input[host_header.name.clone()], "Host");
-    assert_eq!(&input[host_header.value.clone()], "api.example.com");
+    assert_eq!(&input[host_header.value.clone().unwrap()], "api.example.com");
 
     let content_type_headers = request
         .headers
@@ -62,7 +62,7 @@ User-Agent: TestClient/1.0
     let content_type_header = &content_type_headers[0];
     assert_eq!(&input[content_type_header.name.clone()], "Content-Type");
     assert_eq!(
-        &input[content_type_header.value.clone()],
+        &input[content_type_header.value.clone().unwrap()],
         "application/json"
     );
 
@@ -73,7 +73,7 @@ User-Agent: TestClient/1.0
     assert_eq!(user_agent_headers.len(), 1);
     let user_agent_header = &user_agent_headers[0];
     assert_eq!(&input[user_agent_header.name.clone()], "User-Agent");
-    assert_eq!(&input[user_agent_header.value.clone()], "TestClient/1.0");
+    assert_eq!(&input[user_agent_header.value.clone().unwrap()], "TestClient/1.0");
 
     assert_eq!(&input[request.chunk_size.clone()], "3e");
 
@@ -90,7 +90,7 @@ User-Agent: TestClient/1.0
 
     let user_field = request.body.get(".user").expect(".user field should exist");
     match user_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "user");
             assert_eq!(
                 &input[value.clone()],
@@ -105,7 +105,7 @@ User-Agent: TestClient/1.0
         .get(".user.name")
         .expect(".user.name field should exist");
     match name_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "name");
             assert_eq!(&input[value.clone()], "Alice");
         }
@@ -117,7 +117,7 @@ User-Agent: TestClient/1.0
         .get(".user.email")
         .expect(".user.email field should exist");
     match email_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "email");
             assert_eq!(&input[value.clone()], "alice@example.com");
         }
@@ -129,7 +129,7 @@ User-Agent: TestClient/1.0
         .get(".user.age")
         .expect(".user.age field should exist");
     match age_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "age");
             assert_eq!(&input[value.clone()], "30");
         }
@@ -169,7 +169,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     let content_type_header = &content_type_headers[0];
     assert_eq!(&input[content_type_header.name.clone()], "Content-Type");
     assert_eq!(
-        &input[content_type_header.value.clone()],
+        &input[content_type_header.value.clone().unwrap()],
         "application/json"
     );
 
@@ -180,7 +180,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     assert_eq!(server_headers.len(), 1);
     let server_header = &server_headers[0];
     assert_eq!(&input[server_header.name.clone()], "Server");
-    assert_eq!(&input[server_header.value.clone()], "nginx/1.18.0");
+    assert_eq!(&input[server_header.value.clone().unwrap()], "nginx/1.18.0");
 
     let date_headers = response
         .headers
@@ -190,7 +190,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     let date_header = &date_headers[0];
     assert_eq!(&input[date_header.name.clone()], "Date");
     assert_eq!(
-        &input[date_header.value.clone()],
+        &input[date_header.value.clone().unwrap()],
         "Mon, 01 Jan 2024 00:00:00 GMT"
     );
 
@@ -212,7 +212,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".status")
         .expect(".status field should exist");
     match status_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "status");
             assert_eq!(&input[value.clone()], "success");
         }
@@ -224,7 +224,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".data")
         .expect(".data field should exist");
     match data_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "data");
             assert_eq!(&input[value.clone()], r#"{"users":[{"id":1},{"id":2}]}"#);
         }
@@ -236,7 +236,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".data.users")
         .expect(".data.users field should exist");
     match users_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "users");
             assert_eq!(&input[value.clone()], r#"[{"id":1},{"id":2}]"#);
         }
@@ -259,7 +259,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".data.users[0].id")
         .expect(".data.users[0].id should exist");
     match user0_id {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "id");
             assert_eq!(&input[value.clone()], "1");
         }
@@ -282,7 +282,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".data.users[1].id")
         .expect(".data.users[1].id should exist");
     match user1_id {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&input[key.clone()], "id");
             assert_eq!(&input[value.clone()], "2");
         }
@@ -319,15 +319,15 @@ User-Agent: TestClient/1.0
 
     let host_header = &standard_request.headers.get("host").unwrap()[0];
     keep_ranges.push(host_header.name_with_separator());
-    keep_ranges.push(host_header.value_with_newline());
+    keep_ranges.push(host_header.value_with_newline().unwrap());
 
     let name_field = standard_request.body.get(".user.name").unwrap();
     keep_ranges.push(name_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(name_field.value_with_quotes());
+    keep_ranges.push(name_field.value_with_quotes().unwrap());
 
     let email_field = standard_request.body.get(".user.email").unwrap();
     keep_ranges.push(email_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(email_field.value_with_quotes());
+    keep_ranges.push(email_field.value_with_quotes().unwrap());
 
     // Create redacted version
     let redacted_input = redact_string(input, &keep_ranges);
@@ -352,7 +352,7 @@ User-Agent: TestClient/1.0
     let host_header = &host_headers[0];
     assert_eq!(&redacted_input[host_header.name.clone()], "Host");
     assert_eq!(
-        &redacted_input[host_header.value.clone()],
+        &redacted_input[host_header.value.clone().unwrap()],
         "api.example.com"
     );
 
@@ -363,7 +363,7 @@ User-Agent: TestClient/1.0
         .get(".name")
         .expect(".name field should exist");
     match name_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&redacted_input[key.clone()], "name");
             assert_eq!(&redacted_input[value.clone()], "Alice");
         }
@@ -375,7 +375,7 @@ User-Agent: TestClient/1.0
         .get(".email")
         .expect(".email field should exist");
     match email_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&redacted_input[key.clone()], "email");
             assert_eq!(&redacted_input[value.clone()], "alice@example.com");
         }
@@ -412,11 +412,11 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
 
     let server_header = &standard_response.headers.get("server").unwrap()[0];
     keep_ranges.push(server_header.name_with_separator());
-    keep_ranges.push(server_header.value_with_newline());
+    keep_ranges.push(server_header.value_with_newline().unwrap());
 
     let status_field = standard_response.body.get(".status").unwrap();
     keep_ranges.push(status_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(status_field.value_with_quotes());
+    keep_ranges.push(status_field.value_with_quotes().unwrap());
 
     if let Body::Value(value) = standard_response.body.get(".data.users[0]").unwrap() {
         keep_ranges.push(value.start + 1..value.end - 1);
@@ -447,7 +447,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     assert_eq!(server_headers.len(), 1);
     let server_header = &server_headers[0];
     assert_eq!(&redacted_input[server_header.name.clone()], "Server");
-    assert_eq!(&redacted_input[server_header.value.clone()], "nginx/1.18.0");
+    assert_eq!(&redacted_input[server_header.value.clone().unwrap()], "nginx/1.18.0");
 
     assert_eq!(&redacted_input[redacted_response.chunk_size.clone()], "3e");
 
@@ -456,7 +456,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".status")
         .expect(".status field should exist");
     match status_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&redacted_input[key.clone()], "status");
             assert_eq!(&redacted_input[value.clone()], "success");
         }
@@ -468,7 +468,7 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .get(".id")
         .expect(".id field should exist");
     match id_field {
-        Body::KeyValue { key, value } => {
+        Body::KeyValue { key, value: Some(value) } => {
             assert_eq!(&redacted_input[key.clone()], "id");
             assert_eq!(&redacted_input[value.clone()], "1");
         }

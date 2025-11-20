@@ -10,7 +10,7 @@ status           =  { ASCII_ALPHA_UPPER+ }
 status_line      = ${ protocol_version ~ " " ~ status_code ~ " " ~ status }
 
 headers      =  { header* }
-header       = ${ header_name ~ ": " ~ header_value ~ NEWLINE }
+header       = ${ header_name ~ ": " ~ header_value? ~ NEWLINE }
 header_name  =  { (ASCII_ALPHANUMERIC | "-")+ }
 header_value =  { (ASCII_ALPHANUMERIC | "-" | ";" | " " | ":" | "," | "/" | "'" | "\"" | "." | "=" | "+" | "*" | "_" | "{" | "}")+ }
 
@@ -23,7 +23,7 @@ chunked_body = _{ chunk_size ~ pair* ~ "0" }
 // Content-length encoding: just the body directly
 content_length_body = _{ pair* }
 
-pair   = { quoted_key ~ ":" ~ value }
+pair   = { quoted_key ~ ":" ~ value? }
 object = {
     "{" ~ "}"
   | "{" ~ pair ~ ("," ~ pair)* ~ "}"
