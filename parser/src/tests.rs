@@ -310,48 +310,24 @@ User-Agent: TestClient/1.0
 
     // Collect ranges we want to keep: request line, Host header, and specific body fields
     let mut keep_ranges = vec![
-        standard_request.method.start..standard_request.method.end + 1,
-        standard_request.url.start..standard_request.url.end + 1,
-        standard_request.protocol_version.start..standard_request.protocol_version.end + 1,
-        standard_request.chunk_size.start..standard_request.chunk_size.end + 1,
+        standard_request.method_with_space(),
+        standard_request.url_with_space(),
+        standard_request.protocol_version_with_newline(),
+        standard_request.chunk_size_with_newline(),
         input.len() - 2..input.len(),
     ];
 
-    // Keep Host header
-    keep_ranges.push(
-        standard_request.headers.get("host").unwrap()[0]
-            .clone()
-            .name
-            .start
-            ..standard_request.headers.get("host").unwrap()[0]
-                .clone()
-                .name
-                .end
-                + 2,
-    );
-    keep_ranges.push(
-        standard_request.headers.get("host").unwrap()[0]
-            .clone()
-            .value
-            .start
-            ..standard_request.headers.get("host").unwrap()[0]
-                .clone()
-                .value
-                .end
-                + 1,
-    );
+    let host_header = &standard_request.headers.get("host").unwrap()[0];
+    keep_ranges.push(host_header.name_with_separator());
+    keep_ranges.push(host_header.value_with_newline());
 
-    // Keep .user.name field
-    if let Body::KeyValue { key, value } = standard_request.body.get(".user.name").unwrap() {
-        keep_ranges.push(key.start - 1..key.end + 2);
-        keep_ranges.push(value.start - 1..value.end + 1);
-    }
+    let name_field = standard_request.body.get(".user.name").unwrap();
+    keep_ranges.push(name_field.key_with_quotes_and_colon().unwrap());
+    keep_ranges.push(name_field.value_with_quotes());
 
-    // Keep .user.email field
-    if let Body::KeyValue { key, value } = standard_request.body.get(".user.email").unwrap() {
-        keep_ranges.push(key.start - 1..key.end + 2);
-        keep_ranges.push(value.start - 1..value.end + 1);
-    }
+    let email_field = standard_request.body.get(".user.email").unwrap();
+    keep_ranges.push(email_field.key_with_quotes_and_colon().unwrap());
+    keep_ranges.push(email_field.value_with_quotes());
 
     // Create redacted version
     let redacted_input = redact_string(input, &keep_ranges);
@@ -427,40 +403,20 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
 
     // Collect ranges we want to keep: status line, Server header, and specific body fields
     let mut keep_ranges = vec![
-        standard_response.protocol_version.start..standard_response.protocol_version.end + 1,
-        standard_response.status_code.start..standard_response.status_code.end + 1,
-        standard_response.status.start..standard_response.status.end + 1,
-        standard_response.chunk_size.start..standard_response.chunk_size.end + 1,
+        standard_response.protocol_version_with_space(),
+        standard_response.status_code_with_space(),
+        standard_response.status_with_newline(),
+        standard_response.chunk_size_with_newline(),
         input.len() - 2..input.len(),
     ];
 
-    keep_ranges.push(
-        standard_response.headers.get("server").unwrap()[0]
-            .clone()
-            .name
-            .start
-            ..standard_response.headers.get("server").unwrap()[0]
-                .clone()
-                .name
-                .end
-                + 2,
-    );
-    keep_ranges.push(
-        standard_response.headers.get("server").unwrap()[0]
-            .clone()
-            .value
-            .start
-            ..standard_response.headers.get("server").unwrap()[0]
-                .clone()
-                .value
-                .end
-                + 1,
-    );
+    let server_header = &standard_response.headers.get("server").unwrap()[0];
+    keep_ranges.push(server_header.name_with_separator());
+    keep_ranges.push(server_header.value_with_newline());
 
-    if let Body::KeyValue { key, value } = standard_response.body.get(".status").unwrap() {
-        keep_ranges.push(key.start - 1..key.end + 2);
-        keep_ranges.push(value.start - 1..value.end + 1);
-    }
+    let status_field = standard_response.body.get(".status").unwrap();
+    keep_ranges.push(status_field.key_with_quotes_and_colon().unwrap());
+    keep_ranges.push(status_field.value_with_quotes());
 
     if let Body::Value(value) = standard_response.body.get(".data.users[0]").unwrap() {
         keep_ranges.push(value.start + 1..value.end - 1);

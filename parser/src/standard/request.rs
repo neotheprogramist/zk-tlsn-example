@@ -26,6 +26,24 @@ pub struct Request {
     pub body: HashMap<String, Body>,
 }
 
+impl Request {
+    pub fn method_with_space(&self) -> Range<usize> {
+        self.method.start..self.method.end + 1
+    }
+
+    pub fn url_with_space(&self) -> Range<usize> {
+        self.url.start..self.url.end + 1
+    }
+
+    pub fn protocol_version_with_newline(&self) -> Range<usize> {
+        self.protocol_version.start..self.protocol_version.end + 1
+    }
+
+    pub fn chunk_size_with_newline(&self) -> Range<usize> {
+        self.chunk_size.start..self.chunk_size.end + 1
+    }
+}
+
 pub struct RequestBuilder {
     header_config: HeaderConfig<Rule>,
     body_config: BodyConfig<Rule>,

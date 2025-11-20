@@ -26,6 +26,24 @@ pub struct Response {
     pub body: HashMap<String, Body>,
 }
 
+impl Response {
+    pub fn protocol_version_with_space(&self) -> Range<usize> {
+        self.protocol_version.start..self.protocol_version.end + 1
+    }
+
+    pub fn status_code_with_space(&self) -> Range<usize> {
+        self.status_code.start..self.status_code.end + 1
+    }
+
+    pub fn status_with_newline(&self) -> Range<usize> {
+        self.status.start..self.status.end + 1
+    }
+
+    pub fn chunk_size_with_newline(&self) -> Range<usize> {
+        self.chunk_size.start..self.chunk_size.end + 1
+    }
+}
+
 pub struct ResponseBuilder {
     header_config: HeaderConfig<Rule>,
     body_config: BodyConfig<Rule>,
