@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["parser", "server", "tlsnotary"]
+members = ["parser", "server", "tlsnotary", "zktlsn"]
 
 [workspace.package]
 version = "0.1.0"

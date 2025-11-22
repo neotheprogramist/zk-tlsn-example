@@ -8,7 +8,9 @@ fn main(committed_hash: pub [u8; 32], balance: str<3>, blinder: [u8; 16]) {
 fn verify_commitment(committed_hash: [u8; 32], balance: str<3>, blinder: [u8; 16]) {
     let prefix = "\"balance\":";
     let prefixed_balance = concatenate(prefix, balance);
-    let computed_hash = hash(prefixed_balance, blinder);
+    let suffix = "}";
+    let balance = concatenate(prefixed_balance, suffix);
+    let computed_hash = hash(balance, blinder);
     assert_eq(committed_hash, computed_hash);
 }
 
