@@ -1,9 +1,6 @@
 use std::{ops::Range, str::FromStr};
 
-use crate::{
-    redacted, standard,
-    traits::{HttpBody, HttpHeader},
-};
+use crate::{JsonFieldRangeExt, redacted, standard};
 
 fn redact_string(input: &str, keep_ranges: &[Range<usize>]) -> String {
     let mut bytes = input.as_bytes().to_vec();
@@ -312,22 +309,34 @@ User-Agent: TestClient/1.0
     ];
 
     let host_header = &standard_request.headers.get("host").unwrap()[0];
-    keep_ranges.push(host_header.name_with_separator());
-    keep_ranges.push(host_header.value_with_newline());
+    keep_ranges.push(host_header.name.with_separator());
+    keep_ranges.push(host_header.value.with_newline());
 
     let user_agent_header = &standard_request.headers.get("user-agent").unwrap()[0];
-    keep_ranges.push(user_agent_header.name_with_separator());
+    keep_ranges.push(user_agent_header.name.with_separator());
 
     let name_field = standard_request.body.get(".user.name").unwrap();
-    keep_ranges.push(name_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(name_field.value_with_quotes());
+    if let standard::Body::KeyValue { key, value } = name_field {
+        keep_ranges.push(key.with_quotes_and_colon());
+        keep_ranges.push(value.with_quotes());
+    } else {
+        panic!("name field should be a KeyValue");
+    }
 
     let email_field = standard_request.body.get(".user.email").unwrap();
-    keep_ranges.push(email_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(email_field.value_with_quotes());
+    if let standard::Body::KeyValue { key, value } = email_field {
+        keep_ranges.push(key.with_quotes_and_colon());
+        keep_ranges.push(value.with_quotes());
+    } else {
+        panic!("email field should be a KeyValue");
+    }
 
     let age_field = standard_request.body.get(".user.age").unwrap();
-    keep_ranges.push(age_field.key_with_quotes_and_colon().unwrap());
+    if let standard::Body::KeyValue { key, .. } = age_field {
+        keep_ranges.push(key.with_quotes_and_colon());
+    } else {
+        panic!("age field should be a KeyValue");
+    }
 
     let redacted_input = redact_string(input, &keep_ranges);
 
@@ -373,42 +382,41 @@ User-Agent: TestClient/1.0
         .body
         .get(".name")
         .expect(".name field should exist");
-    match name_field {
-        redacted::Body::KeyValue {
-            key,
-            value: Some(value),
-        } => {
-            assert_eq!(&redacted_input[key.clone()], "name");
-            assert_eq!(&redacted_input[value.clone()], "Alice");
-        }
-        _ => panic!(".name should be a KeyValue"),
+    if let redacted::Body::KeyValue {
+        key,
+        value: Some(value),
+    } = name_field
+    {
+        assert_eq!(&redacted_input[key.clone()], "name");
+        assert_eq!(&redacted_input[value.clone()], "Alice");
+    } else {
+        panic!(".name should be a KeyValue with Some(value)");
     }
 
     let email_field = redacted_request
         .body
         .get(".email")
         .expect(".email field should exist");
-    match email_field {
-        redacted::Body::KeyValue {
-            key,
-            value: Some(value),
-        } => {
-            assert_eq!(&redacted_input[key.clone()], "email");
-            assert_eq!(&redacted_input[value.clone()], "alice@example.com");
-        }
-        _ => panic!(".email should be a KeyValue"),
+    if let redacted::Body::KeyValue {
+        key,
+        value: Some(value),
+    } = email_field
+    {
+        assert_eq!(&redacted_input[key.clone()], "email");
+        assert_eq!(&redacted_input[value.clone()], "alice@example.com");
+    } else {
+        panic!(".email should be a KeyValue with Some(value)");
     }
 
     let age_field = redacted_request
         .body
         .get(".age")
         .expect(".age field should exist");
-    match age_field {
-        redacted::Body::KeyValue { key, value } => {
-            assert_eq!(&redacted_input[key.clone()], "age");
-            assert!(value.is_none(), "age field value should be None");
-        }
-        _ => panic!(".age should be a KeyValue"),
+    if let redacted::Body::KeyValue { key, value } = age_field {
+        assert_eq!(&redacted_input[key.clone()], "age");
+        assert!(value.is_none(), "age field value should be None");
+    } else {
+        panic!(".age should be a KeyValue");
     }
 }
 
@@ -435,22 +443,32 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
     ];
 
     let server_header = &standard_response.headers.get("server").unwrap()[0];
-    keep_ranges.push(server_header.name_with_separator());
-    keep_ranges.push(server_header.value_with_newline());
+    keep_ranges.push(server_header.name.with_separator());
+    keep_ranges.push(server_header.value.with_newline());
 
     let content_type_header = &standard_response.headers.get("content-type").unwrap()[0];
-    keep_ranges.push(content_type_header.name_with_separator());
+    keep_ranges.push(content_type_header.name.with_separator());
 
     let status_field = standard_response.body.get(".status").unwrap();
-    keep_ranges.push(status_field.key_with_quotes_and_colon().unwrap());
-    keep_ranges.push(status_field.value_with_quotes());
+    if let standard::Body::KeyValue { key, value } = status_field {
+        keep_ranges.push(key.with_quotes_and_colon());
+        keep_ranges.push(value.with_quotes());
+    } else {
+        panic!("status field should be a KeyValue");
+    }
 
     if let standard::Body::Value(value) = standard_response.body.get(".data.users[0]").unwrap() {
         keep_ranges.push(value.start + 1..value.end - 1);
+    } else {
+        panic!("data.users[0] should be a Value");
     }
 
     let data_field = standard_response.body.get(".data").unwrap();
-    keep_ranges.push(data_field.key_with_quotes_and_colon().unwrap());
+    if let standard::Body::KeyValue { key, .. } = data_field {
+        keep_ranges.push(key.with_quotes_and_colon());
+    } else {
+        panic!("data field should be a KeyValue");
+    }
 
     let redacted_input = redact_string(input, &keep_ranges);
 
@@ -499,41 +517,40 @@ Date: Mon, 01 Jan 2024 00:00:00 GMT
         .body
         .get(".status")
         .expect(".status field should exist");
-    match status_field {
-        redacted::Body::KeyValue {
-            key,
-            value: Some(value),
-        } => {
-            assert_eq!(&redacted_input[key.clone()], "status");
-            assert_eq!(&redacted_input[value.clone()], "success");
-        }
-        _ => panic!(".status should be a KeyValue"),
+    if let redacted::Body::KeyValue {
+        key,
+        value: Some(value),
+    } = status_field
+    {
+        assert_eq!(&redacted_input[key.clone()], "status");
+        assert_eq!(&redacted_input[value.clone()], "success");
+    } else {
+        panic!(".status should be a KeyValue with Some(value)");
     }
 
     let id_field = redacted_response
         .body
         .get(".id")
         .expect(".id field should exist");
-    match id_field {
-        redacted::Body::KeyValue {
-            key,
-            value: Some(value),
-        } => {
-            assert_eq!(&redacted_input[key.clone()], "id");
-            assert_eq!(&redacted_input[value.clone()], "1");
-        }
-        _ => panic!(".id should be a KeyValue"),
+    if let redacted::Body::KeyValue {
+        key,
+        value: Some(value),
+    } = id_field
+    {
+        assert_eq!(&redacted_input[key.clone()], "id");
+        assert_eq!(&redacted_input[value.clone()], "1");
+    } else {
+        panic!(".id should be a KeyValue with Some(value)");
     }
 
     let data_field = redacted_response
         .body
         .get(".data")
         .expect(".data field should exist");
-    match data_field {
-        redacted::Body::KeyValue { key, value } => {
-            assert_eq!(&redacted_input[key.clone()], "data");
-            assert!(value.is_none(), "data field value should be None");
-        }
-        _ => panic!(".data should be a KeyValue"),
+    if let redacted::Body::KeyValue { key, value } = data_field {
+        assert_eq!(&redacted_input[key.clone()], "data");
+        assert!(value.is_none(), "data field value should be None");
+    } else {
+        panic!(".data should be a KeyValue");
     }
 }

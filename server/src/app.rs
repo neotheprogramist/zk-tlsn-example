@@ -47,6 +47,18 @@ impl AppState {
 pub struct BalanceResponse {
     username: String,
     balance: u64,
+    #[serde(rename = "z")]
+    padding: String,
+}
+
+impl BalanceResponse {
+    fn new(username: String, balance: u64) -> Self {
+        Self {
+            username,
+            balance,
+            padding: " ".repeat(12),
+        }
+    }
 }
 
 pub fn get_app(balances: HashMap<String, u64>) -> Router {
@@ -63,7 +75,7 @@ async fn get_balance(
     let balances = state.balances.read().compat().await;
 
     match balances.get(&username) {
-        Some(&balance) => Ok(Json(BalanceResponse { username, balance })),
+        Some(&balance) => Ok(Json(BalanceResponse::new(username, balance))),
         None => Err(ApiError::UserNotFound(username)),
     }
 }

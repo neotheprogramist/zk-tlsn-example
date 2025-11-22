@@ -102,16 +102,20 @@ pub fn create_request_reveal_config() -> RevealConfig {
         commit_headers: vec!["connection".into()],
         reveal_body_keypaths: vec![],
         commit_body_keypaths: vec![],
+        reveal_key_commit_value_keypaths: vec![],
     }
 }
 
 /// Creates reveal configuration for response data
 pub fn create_response_reveal_config() -> RevealConfig {
+    use crate::BodyFieldConfig;
+
     RevealConfig {
         reveal_headers: vec![],
         commit_headers: vec![],
-        reveal_body_keypaths: vec![".username".into()],
-        commit_body_keypaths: vec![".balance".into()],
+        reveal_body_keypaths: vec![BodyFieldConfig::Quoted(".username".into())],
+        commit_body_keypaths: vec![BodyFieldConfig::UnquotedPadded(".balance".into(), 12)],
+        reveal_key_commit_value_keypaths: vec![],
     }
 }
 

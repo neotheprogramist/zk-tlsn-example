@@ -17,6 +17,9 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
     #[error(transparent)]
     TlsnProver(#[from] tlsn::prover::ProverError),
 

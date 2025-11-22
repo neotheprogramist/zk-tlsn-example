@@ -4,8 +4,8 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use super::{
+    Body, Header,
     traversal::{BodyConfig, HeaderConfig},
-    types::{Body, Header},
 };
 use crate::{
     HttpMessageBuilder,

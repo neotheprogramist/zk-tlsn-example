@@ -34,6 +34,25 @@ pub enum ZkTlsnError {
 
     #[error("Noir error: {0}")]
     NoirError(String),
+
+    #[error(
+        "Balance too large: balance length {balance_length} + prefix {prefix_length} + suffix {suffix_length} exceeds total length {total_length}"
+    )]
+    BalanceTooLarge {
+        balance_length: usize,
+        total_length: usize,
+        prefix_length: usize,
+        suffix_length: usize,
+    },
+
+    #[error("Invalid balance format: {0}")]
+    InvalidBalanceFormat(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Invalid commitment length: expected {expected} bytes, got {actual} bytes")]
+    InvalidCommitmentLength { expected: usize, actual: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ZkTlsnError>;

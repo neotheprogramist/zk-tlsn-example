@@ -12,7 +12,7 @@ mod tests {
     use std::{collections::HashMap, str::FromStr};
 
     use hyper::Uri;
-    use parser::{HttpBody, standard::Response};
+    use parser::{JsonFieldRangeExt, standard::Response};
     use shared::create_test_tls_config;
     use smol::net::unix::UnixStream;
 
@@ -69,18 +69,22 @@ mod tests {
                 .get(".balance")
                 .expect("Should find balance field");
 
-            let username_key_range = username_field.key_with_quotes_and_colon().unwrap();
-            let username_val_range = username_field.value_with_quotes();
-            let username_str = &raw_response_str[username_key_range.start..username_val_range.end];
-            assert_eq!(username_str, "\"username\":\"alice\"");
+            if let parser::standard::Body::KeyValue { key, value } = username_field {
+                let username_key_range = key.with_quotes_and_colon();
+                let username_val_range = value.with_quotes();
+                let username_str =
+                    &raw_response_str[username_key_range.start..username_val_range.end];
+                assert_eq!(username_str, "\"username\":\"alice\"");
+            } else {
+                panic!("username should be a KeyValue");
+            }
 
-            let balance_key_range = balance_field.key_with_quotes_and_colon().unwrap();
-            match balance_field {
-                parser::standard::Body::KeyValue { value, .. } => {
-                    let balance_str = &raw_response_str[balance_key_range.start..value.end];
-                    assert_eq!(balance_str, "\"balance\":100");
-                }
-                _ => panic!("balance should be a KeyValue"),
+            if let parser::standard::Body::KeyValue { key, value } = balance_field {
+                let balance_key_range = key.with_quotes_and_colon();
+                let balance_str = &raw_response_str[balance_key_range.start..value.end];
+                assert_eq!(balance_str, "\"balance\":100");
+            } else {
+                panic!("balance should be a KeyValue");
             }
         });
     }
@@ -135,8 +139,9 @@ mod tests {
 
             let content_type_header = &content_type_headers[0];
             // Construct the full header range including name, separator, value, and newline
-            let request_content_type_str =
-                &raw_request_str[content_type_header.name.start..content_type_header.value.end + 2];
+            let request_content_type_str = &raw_request_str[content_type_header
+                .name
+                .header_full_range(&content_type_header.value.with_newline())];
             assert_eq!(
                 request_content_type_str,
                 "content-type: application/json\r\n"
@@ -172,8 +177,9 @@ mod tests {
             assert_eq!(content_type_headers.len(), 1);
 
             let content_type_header = &content_type_headers[0];
-            let header_full_str = &raw_response_str
-                [content_type_header.name.start..content_type_header.value.end + 2];
+            let header_full_str = &raw_response_str[content_type_header
+                .name
+                .header_full_range(&content_type_header.value.with_newline())];
             assert_eq!(header_full_str, "content-type: application/json\r\n");
 
             let username_field = parsed_response
@@ -185,18 +191,22 @@ mod tests {
                 .get(".balance")
                 .expect("Should find balance field");
 
-            let username_key_range = username_field.key_with_quotes_and_colon().unwrap();
-            let username_val_range = username_field.value_with_quotes();
-            let username_str = &raw_response_str[username_key_range.start..username_val_range.end];
-            assert_eq!(username_str, "\"username\":\"alice\"");
+            if let parser::standard::Body::KeyValue { key, value } = username_field {
+                let username_key_range = key.with_quotes_and_colon();
+                let username_val_range = value.with_quotes();
+                let username_str =
+                    &raw_response_str[username_key_range.start..username_val_range.end];
+                assert_eq!(username_str, "\"username\":\"alice\"");
+            } else {
+                panic!("username should be a KeyValue");
+            }
 
-            let balance_key_range = balance_field.key_with_quotes_and_colon().unwrap();
-            match balance_field {
-                parser::standard::Body::KeyValue { value, .. } => {
-                    let balance_str = &raw_response_str[balance_key_range.start..value.end];
-                    assert_eq!(balance_str, "\"balance\":100");
-                }
-                _ => panic!("balance should be a KeyValue"),
+            if let parser::standard::Body::KeyValue { key, value } = balance_field {
+                let balance_key_range = key.with_quotes_and_colon();
+                let balance_str = &raw_response_str[balance_key_range.start..value.end];
+                assert_eq!(balance_str, "\"balance\":100");
+            } else {
+                panic!("balance should be a KeyValue");
             }
         });
     }

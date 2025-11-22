@@ -13,7 +13,10 @@ use tlsnotary::{
     TranscriptSecret,
 };
 
-use crate::error::{Result, ZkTlsnError};
+use crate::{
+    error::{Result, ZkTlsnError},
+    padding::PaddingConfig,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
@@ -42,10 +45,16 @@ pub fn generate_proof(
     transcript_commitments: &[TranscriptCommitment],
     transcript_secrets: &[TranscriptSecret],
     received_data: &[u8],
+    padding_config: PaddingConfig,
 ) -> Result<Proof> {
     let received_commitment = extract_received_commitment(transcript_commitments)?;
     let received_secret = extract_received_secret(transcript_secrets)?;
-    let proof_input = prepare_proof_input(received_data, received_commitment, received_secret)?;
+    let proof_input = prepare_proof_input(
+        received_data,
+        received_commitment,
+        received_secret,
+        padding_config,
+    )?;
 
     generate_zk_proof(&proof_input)
 }
@@ -76,29 +85,51 @@ fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHash
 
 #[derive(Debug, Clone)]
 struct ProofInput {
-    committed_hash: Vec<u8>,
-    balance: Vec<u8>,
-    blinder: Vec<u8>,
+    balance_committed_hash: Vec<u8>,
+    balance_committed_part: Vec<u8>,
+    balance_blinder: Vec<u8>,
 }
 
 fn prepare_proof_input(
     received_data: &[u8],
     commitment: PlaintextHash,
     secret: PlaintextHashSecret,
+    padding_config: PaddingConfig,
 ) -> Result<ProofInput> {
     validate_commitment(&commitment)?;
     validate_secret(&secret)?;
 
-    let committed_hash = commitment.hash.value.as_bytes().to_vec();
-    let balance = extract_balance(received_data, &commitment);
+    let committed_range = commitment.idx.min().unwrap()..commitment.idx.end().unwrap();
+
+    let committed_len = committed_range.end - committed_range.start;
+    if committed_len != padding_config.commitment_length {
+        return Err(ZkTlsnError::InvalidCommitmentLength {
+            expected: padding_config.commitment_length,
+            actual: committed_len,
+        });
+    }
+
+    let committed_data = received_data[committed_range.clone()].to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
 
-    verify_hash(&balance, &blinder, &committed_hash)?;
+    tracing::debug!(
+        "Committed data (fixed {} bytes): {:?}",
+        committed_data.len(),
+        String::from_utf8_lossy(&committed_data)
+    );
+
+    let mut data_to_hash = Vec::new();
+    data_to_hash.extend_from_slice(&committed_data);
+    data_to_hash.extend_from_slice(&blinder);
+    let committed_hash = blake3(&data_to_hash).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
+
+    let tlsnotary_hash = commitment.hash.value.as_bytes().to_vec();
+    verify_hash(&committed_data, &blinder, &tlsnotary_hash)?;
 
     Ok(ProofInput {
-        committed_hash,
-        balance: "100".as_bytes().to_vec(),
-        blinder,
+        balance_committed_hash: committed_hash.to_vec(),
+        balance_committed_part: committed_data,
+        balance_blinder: blinder,
     })
 }
 
@@ -120,12 +151,6 @@ fn validate_secret(secret: &PlaintextHashSecret) -> Result<()> {
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
     Ok(())
-}
-
-fn extract_balance(received_data: &[u8], commitment: &PlaintextHash) -> Vec<u8> {
-    let start = commitment.idx.min().unwrap();
-    let end = commitment.idx.end().unwrap();
-    received_data[start..end].to_vec()
 }
 
 fn verify_hash(balance: &[u8], blinder: &[u8], committed_hash: &[u8]) -> Result<()> {
@@ -158,9 +183,19 @@ pub(crate) fn load_circuit_bytecode() -> Result<String> {
 
 fn build_witness_inputs(proof_input: &ProofInput) -> Vec<String> {
     let mut inputs = Vec::new();
-    inputs.extend(proof_input.committed_hash.iter().map(|b| b.to_string()));
-    inputs.extend(proof_input.balance.iter().map(|b| b.to_string()));
-    inputs.extend(proof_input.blinder.iter().map(|b| b.to_string()));
+    inputs.extend(
+        proof_input
+            .balance_committed_hash
+            .iter()
+            .map(|b| b.to_string()),
+    );
+    inputs.extend(
+        proof_input
+            .balance_committed_part
+            .iter()
+            .map(|b| b.to_string()),
+    );
+    inputs.extend(proof_input.balance_blinder.iter().map(|b| b.to_string()));
     inputs
 }
 

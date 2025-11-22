@@ -20,23 +20,9 @@ pub trait Traverser {
     fn traverse(self) -> Result<HashMap<String, Self::Output>>;
 }
 
-pub trait HttpHeader {
-    fn full_range(&self) -> Range<usize>;
-
-    fn name_with_separator(&self) -> Range<usize>;
-
-    fn name_range(&self) -> &Range<usize>;
-}
-
-pub trait HttpBody {
-    fn key_with_quotes_and_colon(&self) -> Option<Range<usize>>;
-
-    fn full_pair_range(&self) -> Range<usize>;
-}
-
 pub trait HttpMessage {
-    type Header: HttpHeader;
-    type Body: HttpBody;
+    type Header;
+    type Body;
 
     fn headers(&self) -> &HashMap<String, Vec<Self::Header>>;
 

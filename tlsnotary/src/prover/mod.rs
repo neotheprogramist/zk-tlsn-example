@@ -5,7 +5,9 @@ use futures::{AsyncRead, AsyncWrite, join};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
-pub use reveal::{RevealConfig, reveal_request, reveal_response};
+pub use reveal::{
+    BodyFieldConfig, KeyValueCommitConfig, RevealConfig, reveal_request, reveal_response,
+};
 use tlsn::{
     hash::HashAlgId,
     prover::{ProveConfig, Prover as TlsnProver, ProverConfig},

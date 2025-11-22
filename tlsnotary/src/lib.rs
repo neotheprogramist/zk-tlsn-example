@@ -3,7 +3,9 @@ pub mod prover;
 pub mod verifier;
 
 pub use error::Error;
-pub use prover::{Prover, ProverBuilder, ProverOutput, RevealConfig};
+pub use prover::{
+    BodyFieldConfig, KeyValueCommitConfig, Prover, ProverBuilder, ProverOutput, RevealConfig,
+};
 pub use tlsn::{
     config::{CertificateDer, ProtocolConfig, ProtocolConfigValidator, RootCertStore},
     connection::ServerName,

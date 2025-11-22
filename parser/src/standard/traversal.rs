@@ -5,7 +5,7 @@ use pest::{
     iterators::{Pair, Pairs},
 };
 
-use super::types::{Body, Header};
+use super::{Body, Header};
 use crate::{
     common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},

@@ -101,16 +101,23 @@ pub fn create_request_reveal_config() -> RevealConfig {
         commit_headers: vec!["connection".into()],
         reveal_body_keypaths: vec![],
         commit_body_keypaths: vec![],
+        reveal_key_commit_value_keypaths: vec![],
     }
 }
 
 /// Creates reveal configuration for response data
 pub fn create_response_reveal_config() -> RevealConfig {
+    use tlsnotary::{BodyFieldConfig, KeyValueCommitConfig};
+
     RevealConfig {
         reveal_headers: vec![],
         commit_headers: vec![],
-        reveal_body_keypaths: vec![".username".into()],
-        commit_body_keypaths: vec![".balance".into()],
+        reveal_body_keypaths: vec![BodyFieldConfig::Quoted(".username".into())],
+        commit_body_keypaths: vec![],
+        reveal_key_commit_value_keypaths: vec![KeyValueCommitConfig::with_padding(
+            ".balance".into(),
+            12,
+        )],
     }
 }
 
@@ -210,22 +217,58 @@ pub fn verify_parsed_response(verifier_output: &VerifierOutput, received_data: &
     verify_response_body(parsed_response, received_data);
 }
 
+pub fn verify_balance_commitment_and_proof(
+    verifier_output: &VerifierOutput,
+    proof: &crate::Proof,
+) -> crate::Result<()> {
+    let received_data = String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
+        .expect("Received data should be valid UTF-8");
+
+    let parsed_response = verifier_output
+        .parsed_response
+        .as_ref()
+        .expect("Response should be parsed");
+
+    let bindings =
+        crate::bind_commitments_to_keys(parsed_response, &verifier_output.transcript_commitments)?;
+
+    let balance_binding = bindings
+        .get(".balance")
+        .expect("Should have balance field binding");
+
+    let balance_key = &received_data[balance_binding.key_range.clone()];
+    assert!(
+        balance_key.contains("balance"),
+        "Balance key should contain 'balance'"
+    );
+
+    let key_end = balance_binding.key_range.end;
+    let value_start = balance_binding.hash.idx.min().unwrap();
+
+    assert!(
+        (value_start - key_end) <= 2,
+        "Committed range should start right after balance key"
+    );
+
+    crate::verify_proof(proof)?;
+
+    tracing::info!("Successfully verified balance commitment and ZK proof");
+    tracing::info!(
+        "Bound commitments: {} field(s) with committed values",
+        bindings.len()
+    );
+
+    Ok(())
+}
+
 fn verify_status_line(parsed_response: &parser::redacted::Response, received_data: &str) {
-    // Verify status line exists
     let status_line_range = parsed_response.protocol_version.start..parsed_response.status.end;
     let status_line_value = &received_data[status_line_range.clone()];
-    assert!(
-        status_line_value.contains("HTTP/1.1 200 OK"),
-        "Status line should contain expected values"
-    );
+    assert!(status_line_value.contains("HTTP/1.1 200 OK"));
 }
 
 fn verify_response_body(parsed_response: &parser::redacted::Response, received_data: &str) {
-    assert_eq!(
-        parsed_response.body.len(),
-        1,
-        "Should have exactly one field"
-    );
+    assert_eq!(parsed_response.body.len(), 2);
 
     let username_field = parsed_response
         .body
@@ -233,6 +276,21 @@ fn verify_response_body(parsed_response: &parser::redacted::Response, received_d
         .expect("Should have username field");
 
     verify_username_field(username_field, received_data);
+
+    let balance_field = parsed_response
+        .body
+        .get(".balance")
+        .expect("Should have balance field");
+
+    match balance_field {
+        parser::redacted::Body::KeyValue { key, value } => {
+            assert!(key.start < key.end);
+            assert!(value.is_none());
+        }
+        parser::redacted::Body::Value(_) => {
+            panic!("Balance should be a key-value pair, not just a value");
+        }
+    }
 }
 
 fn verify_username_field(username_field: &parser::redacted::Body, received_data: &str) {
@@ -260,7 +318,16 @@ mod tests {
     use tlsnotary::{Prover, Verifier};
 
     use super::*;
-    use crate::{generate_proof, verify_proof};
+    use crate::generate_proof;
+
+    #[test]
+    fn test_blake3() {
+        let expected = [
+            179, 212, 248, 128, 63, 126, 36, 184, 243, 137, 176, 114, 231, 84, 119, 205, 188, 251,
+            224, 116, 8, 15, 181, 229, 0, 229, 62, 38, 224, 84, 21, 142,
+        ];
+        assert_eq!(blake3("123".as_bytes()).unwrap(), expected);
+    }
 
     #[test]
     fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
@@ -323,24 +390,17 @@ mod tests {
             verify_parsed_request(&verifier_output, &sent_data);
             verify_parsed_response(&verifier_output, &received_data);
 
+            let padding_config = crate::PaddingConfig::new(12);
             let proof = generate_proof(
                 &prover_output.transcript_commitments,
                 &prover_output.transcript_secrets,
                 &prover_output.received,
+                padding_config,
             )
             .expect("Proof generation should succeed");
 
-            verify_proof(&verifier_output.transcript_commitments, &proof)
-                .expect("Proof verification should succeed");
+            verify_balance_commitment_and_proof(&verifier_output, &proof)
+                .expect("Balance commitment and proof verification should succeed");
         });
-    }
-
-    #[test]
-    fn test_blake3() {
-        let expected = [
-            179, 212, 248, 128, 63, 126, 36, 184, 243, 137, 176, 114, 231, 84, 119, 205, 188, 251,
-            224, 116, 8, 15, 181, 229, 0, 229, 62, 38, 224, 84, 21, 142,
-        ];
-        assert_eq!(blake3("123".as_bytes()).unwrap(), expected);
     }
 }
