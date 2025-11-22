@@ -25,5 +25,4 @@ tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-k256.workspace = true
 noir.workspace = true

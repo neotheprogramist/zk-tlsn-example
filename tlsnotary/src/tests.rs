@@ -485,7 +485,7 @@ mod tests {
             // Test validator with expected properties
             let validator = Validator::builder()
                 .expected_server_name("localhost")
-                .expected_hash_alg(HashAlgId::SHA256)
+                .expected_hash_alg(HashAlgId::BLAKE3)
                 .request_header_equals("content-type", "application/json")
                 .response_body_field_equals(".username", ExpectedValue::String("alice".to_string()))
                 .build();

@@ -1,9 +1,9 @@
-use k256::sha2::{Digest, Sha256};
 use noir::{
     barretenberg::{
         prove::prove_ultra_honk, srs::setup_srs_from_bytecode,
         verify::get_ultra_honk_verification_key,
     },
+    blackbox_solver::blake3,
     witness::from_vec_str_to_witness_map,
 };
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHash
 #[derive(Debug, Clone)]
 struct ProofInput {
     committed_hash: Vec<u8>,
-    balance: String,
+    balance: Vec<u8>,
     blinder: Vec<u8>,
 }
 
@@ -97,7 +97,7 @@ fn prepare_proof_input(
 
     Ok(ProofInput {
         committed_hash,
-        balance: "100".into(),
+        balance: "100".as_bytes().to_vec(),
         blinder,
     })
 }
@@ -106,7 +106,7 @@ fn validate_commitment(commitment: &PlaintextHash) -> Result<()> {
     if commitment.direction != Direction::Received {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
-    if commitment.hash.alg != HashAlgId::SHA256 {
+    if commitment.hash.alg != HashAlgId::BLAKE3 {
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
     Ok(())
@@ -116,7 +116,7 @@ fn validate_secret(secret: &PlaintextHashSecret) -> Result<()> {
     if secret.direction != Direction::Received {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
-    if secret.alg != HashAlgId::SHA256 {
+    if secret.alg != HashAlgId::BLAKE3 {
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
     Ok(())
@@ -129,10 +129,7 @@ fn extract_balance(received_data: &[u8], commitment: &PlaintextHash) -> Vec<u8> 
 }
 
 fn verify_hash(balance: &[u8], blinder: &[u8], committed_hash: &[u8]) -> Result<()> {
-    let mut hasher = Sha256::new();
-    hasher.update(balance);
-    hasher.update(blinder);
-    let computed_hash = hasher.finalize();
+    let computed_hash = blake3(&[balance, blinder].concat()).unwrap();
 
     if committed_hash != computed_hash.as_slice() {
         return Err(ZkTlsnError::HashVerificationFailed);
@@ -162,7 +159,7 @@ pub(crate) fn load_circuit_bytecode() -> Result<String> {
 fn build_witness_inputs(proof_input: &ProofInput) -> Vec<String> {
     let mut inputs = Vec::new();
     inputs.extend(proof_input.committed_hash.iter().map(|b| b.to_string()));
-    inputs.extend(proof_input.balance.as_bytes().iter().map(|b| b.to_string()));
+    inputs.extend(proof_input.balance.iter().map(|b| b.to_string()));
     inputs.extend(proof_input.blinder.iter().map(|b| b.to_string()));
     inputs
 }

@@ -262,7 +262,7 @@ impl ProverBuilder {
             request: None,
             request_reveal_config: RevealConfig::default(),
             response_reveal_config: RevealConfig::default(),
-            hash_alg: HashAlgId::SHA256,
+            hash_alg: HashAlgId::BLAKE3,
         }
     }
 

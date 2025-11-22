@@ -254,6 +254,7 @@ fn verify_username_field(username_field: &parser::redacted::Body, received_data:
 #[cfg(test)]
 mod tests {
     use futures::join;
+    use noir::blackbox_solver::blake3;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;
     use tlsnotary::{Prover, Verifier};
@@ -332,5 +333,14 @@ mod tests {
             verify_proof(&verifier_output.transcript_commitments, &proof)
                 .expect("Proof verification should succeed");
         });
+    }
+
+    #[test]
+    fn test_blake3() {
+        let expected = [
+            179, 212, 248, 128, 63, 126, 36, 184, 243, 137, 176, 114, 231, 84, 119, 205, 188, 251,
+            224, 116, 8, 15, 181, 229, 0, 229, 62, 38, 224, 84, 21, 142,
+        ];
+        assert_eq!(blake3("123".as_bytes()).unwrap(), expected);
     }
 }
