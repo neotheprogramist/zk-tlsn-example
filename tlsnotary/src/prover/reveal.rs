@@ -1,6 +1,9 @@
 //! Selective disclosure configuration for HTTP requests and responses.
 
-use parser::{BodySearchable, HeaderSearchable, RequestParser, ResponseParser};
+use parser::{
+    HttpBody, HttpHeader, HttpMessage,
+    standard::{Request, Response},
+};
 use tlsn::{prover::ProveConfigBuilder, transcript::TranscriptCommitConfigBuilder};
 
 use crate::error::Error;
@@ -51,48 +54,47 @@ pub fn reveal_request(
 
     let raw_request_str = String::from_utf8(request.to_vec())?;
 
-    let parsed_request = RequestParser::parse_request(&raw_request_str)?;
+    let parsed_request: Request = raw_request_str.parse()?;
 
-    let request_line_range = parsed_request.get_request_line_range();
+    // Reveal request line (method, URL, protocol version)
+    let request_line_range = parsed_request.method.start..parsed_request.protocol_version.end + 1;
     builder.reveal_sent(&request_line_range)?;
 
     if !config.reveal_headers.is_empty() {
-        let header_strs: Vec<&str> = config.reveal_headers.iter().map(|s| s.as_str()).collect();
-        let header_ranges = parsed_request.get_header_ranges(&header_strs)?;
-        for range in header_ranges {
-            builder.reveal_sent(&range)?;
+        for header_name in &config.reveal_headers {
+            let header_name_lower = header_name.to_lowercase();
+            if let Some(headers) = parsed_request.headers().get(&header_name_lower) {
+                for header in headers {
+                    builder.reveal_sent(&header.full_range())?;
+                }
+            }
         }
     }
 
     if !config.commit_headers.is_empty() {
-        let header_strs: Vec<&str> = config.commit_headers.iter().map(|s| s.as_str()).collect();
-        let header_ranges = parsed_request.get_header_ranges(&header_strs)?;
-        for range in header_ranges {
-            transcript_commitment_builder.commit_sent(&range)?;
+        for header_name in &config.commit_headers {
+            let header_name_lower = header_name.to_lowercase();
+            if let Some(headers) = parsed_request.headers().get(&header_name_lower) {
+                for header in headers {
+                    transcript_commitment_builder.commit_sent(&header.full_range())?;
+                }
+            }
         }
     }
 
     if !config.reveal_body_keypaths.is_empty() {
-        let keypath_strs: Vec<&str> = config
-            .reveal_body_keypaths
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        let body_ranges = parsed_request.get_body_keypaths_ranges(&keypath_strs)?;
-        for range in body_ranges {
-            builder.reveal_sent(&range)?;
+        for keypath in &config.reveal_body_keypaths {
+            if let Some(body_field) = parsed_request.body().get(keypath) {
+                builder.reveal_sent(&body_field.full_pair_range())?;
+            }
         }
     }
 
     if !config.commit_body_keypaths.is_empty() {
-        let keypath_strs: Vec<&str> = config
-            .commit_body_keypaths
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        let commit_ranges = parsed_request.get_body_keypaths_ranges(&keypath_strs)?;
-        for range in commit_ranges {
-            transcript_commitment_builder.commit_sent(&range)?;
+        for keypath in &config.commit_body_keypaths {
+            if let Some(body_field) = parsed_request.body().get(keypath) {
+                transcript_commitment_builder.commit_sent(&body_field.full_pair_range())?;
+            }
         }
     }
 
@@ -110,48 +112,47 @@ pub fn reveal_response(
 ) -> Result<(), Error> {
     let raw_response_str = String::from_utf8(response.to_vec())?;
 
-    let parsed_response = ResponseParser::parse_response(&raw_response_str)?;
+    let parsed_response: Response = raw_response_str.parse()?;
 
-    let status_line_range = parsed_response.get_status_line_range();
+    // Reveal status line (protocol version, status code, status)
+    let status_line_range = parsed_response.protocol_version.start..parsed_response.status.end + 1;
     builder.reveal_recv(&status_line_range)?;
 
     if !config.reveal_headers.is_empty() {
-        let header_strs: Vec<&str> = config.reveal_headers.iter().map(|s| s.as_str()).collect();
-        let header_ranges = parsed_response.get_header_ranges(&header_strs)?;
-        for range in header_ranges {
-            builder.reveal_recv(&range)?;
+        for header_name in &config.reveal_headers {
+            let header_name_lower = header_name.to_lowercase();
+            if let Some(headers) = parsed_response.headers().get(&header_name_lower) {
+                for header in headers {
+                    builder.reveal_recv(&header.full_range())?;
+                }
+            }
         }
     }
 
     if !config.commit_headers.is_empty() {
-        let header_strs: Vec<&str> = config.commit_headers.iter().map(|s| s.as_str()).collect();
-        let header_ranges = parsed_response.get_header_ranges(&header_strs)?;
-        for range in header_ranges {
-            transcript_commitment_builder.commit_recv(&range)?;
+        for header_name in &config.commit_headers {
+            let header_name_lower = header_name.to_lowercase();
+            if let Some(headers) = parsed_response.headers().get(&header_name_lower) {
+                for header in headers {
+                    transcript_commitment_builder.commit_recv(&header.full_range())?;
+                }
+            }
         }
     }
 
     if !config.reveal_body_keypaths.is_empty() {
-        let keypath_strs: Vec<&str> = config
-            .reveal_body_keypaths
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        let body_ranges = parsed_response.get_body_keypaths_ranges(&keypath_strs)?;
-        for range in body_ranges {
-            builder.reveal_recv(&range)?;
+        for keypath in &config.reveal_body_keypaths {
+            if let Some(body_field) = parsed_response.body().get(keypath) {
+                builder.reveal_recv(&body_field.full_pair_range())?;
+            }
         }
     }
 
     if !config.commit_body_keypaths.is_empty() {
-        let keypath_strs: Vec<&str> = config
-            .commit_body_keypaths
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        let commit_ranges = parsed_response.get_body_keypaths_ranges(&keypath_strs)?;
-        for range in commit_ranges {
-            transcript_commitment_builder.commit_recv(&range)?;
+        for keypath in &config.commit_body_keypaths {
+            if let Some(body_field) = parsed_response.body().get(keypath) {
+                transcript_commitment_builder.commit_recv(&body_field.full_pair_range())?;
+            }
         }
     }
 

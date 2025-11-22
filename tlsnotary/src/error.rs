@@ -6,7 +6,7 @@ pub enum Error {
     HttpRequestFailed(u16),
 
     #[error(transparent)]
-    Parser(#[from] parser::ParserError),
+    Parser(#[from] parser::ParseError),
 
     #[error("missing required field: {0}")]
     MissingField(&'static str),

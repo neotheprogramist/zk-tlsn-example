@@ -1,7 +1,6 @@
 mod validator;
 
 use futures::{AsyncRead, AsyncWrite};
-use parser::{RedactedRequestParser, RedactedResponseParser};
 use tlsn::{
     transcript::PartialTranscript,
     verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
@@ -81,8 +80,8 @@ impl Verifier {
         let sent_data = String::from_utf8(transcript.sent_unsafe().to_vec())?;
         let received_data = String::from_utf8(transcript.received_unsafe().to_vec())?;
 
-        let parsed_request = RedactedRequestParser::parse_redacted_request(&sent_data).ok();
-        let parsed_response = RedactedResponseParser::parse_redacted_response(&received_data).ok();
+        let parsed_request = sent_data.parse::<parser::redacted::Request>().ok();
+        let parsed_response = received_data.parse::<parser::redacted::Response>().ok();
 
         Ok((parsed_request, parsed_response))
     }

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use parser::{RangedText, RangedValue};
 use tlsn::hash::HashAlgId;
 
 use super::VerifierOutput;
@@ -63,8 +62,16 @@ impl Validator {
                 .as_ref()
                 .ok_or(Error::MissingField("parsed request"))?;
 
+            let request_data = output.transcript.sent_unsafe();
+
             for assertion in &self.request_assertions {
-                Self::validate_assertion(assertion, &request.headers, &request.body, "request")?;
+                Self::validate_assertion(
+                    assertion,
+                    &request.headers,
+                    &request.body,
+                    request_data,
+                    "request",
+                )?;
             }
         }
 
@@ -74,8 +81,16 @@ impl Validator {
                 .as_ref()
                 .ok_or(Error::MissingField("parsed response"))?;
 
+            let response_data = output.transcript.received_unsafe();
+
             for assertion in &self.response_assertions {
-                Self::validate_assertion(assertion, &response.headers, &response.body, "response")?;
+                Self::validate_assertion(
+                    assertion,
+                    &response.headers,
+                    &response.body,
+                    response_data,
+                    "response",
+                )?;
             }
         }
 
@@ -84,33 +99,47 @@ impl Validator {
 
     fn validate_assertion(
         assertion: &FieldAssertion,
-        headers: &HashMap<String, RangedText>,
-        body: &HashMap<String, RangedValue>,
+        headers: &HashMap<String, Vec<parser::redacted::Header>>,
+        body: &HashMap<String, parser::redacted::Body>,
+        data: &[u8],
         context: &str,
     ) -> Result<(), Error> {
         match assertion {
             FieldAssertion::HeaderEquals { key, value } => {
-                let actual = headers
-                    .get(key)
-                    .ok_or_else(|| {
-                        Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
-                    })?
-                    .value
-                    .as_str();
+                let key_lower = key.to_lowercase();
+                let headers_list = headers.get(&key_lower).ok_or_else(|| {
+                    Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
+                })?;
 
-                if actual != value {
+                // Get the first header value
+                let header = headers_list.first().ok_or_else(|| {
+                    Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
+                })?;
+
+                if let Some(value_range) = &header.value {
+                    let actual = std::str::from_utf8(&data[value_range.clone()]).map_err(|_| {
+                        Error::InvalidTranscript("Invalid UTF-8 in header value".to_string())
+                    })?;
+
+                    if actual != value {
+                        return Err(Error::InvalidTranscript(format!(
+                            "Expected {} header '{}' to be '{}', got '{}'",
+                            context, key, value, actual
+                        )));
+                    }
+                } else {
                     return Err(Error::InvalidTranscript(format!(
-                        "Expected {} header '{}' to be '{}', got '{}'",
-                        context, key, value, actual
+                        "Expected {} header '{}' to have value '{}', but it has no value",
+                        context, key, value
                     )));
                 }
             }
             FieldAssertion::BodyFieldEquals { key, value } => {
-                let actual = body.get(key).ok_or_else(|| {
+                let body_field = body.get(key).ok_or_else(|| {
                     Error::InvalidTranscript(format!("Missing {} body field '{}'", context, key))
                 })?;
 
-                Self::validate_value(value, actual, context, key)?;
+                Self::validate_value(value, body_field, data, context, key)?;
             }
         }
         Ok(())
@@ -118,46 +147,80 @@ impl Validator {
 
     fn validate_value(
         expected: &ExpectedValue,
-        actual: &RangedValue,
+        body_field: &parser::redacted::Body,
+        data: &[u8],
         context: &str,
         key: &str,
     ) -> Result<(), Error> {
-        match (expected, actual) {
-            (ExpectedValue::Null, RangedValue::Null) => Ok(()),
-            (ExpectedValue::Bool(expected_val), RangedValue::Bool { value, .. }) => {
-                if expected_val == value {
+        let value_range = match body_field {
+            parser::redacted::Body::KeyValue { value, .. } => value.as_ref(),
+            parser::redacted::Body::Value(range) => Some(range),
+        }
+        .ok_or_else(|| {
+            Error::InvalidTranscript(format!(
+                "Missing value for {} body field '{}'",
+                context, key
+            ))
+        })?;
+
+        let actual_str = std::str::from_utf8(&data[value_range.clone()])
+            .map_err(|_| Error::InvalidTranscript("Invalid UTF-8 in body value".to_string()))?;
+
+        match expected {
+            ExpectedValue::Null => {
+                if actual_str == "null" {
+                    Ok(())
+                } else {
+                    Err(Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be null, got '{}'",
+                        context, key, actual_str
+                    )))
+                }
+            }
+            ExpectedValue::Bool(expected_val) => {
+                let actual_bool = actual_str.parse::<bool>().map_err(|_| {
+                    Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be a boolean, got '{}'",
+                        context, key, actual_str
+                    ))
+                })?;
+
+                if expected_val == &actual_bool {
                     Ok(())
                 } else {
                     Err(Error::InvalidTranscript(format!(
                         "Expected {} body field '{}' to be {}, got {}",
-                        context, key, expected_val, value
+                        context, key, expected_val, actual_bool
                     )))
                 }
             }
-            (ExpectedValue::Number(expected_val), RangedValue::Number { value, .. }) => {
-                if (expected_val - value).abs() < f64::EPSILON {
+            ExpectedValue::Number(expected_val) => {
+                let actual_num = actual_str.parse::<f64>().map_err(|_| {
+                    Error::InvalidTranscript(format!(
+                        "Expected {} body field '{}' to be a number, got '{}'",
+                        context, key, actual_str
+                    ))
+                })?;
+
+                if (expected_val - actual_num).abs() < f64::EPSILON {
                     Ok(())
                 } else {
                     Err(Error::InvalidTranscript(format!(
                         "Expected {} body field '{}' to be {}, got {}",
-                        context, key, expected_val, value
+                        context, key, expected_val, actual_num
                     )))
                 }
             }
-            (ExpectedValue::String(expected_val), RangedValue::String { value, .. }) => {
-                if expected_val == value {
+            ExpectedValue::String(expected_val) => {
+                if expected_val == actual_str {
                     Ok(())
                 } else {
                     Err(Error::InvalidTranscript(format!(
                         "Expected {} body field '{}' to be '{}', got '{}'",
-                        context, key, expected_val, value
+                        context, key, expected_val, actual_str
                     )))
                 }
             }
-            _ => Err(Error::InvalidTranscript(format!(
-                "Type mismatch for {} body field '{}'",
-                context, key
-            ))),
         }
     }
 }

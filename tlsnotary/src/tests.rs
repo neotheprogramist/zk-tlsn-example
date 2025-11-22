@@ -110,8 +110,8 @@ pub fn create_response_reveal_config() -> RevealConfig {
     RevealConfig {
         reveal_headers: vec![],
         commit_headers: vec![],
-        reveal_body_keypaths: vec!["username".into()],
-        commit_body_keypaths: vec!["balance".into()],
+        reveal_body_keypaths: vec![".username".into()],
+        commit_body_keypaths: vec![".balance".into()],
     }
 }
 
@@ -168,27 +168,30 @@ pub fn verify_parsed_request(verifier_output: &VerifierOutput, sent_data: &str) 
         .as_ref()
         .expect("Request should be parsed");
 
-    // Verify request line
-    assert_eq!(
-        parsed_request.request_line.value,
-        "GET /api/balance/alice HTTP/1.1"
-    );
-    assert_eq!(
-        &sent_data[parsed_request.request_line.range.clone()],
-        "GET /api/balance/alice HTTP/1.1\r\n",
+    // Verify request line exists
+    let request_line_range = parsed_request.method.start..parsed_request.protocol_version.end;
+    let request_line_value = &sent_data[request_line_range.clone()];
+    assert!(
+        request_line_value.contains("GET /api/balance/alice HTTP/1.1"),
+        "Request line should contain expected values"
     );
 
     // Verify request headers
     assert_eq!(parsed_request.headers.len(), 1);
-    let content_type = parsed_request
+    let content_type_headers = parsed_request
         .headers
         .get("content-type")
         .expect("Should have content-type header");
-    assert_eq!(content_type.value, "application/json");
-    assert_eq!(
-        &sent_data[content_type.range.clone()],
-        "content-type: application/json\r\n"
-    );
+
+    let content_type = content_type_headers
+        .first()
+        .expect("Should have at least one content-type header");
+    if let Some(value_range) = &content_type.value {
+        let value = &sent_data[value_range.clone()];
+        assert_eq!(value, "application/json");
+    } else {
+        panic!("content-type header should have a value");
+    }
 }
 
 /// Verifies parsed response structure and content
@@ -198,11 +201,12 @@ pub fn verify_parsed_response(verifier_output: &VerifierOutput, received_data: &
         .as_ref()
         .expect("Response should be parsed");
 
-    // Verify status line
-    assert_eq!(parsed_response.status_line.value, "HTTP/1.1 200 OK");
-    assert_eq!(
-        &received_data[parsed_response.status_line.range.clone()],
-        "HTTP/1.1 200 OK\r\n"
+    // Verify status line exists
+    let status_line_range = parsed_response.protocol_version.start..parsed_response.status.end;
+    let status_line_value = &received_data[status_line_range.clone()];
+    assert!(
+        status_line_value.contains("HTTP/1.1 200 OK"),
+        "Status line should contain expected values"
     );
 
     // Verify response body
@@ -211,24 +215,23 @@ pub fn verify_parsed_response(verifier_output: &VerifierOutput, received_data: &
         1,
         "Should have exactly one field"
     );
-    let username_value = parsed_response
+    let username_field = parsed_response
         .body
-        .get("username")
+        .get(".username")
         .expect("Should have username field");
 
-    match username_value {
-        parser::RangedValue::String {
-            range: username_range,
-            value: username,
-        } => {
-            assert_eq!(username, "alice");
-            assert_eq!(
-                &received_data[username_range.clone()],
-                "\"username\":\"alice\"",
-                "Range should point to full username key-value pair"
-            );
+    match username_field {
+        parser::redacted::Body::KeyValue { key: _, value } => {
+            if let Some(value_range) = value {
+                let username = &received_data[value_range.clone()];
+                assert_eq!(username, "alice");
+            } else {
+                panic!("Username should have a value");
+            }
         }
-        _ => panic!("Username should be a string value"),
+        parser::redacted::Body::Value(_) => {
+            panic!("Username should be a key-value pair, not just a value");
+        }
     }
 }
 
@@ -484,7 +487,7 @@ mod tests {
                 .expected_server_name("localhost")
                 .expected_hash_alg(HashAlgId::SHA256)
                 .request_header_equals("content-type", "application/json")
-                .response_body_field_equals("username", ExpectedValue::String("alice".to_string()))
+                .response_body_field_equals(".username", ExpectedValue::String("alice".to_string()))
                 .build();
 
             validator
@@ -513,7 +516,7 @@ mod tests {
 
             // Test validator with wrong body field value
             let wrong_body_validator = Validator::builder()
-                .response_body_field_equals("username", ExpectedValue::String("bob".to_string()))
+                .response_body_field_equals(".username", ExpectedValue::String("bob".to_string()))
                 .build();
 
             assert!(
