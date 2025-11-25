@@ -19,6 +19,7 @@ parser = { path = "./parser" }
 pem = "3.0.4"
 pest = "2.8.3"
 pest_derive = "2.8.3"
+quinn = { version = "0.11.9", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-smol", "rustls-aws-lc-rs"] }
 rcgen = "0.14.5"
 rustls = "0.23.35"
 serde = { version = "1.0.228", features = ["derive"] }

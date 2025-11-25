@@ -4,6 +4,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::{errors::TlsConfigError, tls::generate_self_signed_cert};
 
+pub const ALPN_HTTP: &[&[u8]] = &[b"h2", b"http/1.1"];
+
 pub struct TestTlsConfig {
     pub server_config: Arc<rustls::ServerConfig>,
     pub client_config: Arc<rustls::ClientConfig>,
@@ -101,15 +103,16 @@ pub fn get_or_create_test_tls_config(
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_single_cert(vec![cert.clone()], key)?;
-    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    server_config.alpn_protocols = ALPN_HTTP.iter().map(|&x| x.into()).collect();
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert.clone())?;
 
-    let client_config = rustls::ClientConfig::builder_with_provider(crypto_provider)
+    let mut client_config = rustls::ClientConfig::builder_with_provider(crypto_provider)
         .with_safe_default_protocol_versions()?
         .with_root_certificates(root_store)
         .with_no_client_auth();
+    client_config.alpn_protocols = ALPN_HTTP.iter().map(|&x| x.into()).collect();
 
     Ok(TestTlsConfig {
         server_config: Arc::new(server_config),

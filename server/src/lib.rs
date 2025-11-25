@@ -3,8 +3,8 @@ pub mod client;
 pub mod handler;
 
 pub use client::{CapturedTraffic, ClientError, send_request};
-pub use shared::SmolExecutor;
 pub use handler::{ConnectionError, handle_connection};
+pub use shared::SmolExecutor;
 
 #[cfg(test)]
 mod tests {

@@ -6,10 +6,9 @@ use futures::io::{AsyncRead, AsyncWrite};
 use futures_rustls::TlsAcceptor;
 use hyper::{Request, body::Incoming};
 use hyper_util::rt::TokioIo;
+use shared::SmolExecutor;
 use thiserror::Error;
 use tower::Service;
-
-use shared::SmolExecutor;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
