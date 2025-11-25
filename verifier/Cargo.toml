@@ -1,0 +1,6 @@
+[package]
+name = "verifier"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

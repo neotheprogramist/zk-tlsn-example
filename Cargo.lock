@@ -4620,8 +4620,11 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hyper",
+ "pem",
  "rcgen",
  "rustls",
+ "smol",
  "thiserror 2.0.17",
  "tracing",
  "tracing-subscriber",
@@ -5670,6 +5673,10 @@ dependencies = [
  "smallvec",
  "sorted-iter",
 ]
+
+[[package]]
+name = "verifier"
+version = "0.1.0"
 
 [[package]]
 name = "version_check"

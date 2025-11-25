@@ -1,10 +1,9 @@
 pub mod app;
 pub mod client;
-pub mod executor;
 pub mod handler;
 
 pub use client::{CapturedTraffic, ClientError, send_request};
-pub use executor::SmolExecutor;
+pub use shared::SmolExecutor;
 pub use handler::{ConnectionError, handle_connection};
 
 #[cfg(test)]

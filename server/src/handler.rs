@@ -9,7 +9,7 @@ use hyper_util::rt::TokioIo;
 use thiserror::Error;
 use tower::Service;
 
-use crate::executor::SmolExecutor;
+use shared::SmolExecutor;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {

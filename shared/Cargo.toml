@@ -5,8 +5,11 @@ edition.workspace = true
 
 [dependencies]
 chrono.workspace = true
+hyper.workspace = true
+pem.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+smol.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
