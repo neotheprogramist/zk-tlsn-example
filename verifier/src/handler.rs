@@ -4,8 +4,6 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite, join};
 use tower::Service;
 
-use shared::SmolExecutor;
-
 pub async fn handle(incoming: quinn::Incoming, tower_service: Router) {
     let connection = incoming.await.unwrap();
     let remote_addr = connection.remote_address();
@@ -46,10 +44,14 @@ where
         phase = "serve_connection",
         status = "started"
     );
-    hyper_util::server::conn::auto::Builder::new(SmolExecutor::default())
-        .serve_connection_with_upgrades(stream, hyper_service)
+
+    // Use HTTP/1.1 to support connection upgrades (required for notarization)
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(stream, hyper_service)
+        .with_upgrades()
         .await
         .unwrap();
+
     tracing::info!(
         component = "server",
         phase = "serve_connection",

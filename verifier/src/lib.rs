@@ -64,21 +64,21 @@ impl Default for NotarizationConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NotarizationSessionData {
-    /// Global limit for maximum number of bytes that can be sent
-    pub max_sent_data: usize,
-    /// Global limit for maximum number of bytes that can be received
-    pub max_recv_data: usize,
-    /// Number of seconds before notarization timeouts to prevent unreleased
-    /// memory
-    pub timeout: Duration,
+/// Data stored after notarization completes, containing the verified transcript
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotarizationResult {
+    /// The server name that was connected to
+    pub server_name: String,
+    /// The HTTP request data (sent by prover)
+    pub request: String,
+    /// The HTTP response data (received by prover)
+    pub response: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SessionPhase {
     Notarization,
-    Verification,
+    Verification(NotarizationResult),
 }
 
 pub async fn serve(endpoint: Endpoint) {

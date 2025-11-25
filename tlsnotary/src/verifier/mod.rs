@@ -30,7 +30,7 @@ impl Verifier {
 
     pub async fn verify<T>(self, socket: T) -> Result<VerifierOutput, Error>
     where
-        T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         tracing::info!(component = "verifier", phase = "verify", status = "started");
 
@@ -62,7 +62,7 @@ impl Verifier {
         socket: T,
     ) -> Result<tlsn::verifier::VerifierOutput, Error>
     where
-        T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let verifier = TlsnVerifier::new(config);
         Ok(verifier.verify(socket, &VerifyConfig::default()).await?)

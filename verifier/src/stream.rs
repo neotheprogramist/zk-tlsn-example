@@ -1,10 +1,12 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
-use hyper::upgrade::{OnUpgrade, Upgraded};
+use hyper::upgrade::OnUpgrade;
 
 use crate::errors::NotaryServerError;
 
+/// Extractor that captures the OnUpgrade handle for later use.
+/// The actual upgrade happens after returning a 101 response.
 pub struct StreamUpgrade {
-    pub upgraded: Upgraded,
+    pub on_upgrade: OnUpgrade,
 }
 
 impl<S> FromRequestParts<S> for StreamUpgrade
@@ -22,8 +24,6 @@ where
                     "Upgrade header is not set for stream client".to_string(),
                 ))?;
 
-        let upgraded = on_upgrade.await.unwrap();
-
-        Ok(Self { upgraded })
+        Ok(Self { on_upgrade })
     }
 }
