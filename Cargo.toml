@@ -30,9 +30,12 @@ smol = "2.0.2"
 thiserror = "2.0.17"
 tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.13" }
 tlsnotary = { path = "./tlsnotary" }
+tokio = { version = "1.48.0", default-features = false, features = ["io-util"] }
 tower = "0.5.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+uuid = { version = "1.11.0", features = ["v4", "serde"] }
+verifier = { path = "./verifier" }
 zktlsn = { path = "./zktlsn" }
 
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
