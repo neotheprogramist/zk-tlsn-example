@@ -6537,6 +6537,7 @@ dependencies = [
  "hyper-util",
  "noir",
  "parser",
+ "quinn",
  "rustls",
  "serde",
  "serde_json",
@@ -6545,7 +6546,9 @@ dependencies = [
  "smol",
  "thiserror 2.0.17",
  "tlsnotary",
+ "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "verifier",
 ]

@@ -1,5 +1,6 @@
+use std::collections::HashMap;
+
 use server::{app::get_app, handle_connection};
-use zktlsn::tests::create_test_balances;
 
 fn main() {
     shared::init_test_logging();
@@ -44,4 +45,10 @@ fn main() {
             }
         }
     });
+}
+
+pub fn create_test_balances() -> HashMap<String, u64> {
+    let mut balances = HashMap::new();
+    balances.insert("alice".to_string(), 100);
+    balances
 }
