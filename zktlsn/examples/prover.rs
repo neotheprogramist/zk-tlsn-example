@@ -6,7 +6,7 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::{StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use quinn::Endpoint;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shared::{
     TestQuicConfig, TestTlsConfig, get_or_create_test_quic_config, get_or_create_test_tls_config,
 };
@@ -16,6 +16,7 @@ use tlsnotary::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, join};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
+use zktlsn::{PaddingConfig, Proof, generate_proof};
 
 /// Maximum sent data size (4 KB)
 const MAX_SENT_DATA: usize = 1 << 12;
@@ -26,6 +27,22 @@ const MAX_RECV_DATA: usize = 1 << 14;
 #[serde(rename_all = "camelCase")]
 struct SessionResponse {
     session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerificationRequest {
+    session_id: String,
+    proof: Proof,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerificationResponse {
+    success: bool,
+    server_name: String,
+    verified_fields: Vec<String>,
+    message: Option<String>,
 }
 
 fn main() {
@@ -143,7 +160,66 @@ fn main() {
             "Prover should produce transcript secrets"
         );
 
-        tracing::info!("Notarization with verifier completed successfully!");
+        tracing::info!("Notarization completed, generating ZK proof...");
+
+        // Step 6: Generate ZK proof from the prover output
+        // The padding config must match what was used in the reveal config (12 bytes for balance)
+        let padding_config = PaddingConfig::new(12);
+        let proof = generate_proof(
+            &prover_output.transcript_commitments,
+            &prover_output.transcript_secrets,
+            &prover_output.received,
+            padding_config,
+        )
+        .expect("Failed to generate ZK proof");
+
+        tracing::info!(
+            "ZK proof generated: {} bytes proof, {} bytes verification key",
+            proof.proof.len(),
+            proof.verification_key.len()
+        );
+
+        // Step 7: Call /verify endpoint to verify the ZK proof
+        tracing::info!("Sending ZK proof to verifier for verification...");
+
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let stream = join(recv, send);
+
+        let verify_request = VerificationRequest {
+            session_id: session_id.clone(),
+            proof,
+        };
+        let verify_body =
+            Bytes::from(serde_json::to_vec(&verify_request).expect("Failed to serialize request"));
+
+        let verify_uri = Uri::from_static("/verify");
+        let (status_code, response_bytes) =
+            send_post_request(stream, verify_uri, verify_body).await;
+
+        if status_code == StatusCode::OK {
+            let verify_response: VerificationResponse = serde_json::from_slice(&response_bytes)
+                .expect("Failed to parse verification response");
+
+            assert!(verify_response.success, "Verification should succeed");
+            tracing::info!(
+                "Verification successful! Server: {}, Fields: {:?}",
+                verify_response.server_name,
+                verify_response.verified_fields
+            );
+            if let Some(message) = verify_response.message {
+                tracing::info!("Message: {}", message);
+            }
+        } else {
+            let error_message = String::from_utf8_lossy(&response_bytes);
+            tracing::error!(
+                "Verification failed with status {}: {}",
+                status_code,
+                error_message
+            );
+            panic!("Verification failed");
+        }
+
+        tracing::info!("Full ZK-TLS notarization and verification flow completed successfully!");
     });
 }
 

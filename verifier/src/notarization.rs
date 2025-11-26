@@ -28,12 +28,15 @@ pub async fn notarize(
     {
         let store = notary_globals.store.lock().await;
         let phase = store.get(&params.session_id);
-        if phase != Some(&SessionPhase::Notarization) {
-            return (
-                StatusCode::BAD_REQUEST,
-                "Invalid session or session not in notarization phase",
-            )
-                .into_response();
+        match phase {
+            Some(SessionPhase::Notarization) => {}
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid session or session not in notarization phase",
+                )
+                    .into_response();
+            }
         }
     }
 
@@ -89,13 +92,16 @@ pub async fn notarize(
         // Extract request and response from the transcript
         let request = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
             .expect("Sent data should be valid UTF-8");
-        let response = String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
-            .expect("Received data should be valid UTF-8");
+        let response_bytes = verifier_output.transcript.received_unsafe().to_vec();
+        let response =
+            String::from_utf8(response_bytes.clone()).expect("Received data should be valid UTF-8");
 
         let result = NotarizationResult {
             server_name: verifier_output.server_name.to_string(),
             request: request.clone(),
             response: response.clone(),
+            response_bytes,
+            transcript_commitments: verifier_output.transcript_commitments,
         };
 
         tracing::info!(

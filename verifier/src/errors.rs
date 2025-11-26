@@ -32,3 +32,39 @@ impl IntoResponse for NotaryServerError {
         }
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationError {
+    #[error("Session not found: {0}")]
+    SessionNotFound(String),
+
+    #[error("Invalid session phase: expected Verification, got {0}")]
+    InvalidSessionPhase(String),
+
+    #[error("Failed to parse response: {0}")]
+    ResponseParseError(String),
+
+    #[error("No commitments found for binding")]
+    NoCommitmentsFound,
+
+    #[error("ZK proof verification failed: {0}")]
+    ProofVerificationFailed(String),
+
+    #[error("Commitment binding failed: {0}")]
+    CommitmentBindingFailed(String),
+}
+
+impl IntoResponse for VerificationError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match &self {
+            VerificationError::SessionNotFound(_) => StatusCode::NOT_FOUND,
+            VerificationError::InvalidSessionPhase(_) => StatusCode::BAD_REQUEST,
+            VerificationError::ResponseParseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            VerificationError::NoCommitmentsFound => StatusCode::BAD_REQUEST,
+            VerificationError::ProofVerificationFailed(_) => StatusCode::BAD_REQUEST,
+            VerificationError::CommitmentBindingFailed(_) => StatusCode::BAD_REQUEST,
+        };
+
+        (status, self.to_string()).into_response()
+    }
+}

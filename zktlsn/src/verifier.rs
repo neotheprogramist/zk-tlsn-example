@@ -1,4 +1,7 @@
-use noir::barretenberg::verify::{get_ultra_honk_verification_key, verify_ultra_honk};
+use noir::barretenberg::{
+    srs::setup_srs_from_bytecode,
+    verify::{get_ultra_honk_verification_key, verify_ultra_honk},
+};
 
 use crate::{
     Proof,
@@ -7,22 +10,26 @@ use crate::{
 };
 
 pub fn verify_proof(proof: &Proof) -> Result<()> {
-    verify_verification_key(&proof.verification_key)?;
+    // Setup SRS before verification - required for barretenberg
+    let bytecode = load_circuit_bytecode()?;
+    setup_srs_from_bytecode(&bytecode, None, false).map_err(ZkTlsnError::NoirError)?;
+
+    verify_verification_key(&bytecode, &proof.verification_key)?;
     verify_proof_validity(proof)?;
 
     tracing::info!("Proof verified successfully");
     Ok(())
 }
 
-fn verify_verification_key(provided_vk: &[u8]) -> Result<()> {
-    let bytecode = load_circuit_bytecode()?;
+fn verify_verification_key(bytecode: &str, provided_vk: &[u8]) -> Result<()> {
     let computed_vk =
-        get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
+        get_ultra_honk_verification_key(bytecode, false).map_err(ZkTlsnError::NoirError)?;
 
     if computed_vk != provided_vk {
         return Err(ZkTlsnError::VerificationKeyMismatch);
     }
 
+    tracing::debug!("Verification key validated");
     Ok(())
 }
 

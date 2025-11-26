@@ -8,6 +8,7 @@ use chrono::Duration;
 use quinn::Endpoint;
 use serde::{Deserialize, Serialize};
 use smol::lock::{Mutex, Semaphore};
+use tlsnotary::TranscriptCommitment;
 
 use crate::{handler::handle, notarization::notarize, session::initialize, verification::verify};
 
@@ -65,7 +66,7 @@ impl Default for NotarizationConfig {
 }
 
 /// Data stored after notarization completes, containing the verified transcript
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NotarizationResult {
     /// The server name that was connected to
     pub server_name: String,
@@ -73,9 +74,13 @@ pub struct NotarizationResult {
     pub request: String,
     /// The HTTP response data (received by prover)
     pub response: String,
+    /// The raw response bytes for ZK proof verification
+    pub response_bytes: Vec<u8>,
+    /// Transcript commitments from the notarization
+    pub transcript_commitments: Vec<TranscriptCommitment>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SessionPhase {
     Notarization,
     Verification(NotarizationResult),
@@ -87,7 +92,7 @@ pub async fn serve(endpoint: Endpoint) {
     let router: Router = Router::new()
         .route("/session", post(initialize))
         .route("/notarize", get(notarize))
-        .route("/verify", get(verify))
+        .route("/verify", post(verify))
         .with_state(state);
 
     while let Some(incoming) = endpoint.accept().await {
