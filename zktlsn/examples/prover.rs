@@ -46,6 +46,9 @@ struct VerificationResponse {
 }
 
 fn main() {
+    // Setup Barretenberg SRS (required before proof generation)
+    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(

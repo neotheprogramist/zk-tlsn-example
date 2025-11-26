@@ -3,6 +3,7 @@ use std::ops::Range;
 pub trait JsonFieldRangeExt {
     fn adjust(&self, start_off: isize, end_off: isize) -> Range<usize>;
     fn extend_to(&self, end: usize) -> Range<usize>;
+    fn span_to(&self, end: usize) -> Range<usize>;
     fn with_quotes_and_colon(&self) -> Range<usize> {
         self.adjust(-1, 2)
     }
@@ -29,7 +30,7 @@ pub trait JsonFieldRangeExt {
         self.adjust(0, 2)
     }
     fn header_full_range(&self, value: &Range<usize>) -> Range<usize> {
-        self.extend_to(value.end + 1)
+        self.span_to(value.end + 1)
     }
 }
 
@@ -39,6 +40,9 @@ impl JsonFieldRangeExt for Range<usize> {
     }
     fn extend_to(&self, end: usize) -> Range<usize> {
         self.start.saturating_sub(1)..end
+    }
+    fn span_to(&self, end: usize) -> Range<usize> {
+        self.start..end
     }
     fn without_quotes(&self) -> Range<usize> {
         self.clone()

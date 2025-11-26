@@ -6,6 +6,9 @@ use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 use verifier::serve;
 
 fn main() {
+    // Setup Barretenberg SRS (required before proof verification)
+    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(

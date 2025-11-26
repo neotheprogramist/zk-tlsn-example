@@ -332,6 +332,7 @@ mod tests {
     #[test]
     fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
         shared::init_test_logging();
+        crate::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
 
         smol::block_on(async {
             // Setup

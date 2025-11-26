@@ -1,8 +1,5 @@
 use noir::{
-    barretenberg::{
-        prove::prove_ultra_honk, srs::setup_srs_from_bytecode,
-        verify::get_ultra_honk_verification_key,
-    },
+    barretenberg::{prove::prove_ultra_honk, verify::get_ultra_honk_verification_key},
     blackbox_solver::blake3,
     witness::from_vec_str_to_witness_map,
 };
@@ -134,7 +131,6 @@ fn generate_zk_proof(input: &ProofInput) -> Result<Proof> {
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
     let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
-    setup_srs_from_bytecode(&bytecode, None, false).map_err(ZkTlsnError::NoirError)?;
     let vk = get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
     let proof =
         prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
