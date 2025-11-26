@@ -32,58 +32,24 @@ impl Verifier {
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        tracing::info!(component = "verifier", phase = "verify", status = "started");
+        let verifier = TlsnVerifier::new(self.verifier_config);
+        let output = verifier.verify(socket, &VerifyConfig::default()).await?;
 
-        let verifier_output = Self::run_verify(self.verifier_config, socket).await?;
-
-        let server_name = verifier_output
+        let server_name = output
             .server_name
             .ok_or(Error::MissingField("server name"))?;
+        let transcript = output.transcript.ok_or(Error::MissingField("transcript"))?;
 
-        let transcript = verifier_output
-            .transcript
-            .ok_or(Error::MissingField("transcript"))?;
-
-        let (parsed_request, parsed_response) = Self::parse_transcript_data(&transcript)?;
-
-        tracing::info!(component = "verifier", phase = "verify", status = "completed", server_name = %server_name);
-
-        Ok(VerifierOutput {
-            transcript,
-            transcript_commitments: verifier_output.transcript_commitments,
-            server_name: server_name.to_string(),
-            parsed_request,
-            parsed_response,
-        })
-    }
-
-    async fn run_verify<T>(
-        config: VerifierConfig,
-        socket: T,
-    ) -> Result<tlsn::verifier::VerifierOutput, Error>
-    where
-        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    {
-        let verifier = TlsnVerifier::new(config);
-        Ok(verifier.verify(socket, &VerifyConfig::default()).await?)
-    }
-
-    fn parse_transcript_data(
-        transcript: &PartialTranscript,
-    ) -> Result<
-        (
-            Option<parser::redacted::Request>,
-            Option<parser::redacted::Response>,
-        ),
-        Error,
-    > {
         let sent_data = String::from_utf8(transcript.sent_unsafe().to_vec())?;
         let received_data = String::from_utf8(transcript.received_unsafe().to_vec())?;
 
-        let parsed_request = sent_data.parse::<parser::redacted::Request>().ok();
-        let parsed_response = received_data.parse::<parser::redacted::Response>().ok();
-
-        Ok((parsed_request, parsed_response))
+        Ok(VerifierOutput {
+            transcript,
+            transcript_commitments: output.transcript_commitments,
+            server_name: server_name.to_string(),
+            parsed_request: sent_data.parse().ok(),
+            parsed_response: received_data.parse().ok(),
+        })
     }
 }
 
@@ -106,10 +72,10 @@ impl VerifierBuilder {
     }
 
     pub fn build(self) -> Result<Verifier, Error> {
-        let verifier_config = self
-            .verifier_config
-            .ok_or_else(|| Error::InvalidConfig("verifier_config is required".into()))?;
-
-        Ok(Verifier { verifier_config })
+        Ok(Verifier {
+            verifier_config: self
+                .verifier_config
+                .ok_or_else(|| Error::InvalidConfig("verifier_config is required".into()))?,
+        })
     }
 }

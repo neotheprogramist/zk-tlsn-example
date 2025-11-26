@@ -24,37 +24,24 @@ pub async fn notarize(
     State(notary_globals): State<NotaryGlobals>,
     Query(params): Query<NotarizationRequestQuery>,
 ) -> Response {
-    // Verify session is in Notarization phase
     {
         let store = notary_globals.store.lock().await;
-        let phase = store.get(&params.session_id);
-        match phase {
-            Some(SessionPhase::Notarization) => {}
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid session or session not in notarization phase",
-                )
-                    .into_response();
-            }
+        if !matches!(
+            store.get(&params.session_id),
+            Some(SessionPhase::Notarization)
+        ) {
+            return (StatusCode::BAD_REQUEST, "Invalid session").into_response();
         }
     }
 
     let session_id = params.session_id.clone();
     let on_upgrade = stream_upgrade.on_upgrade;
 
-    // Spawn a task to handle the actual notarization after the upgrade completes
     smol::spawn(async move {
-        // Wait for the upgrade to complete
         let upgraded = match on_upgrade.await {
             Ok(upgraded) => upgraded,
-            Err(e) => {
-                tracing::error!("Failed to upgrade connection: {:?}", e);
-                return;
-            }
+            Err(_) => return,
         };
-
-        tracing::info!(session_id = %session_id, "Connection upgraded, starting notarization");
 
         let TestTlsConfig { cert_bytes, .. } =
             get_or_create_test_tls_config(Path::new("test_cert.pem"), Path::new("test_key.pem"))
@@ -83,13 +70,9 @@ pub async fn notarize(
 
         let verifier_output = match verifier.verify(Compat::new(upgraded)).await {
             Ok(output) => output,
-            Err(e) => {
-                tracing::error!(session_id = %session_id, "Verification failed: {:?}", e);
-                return;
-            }
+            Err(_) => return,
         };
 
-        // Extract request and response from the transcript
         let request = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
             .expect("Sent data should be valid UTF-8");
         let response_bytes = verifier_output.transcript.received_unsafe().to_vec();
@@ -98,24 +81,12 @@ pub async fn notarize(
 
         let result = NotarizationResult {
             server_name: verifier_output.server_name.to_string(),
-            request: request.clone(),
-            response: response.clone(),
+            request,
+            response,
             response_bytes,
             transcript_commitments: verifier_output.transcript_commitments,
         };
 
-        tracing::info!(
-            session_id = %session_id,
-            server_name = %result.server_name,
-            request_len = result.request.len(),
-            response_len = result.response.len(),
-            "Notarization completed successfully"
-        );
-
-        tracing::info!(request);
-        tracing::info!(response);
-
-        // Update session phase to Verification with the results
         notary_globals
             .store
             .lock()
@@ -124,7 +95,6 @@ pub async fn notarize(
     })
     .detach();
 
-    // Return 101 Switching Protocols to trigger the upgrade
     Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header("Connection", "Upgrade")

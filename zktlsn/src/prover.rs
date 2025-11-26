@@ -31,14 +31,6 @@ impl Proof {
             proof,
         }
     }
-
-    pub fn verification_key(&self) -> &[u8] {
-        &self.verification_key
-    }
-
-    pub fn proof_bytes(&self) -> &[u8] {
-        &self.proof
-    }
 }
 
 pub fn generate_proof(
@@ -62,10 +54,8 @@ pub fn generate_proof(
 fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<PlaintextHash> {
     commitments
         .iter()
-        .find_map(|commitment| match commitment {
-            TranscriptCommitment::Hash(hash) if hash.direction == Direction::Received => {
-                Some(hash.clone())
-            }
+        .find_map(|c| match c {
+            TranscriptCommitment::Hash(h) if h.direction == Direction::Received => Some(h.clone()),
             _ => None,
         })
         .ok_or(ZkTlsnError::NoReceivedCommitments)
@@ -74,10 +64,8 @@ fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<P
 fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHashSecret> {
     secrets
         .iter()
-        .find_map(|secret| match secret {
-            TranscriptSecret::Hash(hash) if hash.direction == Direction::Received => {
-                Some(hash.clone())
-            }
+        .find_map(|s| match s {
+            TranscriptSecret::Hash(h) if h.direction == Direction::Received => Some(h.clone()),
             _ => None,
         })
         .ok_or(ZkTlsnError::NoReceivedSecrets)
@@ -85,9 +73,9 @@ fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHash
 
 #[derive(Debug, Clone)]
 struct ProofInput {
-    balance_committed_hash: Vec<u8>,
-    balance_committed_part: Vec<u8>,
-    balance_blinder: Vec<u8>,
+    committed_hash: Vec<u8>,
+    committed_data: Vec<u8>,
+    blinder: Vec<u8>,
 }
 
 fn prepare_proof_input(
@@ -96,80 +84,36 @@ fn prepare_proof_input(
     secret: PlaintextHashSecret,
     padding_config: PaddingConfig,
 ) -> Result<ProofInput> {
-    validate_commitment(&commitment)?;
-    validate_secret(&secret)?;
+    if commitment.direction != Direction::Received || commitment.hash.alg != HashAlgId::BLAKE3 {
+        return Err(ZkTlsnError::InvalidCommitmentDirection);
+    }
+    if secret.direction != Direction::Received || secret.alg != HashAlgId::BLAKE3 {
+        return Err(ZkTlsnError::InvalidCommitmentDirection);
+    }
 
-    let committed_range = commitment.idx.min().unwrap()..commitment.idx.end().unwrap();
-
-    let committed_len = committed_range.end - committed_range.start;
-    if committed_len != padding_config.commitment_length {
+    let range = commitment.idx.min().unwrap()..commitment.idx.end().unwrap();
+    if range.len() != padding_config.commitment_length {
         return Err(ZkTlsnError::InvalidCommitmentLength {
             expected: padding_config.commitment_length,
-            actual: committed_len,
+            actual: range.len(),
         });
     }
 
-    let committed_data = received_data[committed_range.clone()].to_vec();
+    let committed_data = received_data[range].to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
-
-    tracing::debug!(
-        "Committed data (fixed {} bytes): {:?}",
-        committed_data.len(),
-        String::from_utf8_lossy(&committed_data)
-    );
-
-    let mut data_to_hash = Vec::new();
-    data_to_hash.extend_from_slice(&committed_data);
-    data_to_hash.extend_from_slice(&blinder);
+    let data_to_hash = [&committed_data[..], &blinder[..]].concat();
     let committed_hash = blake3(&data_to_hash).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
 
-    let tlsnotary_hash = commitment.hash.value.as_bytes().to_vec();
-    verify_hash(&committed_data, &blinder, &tlsnotary_hash)?;
-
-    Ok(ProofInput {
-        balance_committed_hash: committed_hash.to_vec(),
-        balance_committed_part: committed_data,
-        balance_blinder: blinder,
-    })
-}
-
-fn validate_commitment(commitment: &PlaintextHash) -> Result<()> {
-    if commitment.direction != Direction::Received {
-        return Err(ZkTlsnError::InvalidCommitmentDirection);
-    }
-    if commitment.hash.alg != HashAlgId::BLAKE3 {
-        return Err(ZkTlsnError::InvalidHashAlgorithm);
-    }
-    Ok(())
-}
-
-fn validate_secret(secret: &PlaintextHashSecret) -> Result<()> {
-    if secret.direction != Direction::Received {
-        return Err(ZkTlsnError::InvalidCommitmentDirection);
-    }
-    if secret.alg != HashAlgId::BLAKE3 {
-        return Err(ZkTlsnError::InvalidHashAlgorithm);
-    }
-    Ok(())
-}
-
-fn verify_hash(balance: &[u8], blinder: &[u8], committed_hash: &[u8]) -> Result<()> {
-    let computed_hash = blake3(&[balance, blinder].concat()).unwrap();
-
-    if committed_hash != computed_hash.as_slice() {
+    let tlsnotary_hash = commitment.hash.value.as_bytes();
+    if tlsnotary_hash != committed_hash.as_slice() {
         return Err(ZkTlsnError::HashVerificationFailed);
     }
-    Ok(())
-}
 
-fn generate_zk_proof(proof_input: &ProofInput) -> Result<Proof> {
-    tracing::info!("Generating ZK proof with Noir");
-
-    let bytecode = load_circuit_bytecode()?;
-    let (vk, proof) = create_proof(&bytecode, proof_input)?;
-
-    tracing::info!("ZK proof generated successfully ({} bytes)", proof.len());
-    Ok(Proof::new(vk, proof))
+    Ok(ProofInput {
+        committed_hash: committed_hash.to_vec(),
+        committed_data,
+        blinder,
+    })
 }
 
 pub(crate) fn load_circuit_bytecode() -> Result<String> {
@@ -181,40 +125,18 @@ pub(crate) fn load_circuit_bytecode() -> Result<String> {
         .map(String::from)
 }
 
-fn build_witness_inputs(proof_input: &ProofInput) -> Vec<String> {
-    let mut inputs = Vec::new();
-    inputs.extend(
-        proof_input
-            .balance_committed_hash
-            .iter()
-            .map(|b| b.to_string()),
-    );
-    inputs.extend(
-        proof_input
-            .balance_committed_part
-            .iter()
-            .map(|b| b.to_string()),
-    );
-    inputs.extend(proof_input.balance_blinder.iter().map(|b| b.to_string()));
-    inputs
-}
-
-fn create_proof(bytecode: &str, proof_input: &ProofInput) -> Result<(Vec<u8>, Vec<u8>)> {
-    let inputs = build_witness_inputs(proof_input);
+fn generate_zk_proof(input: &ProofInput) -> Result<Proof> {
+    let bytecode = load_circuit_bytecode()?;
+    let inputs: Vec<String> = [&input.committed_hash, &input.committed_data, &input.blinder]
+        .iter()
+        .flat_map(|v| v.iter().map(|b| b.to_string()))
+        .collect();
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
-    tracing::debug!("Creating witness map from inputs");
     let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
-
-    tracing::debug!("Setting up SRS from bytecode");
-    setup_srs_from_bytecode(bytecode, None, false).map_err(ZkTlsnError::NoirError)?;
-
-    tracing::debug!("Generating verification key");
-    let vk = get_ultra_honk_verification_key(bytecode, false).map_err(ZkTlsnError::NoirError)?;
-
-    tracing::debug!("Proving with UltraHonk");
+    setup_srs_from_bytecode(&bytecode, None, false).map_err(ZkTlsnError::NoirError)?;
+    let vk = get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
     let proof =
-        prove_ultra_honk(bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
-
-    Ok((vk, proof))
+        prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
+    Ok(Proof::new(vk, proof))
 }

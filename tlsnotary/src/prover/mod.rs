@@ -48,8 +48,6 @@ impl Prover {
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        tracing::info!(component = "prover", phase = "prove", status = "started");
-
         let (mpc_tls_connection, prover_fut) =
             Self::setup_and_connect(self.prover_config, verifier_socket, server_socket).await?;
 
@@ -65,10 +63,7 @@ impl Prover {
 
         let sent = prover.transcript().sent().to_owned();
         let received = prover.transcript().received().to_owned();
-
         let prover_output = Self::generate_and_finalize_proof(prover, &prove_config).await?;
-
-        tracing::info!(component = "prover", phase = "prove", status = "completed");
 
         Ok(ProverOutput {
             sent,
@@ -99,22 +94,8 @@ impl Prover {
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        tracing::info!(component = "prover", phase = "setup", status = "started");
-
         let prover = TlsnProver::new(config).setup(verifier_socket).await?;
-
-        tracing::info!(component = "prover", phase = "setup", status = "completed");
-        tracing::info!(component = "prover", phase = "connect", status = "started");
-
-        let (mpc_tls_connection, prover_fut) = prover.connect(server_socket).await?;
-
-        tracing::info!(
-            component = "prover",
-            phase = "connect",
-            status = "completed"
-        );
-
-        Ok((mpc_tls_connection, prover_fut))
+        Ok(prover.connect(server_socket).await?)
     }
 
     async fn execute_http_exchange<C>(
@@ -137,48 +118,27 @@ impl Prover {
         C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let mpc_tls_connection = TokioIo::new(Compat::new(mpc_tls_connection));
-
         let (mut request_sender, connection) =
             hyper::client::conn::http1::handshake(mpc_tls_connection).await?;
 
         let request_task = async move {
-            tracing::info!(
-                component = "prover",
-                phase = "http_exchange",
-                status = "started"
-            );
             let response = request_sender.send_request(request).await?;
             let status = response.status();
 
             if status != StatusCode::OK {
-                tracing::error!(
-                    component = "prover",
-                    phase = "http_exchange",
-                    status = "failed",
-                    http_status = status.as_u16()
-                );
                 return Err(Error::HttpRequestFailed(status.as_u16()));
             }
 
-            let body = response.collect().await?.to_bytes();
-            tracing::info!(
-                component = "prover",
-                phase = "http_exchange",
-                status = "completed",
-                http_status = status.as_u16()
-            );
-
-            Ok::<Vec<u8>, Error>(body.to_vec())
+            Ok::<Vec<u8>, Error>(response.collect().await?.to_bytes().to_vec())
         };
 
         let (prover, connection_result, request_task_result) =
             join!(prover_fut, connection, request_task);
 
-        let prover = prover?;
-        connection_result?;
-        let response_body = request_task_result?;
-
-        Ok((prover, response_body))
+        Ok((prover?, {
+            connection_result?;
+            request_task_result?
+        }))
     }
 
     fn build_prove_config(
@@ -189,33 +149,27 @@ impl Prover {
     ) -> Result<ProveConfig, Error> {
         let transcript = prover.transcript().clone();
         let mut prove_config_builder = ProveConfig::builder(&transcript);
-
         prove_config_builder.server_identity();
-
-        let sent: &[u8] = transcript.sent();
-        let received: &[u8] = transcript.received();
 
         let mut transcript_commitment_builder = TranscriptCommitConfig::builder(&transcript);
         transcript_commitment_builder
             .default_kind(TranscriptCommitmentKind::Hash { alg: hash_alg });
 
         reveal_request(
-            sent,
+            transcript.sent(),
             &mut prove_config_builder,
             &mut transcript_commitment_builder,
             request_reveal_config,
         )?;
 
         reveal_response(
-            received,
+            transcript.received(),
             &mut prove_config_builder,
             &mut transcript_commitment_builder,
             response_reveal_config,
         )?;
 
-        let transcripts_commitment_config = transcript_commitment_builder.build()?;
-        prove_config_builder.transcript_commit(transcripts_commitment_config);
-
+        prove_config_builder.transcript_commit(transcript_commitment_builder.build()?);
         Ok(prove_config_builder.build()?)
     }
 
@@ -223,27 +177,8 @@ impl Prover {
         mut prover: tlsn::prover::Prover<tlsn::prover::state::Committed>,
         prove_config: &ProveConfig,
     ) -> Result<tlsn::prover::ProverOutput, Error> {
-        let sent_len = prover.transcript().sent().len();
-        let recv_len = prover.transcript().received().len();
-
-        tracing::info!(
-            component = "prover",
-            phase = "generate_proof",
-            status = "started",
-            sent_len,
-            recv_len
-        );
-
         let prover_output = prover.prove(prove_config).await?;
-
-        tracing::info!(
-            component = "prover",
-            phase = "generate_proof",
-            status = "completed"
-        );
-
         prover.close().await?;
-
         Ok(prover_output)
     }
 }
@@ -299,16 +234,13 @@ impl ProverBuilder {
     }
 
     pub fn build(self) -> Result<Prover, Error> {
-        let prover_config = self
-            .prover_config
-            .ok_or_else(|| Error::InvalidConfig("prover_config is required".into()))?;
-        let request = self
-            .request
-            .ok_or_else(|| Error::InvalidConfig("request is required".into()))?;
-
         Ok(Prover {
-            prover_config,
-            request,
+            prover_config: self
+                .prover_config
+                .ok_or_else(|| Error::InvalidConfig("prover_config is required".into()))?,
+            request: self
+                .request
+                .ok_or_else(|| Error::InvalidConfig("request is required".into()))?,
             request_reveal_config: self.request_reveal_config,
             response_reveal_config: self.response_reveal_config,
             hash_alg: self.hash_alg,

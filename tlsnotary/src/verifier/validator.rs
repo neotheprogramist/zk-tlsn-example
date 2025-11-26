@@ -102,44 +102,32 @@ impl Validator {
         headers: &HashMap<String, Vec<parser::redacted::Header>>,
         body: &HashMap<String, parser::redacted::Body>,
         data: &[u8],
-        context: &str,
+        ctx: &str,
     ) -> Result<(), Error> {
         match assertion {
             FieldAssertion::HeaderEquals { key, value } => {
-                let key_lower = key.to_lowercase();
-                let headers_list = headers.get(&key_lower).ok_or_else(|| {
-                    Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
-                })?;
-
-                // Get the first header value
-                let header = headers_list.first().ok_or_else(|| {
-                    Error::InvalidTranscript(format!("Missing {} header '{}'", context, key))
-                })?;
-
-                if let Some(value_range) = &header.value {
-                    let actual = std::str::from_utf8(&data[value_range.clone()]).map_err(|_| {
-                        Error::InvalidTranscript("Invalid UTF-8 in header value".to_string())
+                let header = headers
+                    .get(&key.to_lowercase())
+                    .and_then(|h| h.first())
+                    .ok_or_else(|| {
+                        Error::InvalidTranscript(format!("Missing {ctx} header '{key}'"))
                     })?;
-
-                    if actual != value {
-                        return Err(Error::InvalidTranscript(format!(
-                            "Expected {} header '{}' to be '{}', got '{}'",
-                            context, key, value, actual
-                        )));
-                    }
-                } else {
+                let range = header.value.as_ref().ok_or_else(|| {
+                    Error::InvalidTranscript(format!("{ctx} header '{key}' has no value"))
+                })?;
+                let actual = std::str::from_utf8(&data[range.clone()])
+                    .map_err(|_| Error::InvalidTranscript("Invalid UTF-8".into()))?;
+                if actual != value {
                     return Err(Error::InvalidTranscript(format!(
-                        "Expected {} header '{}' to have value '{}', but it has no value",
-                        context, key, value
+                        "{ctx} header '{key}': expected '{value}', got '{actual}'"
                     )));
                 }
             }
             FieldAssertion::BodyFieldEquals { key, value } => {
-                let body_field = body.get(key).ok_or_else(|| {
-                    Error::InvalidTranscript(format!("Missing {} body field '{}'", context, key))
+                let field = body.get(key).ok_or_else(|| {
+                    Error::InvalidTranscript(format!("Missing {ctx} body field '{key}'"))
                 })?;
-
-                Self::validate_value(value, body_field, data, context, key)?;
+                Self::validate_value(value, field, data, ctx, key)?;
             }
         }
         Ok(())
@@ -147,79 +135,52 @@ impl Validator {
 
     fn validate_value(
         expected: &ExpectedValue,
-        body_field: &parser::redacted::Body,
+        field: &parser::redacted::Body,
         data: &[u8],
-        context: &str,
+        ctx: &str,
         key: &str,
     ) -> Result<(), Error> {
-        let value_range = match body_field {
+        let range = match field {
             parser::redacted::Body::KeyValue { value, .. } => value.as_ref(),
-            parser::redacted::Body::Value(range) => Some(range),
+            parser::redacted::Body::Value(r) => Some(r),
         }
         .ok_or_else(|| {
-            Error::InvalidTranscript(format!(
-                "Missing value for {} body field '{}'",
-                context, key
-            ))
+            Error::InvalidTranscript(format!("Missing value for {ctx} field '{key}'"))
         })?;
 
-        let actual_str = std::str::from_utf8(&data[value_range.clone()])
-            .map_err(|_| Error::InvalidTranscript("Invalid UTF-8 in body value".to_string()))?;
+        let actual = std::str::from_utf8(&data[range.clone()])
+            .map_err(|_| Error::InvalidTranscript("Invalid UTF-8".into()))?;
+
+        let mismatch = |exp: &dyn std::fmt::Display, act: &dyn std::fmt::Display| {
+            Error::InvalidTranscript(format!("{ctx} field '{key}': expected {exp}, got {act}"))
+        };
 
         match expected {
-            ExpectedValue::Null => {
-                if actual_str == "null" {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be null, got '{}'",
-                        context, key, actual_str
-                    )))
-                }
-            }
-            ExpectedValue::Bool(expected_val) => {
-                let actual_bool = actual_str.parse::<bool>().map_err(|_| {
-                    Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be a boolean, got '{}'",
-                        context, key, actual_str
-                    ))
-                })?;
-
-                if expected_val == &actual_bool {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be {}, got {}",
-                        context, key, expected_val, actual_bool
-                    )))
-                }
-            }
-            ExpectedValue::Number(expected_val) => {
-                let actual_num = actual_str.parse::<f64>().map_err(|_| {
-                    Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be a number, got '{}'",
-                        context, key, actual_str
-                    ))
-                })?;
-
-                if (expected_val - actual_num).abs() < f64::EPSILON {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be {}, got {}",
-                        context, key, expected_val, actual_num
-                    )))
-                }
-            }
-            ExpectedValue::String(expected_val) => {
-                if expected_val == actual_str {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidTranscript(format!(
-                        "Expected {} body field '{}' to be '{}', got '{}'",
-                        context, key, expected_val, actual_str
-                    )))
-                }
+            ExpectedValue::Null if actual == "null" => Ok(()),
+            ExpectedValue::Null => Err(mismatch(&"null", &actual)),
+            ExpectedValue::Bool(exp) => actual
+                .parse::<bool>()
+                .map_err(|_| mismatch(exp, &actual))
+                .and_then(|act| {
+                    if &act == exp {
+                        Ok(())
+                    } else {
+                        Err(mismatch(exp, &act))
+                    }
+                }),
+            ExpectedValue::Number(exp) => actual
+                .parse::<f64>()
+                .map_err(|_| mismatch(exp, &actual))
+                .and_then(|act| {
+                    if (exp - act).abs() < f64::EPSILON {
+                        Ok(())
+                    } else {
+                        Err(mismatch(exp, &act))
+                    }
+                }),
+            ExpectedValue::String(exp) if exp == actual => Ok(()),
+            ExpectedValue::String(exp) => {
+                Err(mismatch(&format!("'{exp}'"), &format!("'{actual}'")))
             }
         }
     }

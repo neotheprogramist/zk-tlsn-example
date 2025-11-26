@@ -3,8 +3,6 @@ use hyper::upgrade::OnUpgrade;
 
 use crate::errors::NotaryServerError;
 
-/// Extractor that captures the OnUpgrade handle for later use.
-/// The actual upgrade happens after returning a 101 response.
 pub struct StreamUpgrade {
     pub on_upgrade: OnUpgrade,
 }

@@ -18,7 +18,6 @@ use thiserror::Error;
 
 type CapturedBytes = Arc<Mutex<Vec<u8>>>;
 
-/// Wrapper that captures all read and write bytes from the underlying stream
 struct CapturingStream<S> {
     inner: S,
     captured_read: CapturedBytes,
@@ -113,14 +112,11 @@ where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let server_name = ServerName::try_from("localhost")?;
-
     let tls_connector = TlsConnector::from(client_config);
     let stream = tls_connector.connect(server_name, cnx).await?;
 
     let (capturing_stream, captured_read_bytes, captured_write_bytes) =
         CapturingStream::new(stream);
-
-    // Convert futures-io to tokio traits, then to hyper's Read/Write
     let stream = TokioIo::new(Compat::new(capturing_stream));
 
     let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
@@ -135,7 +131,6 @@ where
             .expect("valid request");
 
         let res = sender.send_request(req).await?;
-
         let status = res.status();
         let body = res.into_body().collect().await?.to_bytes().to_vec();
 
@@ -143,53 +138,26 @@ where
     };
 
     let (conn_result, response) = futures::join!(conn, request_task);
-    let (status, _body) = response?;
+    response?;
 
-    let raw_request = captured_write_bytes
-        .lock()
-        .unwrap_or_else(|_| panic!("Failed to lock captured write bytes"))
-        .clone();
+    let raw_request = captured_write_bytes.lock().unwrap().clone();
+    let raw_response = captured_read_bytes.lock().unwrap().clone();
 
-    let raw_response = captured_read_bytes
-        .lock()
-        .unwrap_or_else(|_| panic!("Failed to lock captured read bytes"))
-        .clone();
-
-    match conn_result {
-        Ok(_) => {
-            tracing::info!(
-                component = "client",
-                phase = "http_exchange",
-                status = "completed",
-                http_status = status.as_u16()
-            );
-            Ok(CapturedTraffic {
+    // BrokenPipe is expected when server closes connection first
+    if let Err(e) = conn_result {
+        if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>())
+            && io_err.kind() == std::io::ErrorKind::BrokenPipe
+        {
+            return Ok(CapturedTraffic {
                 raw_request,
                 raw_response,
-            })
+            });
         }
-        Err(e) => {
-            if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>())
-                && io_err.kind() == std::io::ErrorKind::BrokenPipe
-            {
-                tracing::debug!(
-                    component = "client",
-                    phase = "http_exchange",
-                    status = "completed",
-                    note = "broken_pipe"
-                );
-                return Ok(CapturedTraffic {
-                    raw_request,
-                    raw_response,
-                });
-            }
-            tracing::error!(
-                component = "client",
-                phase = "http_exchange",
-                status = "failed",
-                error = %e
-            );
-            Err(ClientError::Hyper(e))
-        }
+        return Err(ClientError::Hyper(e));
     }
+
+    Ok(CapturedTraffic {
+        raw_request,
+        raw_response,
+    })
 }

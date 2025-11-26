@@ -11,16 +11,9 @@ fn calculate_padded_range(
     commitment_length: usize,
 ) -> std::ops::Range<usize> {
     let value_len = value.end - value.start;
-
     if value_len > commitment_length {
-        tracing::warn!(
-            "Value length {} exceeds commitment length {}, using exact value",
-            value_len,
-            commitment_length
-        );
         return value.clone();
     }
-
     value.start..(value.start + commitment_length)
 }
 
@@ -49,7 +42,6 @@ impl BodyFieldConfig {
         }
     }
 
-    /// Creates a fixed-length commitment range for a value
     fn get_padded_range(
         value: &std::ops::Range<usize>,
         commitment_length: usize,
@@ -119,9 +111,6 @@ impl RevealConfig {
     }
 }
 
-/// # Errors
-///
-/// Returns error if request is not UTF-8, parsing fails, or field lookup fails.
 pub fn reveal_request(
     request: &[u8],
     builder: &mut ProveConfigBuilder<'_>,
@@ -198,9 +187,6 @@ pub fn reveal_request(
     Ok(())
 }
 
-/// # Errors
-///
-/// Returns error if response is not UTF-8, parsing fails, or field lookup fails.
 pub fn reveal_response(
     response: &[u8],
     builder: &mut ProveConfigBuilder<'_>,

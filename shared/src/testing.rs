@@ -14,10 +14,8 @@ pub struct TestTlsConfig {
 
 pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
     let tls_cert = generate_self_signed_cert()?;
-
     let key = PrivateKeyDer::Pkcs8(tls_cert.key_pair.serialize_der().into());
     let cert = CertificateDer::from(tls_cert.cert.der().to_vec());
-
     let crypto_provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
     let mut server_config = rustls::ServerConfig::builder_with_provider(crypto_provider.clone())
@@ -41,62 +39,43 @@ pub fn create_test_tls_config() -> Result<TestTlsConfig, TlsConfigError> {
     })
 }
 
-/// Get or create a test TLS config with certificate persistence
-///
-/// This function checks if certificate and key files exist at the given paths.
-/// If they exist, it loads them. If not, it generates new ones and saves them.
-/// This ensures all processes (prover, verifier, server) use the same certificate.
+fn parse_pem(path: &Path) -> Result<Vec<u8>, TlsConfigError> {
+    let content = fs::read_to_string(path)?;
+    pem::parse(&content)
+        .map_err(|e| {
+            TlsConfigError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })
+        .map(|p| p.contents().to_vec())
+}
+
 pub fn get_or_create_test_tls_config(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<TestTlsConfig, TlsConfigError> {
     let (cert_bytes, key_bytes) = if cert_path.exists() && key_path.exists() {
-        // Load existing certificate and key
-        let cert_pem = fs::read_to_string(cert_path)?;
-        let key_pem = fs::read_to_string(key_path)?;
-
-        // Parse PEM format
-        let cert_bytes = pem::parse(&cert_pem)
-            .map_err(|e| {
-                TlsConfigError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse cert PEM: {}", e),
-                ))
-            })?
-            .contents()
-            .to_vec();
-
-        let key_bytes = pem::parse(&key_pem)
-            .map_err(|e| {
-                TlsConfigError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to parse key PEM: {}", e),
-                ))
-            })?
-            .contents()
-            .to_vec();
-
-        (cert_bytes, key_bytes)
+        (parse_pem(cert_path)?, parse_pem(key_path)?)
     } else {
-        // Generate new certificate and key
         let tls_cert = generate_self_signed_cert()?;
         let cert_bytes = tls_cert.cert.der().to_vec();
         let key_bytes = tls_cert.key_pair.serialize_der();
 
-        // Save to files in PEM format
-        let cert_pem = pem::encode(&pem::Pem::new("CERTIFICATE", cert_bytes.clone()));
-        let key_pem = pem::encode(&pem::Pem::new("PRIVATE KEY", key_bytes.clone()));
-
-        fs::write(cert_path, cert_pem)?;
-        fs::write(key_path, key_pem)?;
+        fs::write(
+            cert_path,
+            pem::encode(&pem::Pem::new("CERTIFICATE", cert_bytes.clone())),
+        )?;
+        fs::write(
+            key_path,
+            pem::encode(&pem::Pem::new("PRIVATE KEY", key_bytes.clone())),
+        )?;
 
         (cert_bytes, key_bytes)
     };
 
-    // Build rustls configs
     let key = PrivateKeyDer::Pkcs8(key_bytes.into());
     let cert = CertificateDer::from(cert_bytes.clone());
-
     let crypto_provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
     let mut server_config = rustls::ServerConfig::builder_with_provider(crypto_provider.clone())
