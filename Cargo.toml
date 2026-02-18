@@ -8,33 +8,39 @@ edition = "2024"
 
 [workspace.dependencies]
 async-compat = "0.2.5"
-axum = "0.8.7"
-chrono = { version = "0.4.42", features = ["serde"] }
-futures = "0.3.31"
+axum = "0.8.8"
+chrono = { version = "0.4.43", features = ["serde"] }
+futures = "0.3.32"
 futures-rustls = "0.26.0"
 http-body-util = "0.1.3"
 hyper = "1.8.1"
-hyper-util = { version = "0.1.18", features = ["client", "http2"] }
+hyper-util = { version = "0.1.20", features = ["client", "http2"] }
 parser = { path = "./parser" }
 pem = "3.0.4"
-pest = "2.8.3"
-pest_derive = "2.8.3"
-quinn = { version = "0.11.9", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-smol", "rustls-aws-lc-rs"] }
-rcgen = "0.14.5"
-rustls = "0.23.35"
+pest = "2.8.6"
+pest_derive = "2.8.6"
+quinn = { version = "0.11.9", default-features = false, features = [
+    "bloom",
+    "log",
+    "platform-verifier",
+    "runtime-smol",
+    "rustls-aws-lc-rs",
+] }
+rcgen = "0.14.7"
+rustls = "0.23.36"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.149"
 server = { path = "./server" }
 shared = { path = "./shared" }
 smol = "2.0.2"
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.13" }
 tlsnotary = { path = "./tlsnotary" }
-tokio = { version = "1.48.0", default-features = false, features = ["io-util"] }
-tower = "0.5.2"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
-uuid = { version = "1.11.0", features = ["v4", "serde"] }
+tokio = { version = "1.49.0", default-features = false, features = ["io-util"] }
+tower = "0.5.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+uuid = { version = "1.21.0", features = ["v4", "serde"] }
 verifier = { path = "./verifier" }
 zktlsn = { path = "./zktlsn" }
 
