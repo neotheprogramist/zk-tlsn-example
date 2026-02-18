@@ -1,0 +1,13 @@
+[package]
+name = "stwo-circuit"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+] }
+stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+    "std",
+] }
