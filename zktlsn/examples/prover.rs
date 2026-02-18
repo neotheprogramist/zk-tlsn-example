@@ -12,7 +12,8 @@ use shared::{
 };
 use smol::net::TcpStream;
 use tlsnotary::{
-    CertificateDer, ProtocolConfig, Prover, ProverConfig, RootCertStore, ServerName, TlsConfig,
+    CertificateDer, MpcTlsConfig, Prover, RootCertStore, ServerName, TlsClientConfig,
+    TlsCommitConfig,
 };
 use tokio::io::{AsyncRead, AsyncWrite, join};
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
@@ -125,11 +126,12 @@ fn main() {
             get_or_create_test_tls_config(Path::new("test_cert.pem"), Path::new("test_key.pem"))
                 .unwrap();
 
-        let prover_config = create_prover_config(cert_bytes);
+        let (tls_client_config, tls_commit_config) = create_prover_config(cert_bytes);
 
         // Step 5: Build and run prover
         let prover = Prover::builder()
-            .prover_config(prover_config)
+            .tls_client_config(tls_client_config)
+            .tls_commit_config(tls_commit_config)
             .request(create_test_request())
             .request_reveal_config(create_request_reveal_config())
             .response_reveal_config(create_response_reveal_config())
@@ -226,29 +228,30 @@ fn main() {
     });
 }
 
-/// Creates prover configuration with test TLS settings
-fn create_prover_config(cert_bytes: Vec<u8>) -> ProverConfig {
+/// Creates prover TLS and commit configurations with test settings
+fn create_prover_config(cert_bytes: Vec<u8>) -> (TlsClientConfig, TlsCommitConfig) {
     let server_name = ServerName::Dns("localhost".to_string().try_into().unwrap());
 
-    let mut tls_config_builder = TlsConfig::builder();
-    tls_config_builder.root_store(RootCertStore {
-        roots: vec![CertificateDer(cert_bytes)],
-    });
-    let tls_config = tls_config_builder.build().unwrap();
-
-    let mut prover_config_builder = ProverConfig::builder();
-    prover_config_builder
+    let tls_client_config = TlsClientConfig::builder()
         .server_name(server_name)
-        .tls_config(tls_config)
-        .protocol_config(
-            ProtocolConfig::builder()
+        .root_store(RootCertStore {
+            roots: vec![CertificateDer(cert_bytes)],
+        })
+        .build()
+        .unwrap();
+
+    let tls_commit_config = TlsCommitConfig::builder()
+        .protocol(
+            MpcTlsConfig::builder()
                 .max_sent_data(MAX_SENT_DATA)
                 .max_recv_data(MAX_RECV_DATA)
                 .build()
                 .unwrap(),
-        );
+        )
+        .build()
+        .unwrap();
 
-    prover_config_builder.build().unwrap()
+    (tls_client_config, tls_commit_config)
 }
 
 /// Creates a test HTTP request for balance API endpoint

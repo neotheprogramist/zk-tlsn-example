@@ -16,9 +16,9 @@ use hyper::Request;
 use smol::net::unix::UnixStream;
 
 use crate::{
-    CertificateDer, ExpectedValue, ProtocolConfig, ProtocolConfigValidator, ProverConfig,
-    ProverOutput, RootCertStore, ServerName, TlsConfig, Validator, VerifierConfig,
-    prover::RevealConfig, verifier::VerifierOutput,
+    CertificateDer, ExpectedValue, MpcTlsConfig, ProverOutput, RootCertStore, ServerName,
+    TlsClientConfig, TlsCommitConfig, Validator, VerifierConfig, prover::RevealConfig,
+    verifier::VerifierOutput,
 };
 
 /// Socket pairs for prover-server and prover-verifier communication
@@ -53,29 +53,30 @@ pub fn create_test_request() -> Request<Empty<Bytes>> {
         .expect("Failed to build request")
 }
 
-/// Creates prover configuration with test TLS settings
-pub fn create_prover_config(cert_bytes: Vec<u8>) -> ProverConfig {
+/// Creates prover TLS and commit configurations with test settings
+pub fn create_prover_config(cert_bytes: Vec<u8>) -> (TlsClientConfig, TlsCommitConfig) {
     let server_name = ServerName::Dns("localhost".to_string().try_into().unwrap());
 
-    let mut tls_config_builder = TlsConfig::builder();
-    tls_config_builder.root_store(RootCertStore {
-        roots: vec![CertificateDer(cert_bytes)],
-    });
-    let tls_config = tls_config_builder.build().unwrap();
-
-    let mut prover_config_builder = ProverConfig::builder();
-    prover_config_builder
+    let tls_client_config = TlsClientConfig::builder()
         .server_name(server_name)
-        .tls_config(tls_config)
-        .protocol_config(
-            ProtocolConfig::builder()
+        .root_store(RootCertStore {
+            roots: vec![CertificateDer(cert_bytes)],
+        })
+        .build()
+        .unwrap();
+
+    let tls_commit_config = TlsCommitConfig::builder()
+        .protocol(
+            MpcTlsConfig::builder()
                 .max_sent_data(MAX_SENT_DATA)
                 .max_recv_data(MAX_RECV_DATA)
                 .build()
                 .unwrap(),
-        );
+        )
+        .build()
+        .unwrap();
 
-    prover_config_builder.build().unwrap()
+    (tls_client_config, tls_commit_config)
 }
 
 /// Creates verifier configuration with test TLS settings
@@ -84,13 +85,6 @@ pub fn create_verifier_config(cert_bytes: Vec<u8>) -> VerifierConfig {
         .root_store(RootCertStore {
             roots: vec![CertificateDer(cert_bytes)],
         })
-        .protocol_config_validator(
-            ProtocolConfigValidator::builder()
-                .max_sent_data(MAX_SENT_DATA)
-                .max_recv_data(MAX_RECV_DATA)
-                .build()
-                .unwrap(),
-        )
         .build()
         .unwrap()
 }
@@ -257,7 +251,8 @@ mod integration {
             let test_tls_config = create_test_tls_config().unwrap();
             let sockets = create_test_sockets();
 
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
             let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             // Start server
@@ -267,7 +262,8 @@ mod integration {
 
             // Build prover
             let prover = Prover::builder()
-                .prover_config(prover_config)
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
                 .request(create_test_request())
                 .request_reveal_config(create_request_reveal_config())
                 .response_reveal_config(create_response_reveal_config())
@@ -319,7 +315,8 @@ mod integration {
             let test_tls_config = create_test_tls_config().unwrap();
             let sockets = create_test_sockets();
 
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
             let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             let app = get_app(create_test_balances());
@@ -327,7 +324,8 @@ mod integration {
                 handle_connection(app, test_tls_config.server_config, sockets.server_socket);
 
             let prover = Prover::builder()
-                .prover_config(prover_config)
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
                 .request(create_test_request())
                 .request_reveal_config(create_request_reveal_config())
                 .response_reveal_config(create_response_reveal_config())
@@ -367,7 +365,8 @@ mod integration {
             let test_tls_config = create_test_tls_config().unwrap();
             let sockets = create_test_sockets();
 
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
             let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             let app = get_app(create_test_balances());
@@ -375,7 +374,8 @@ mod integration {
                 handle_connection(app, test_tls_config.server_config, sockets.server_socket);
 
             let prover = Prover::builder()
-                .prover_config(prover_config)
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
                 .request(create_test_request())
                 .request_reveal_config(create_request_reveal_config())
                 .response_reveal_config(create_response_reveal_config())
@@ -411,7 +411,8 @@ mod integration {
             let test_tls_config = create_test_tls_config().unwrap();
             let sockets = create_test_sockets();
 
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
             let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             let app = get_app(create_test_balances());
@@ -419,7 +420,8 @@ mod integration {
                 handle_connection(app, test_tls_config.server_config, sockets.server_socket);
 
             let prover = Prover::builder()
-                .prover_config(prover_config)
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
                 .request(create_test_request())
                 .request_reveal_config(create_request_reveal_config())
                 .response_reveal_config(create_response_reveal_config())
@@ -456,7 +458,8 @@ mod integration {
             let test_tls_config = create_test_tls_config().unwrap();
             let sockets = create_test_sockets();
 
-            let prover_config = create_prover_config(test_tls_config.cert_bytes.clone());
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
             let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
 
             let mut balances = HashMap::new();
@@ -466,7 +469,8 @@ mod integration {
                 handle_connection(app, test_tls_config.server_config, sockets.server_socket);
 
             let prover = Prover::builder()
-                .prover_config(prover_config)
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
                 .request(create_test_request())
                 .request_reveal_config(create_request_reveal_config())
                 .response_reveal_config(create_response_reveal_config())

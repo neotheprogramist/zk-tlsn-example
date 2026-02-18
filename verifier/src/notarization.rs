@@ -9,7 +9,7 @@ use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use shared::{TestTlsConfig, get_or_create_test_tls_config};
-use tlsnotary::{CertificateDer, ProtocolConfigValidator, RootCertStore, Verifier, VerifierConfig};
+use tlsnotary::{CertificateDer, RootCertStore, Verifier, VerifierConfig};
 
 use crate::{NotarizationResult, NotaryGlobals, SessionPhase, stream::StreamUpgrade};
 
@@ -51,13 +51,6 @@ pub async fn notarize(
             .root_store(RootCertStore {
                 roots: vec![CertificateDer(cert_bytes)],
             })
-            .protocol_config_validator(
-                ProtocolConfigValidator::builder()
-                    .max_sent_data(notary_globals.notarization_config.max_sent_data)
-                    .max_recv_data(notary_globals.notarization_config.max_recv_data)
-                    .build()
-                    .unwrap(),
-            )
             .build()
             .unwrap();
 

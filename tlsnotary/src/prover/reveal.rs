@@ -2,7 +2,7 @@ use parser::{
     HttpMessage, JsonFieldRangeExt,
     standard::{Body, Request, Response},
 };
-use tlsn::{prover::ProveConfigBuilder, transcript::TranscriptCommitConfigBuilder};
+use tlsn::{config::prove::ProveConfigBuilder, transcript::TranscriptCommitConfigBuilder};
 
 use crate::error::Error;
 

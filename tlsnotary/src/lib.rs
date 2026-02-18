@@ -7,15 +7,20 @@ pub use prover::{
     BodyFieldConfig, KeyValueCommitConfig, Prover, ProverBuilder, ProverOutput, RevealConfig,
 };
 pub use tlsn::{
-    config::{CertificateDer, ProtocolConfig, ProtocolConfigValidator, RootCertStore},
+    Session,
+    config::{
+        prover::ProverConfig,
+        tls::TlsClientConfig,
+        tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
+        verifier::VerifierConfig,
+    },
     connection::ServerName,
     hash::HashAlgId,
-    prover::{ProverConfig, TlsConfig},
     transcript::{
         Direction, PartialTranscript, TranscriptCommitment, TranscriptSecret,
         hash::{PlaintextHash, PlaintextHashSecret},
     },
-    verifier::VerifierConfig,
+    webpki::{CertificateDer, RootCertStore},
 };
 pub use verifier::{
     ExpectedValue, FieldAssertion, Validator, ValidatorBuilder, Verifier, VerifierBuilder,

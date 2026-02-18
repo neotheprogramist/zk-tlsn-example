@@ -1,10 +1,7 @@
 mod validator;
 
 use futures::{AsyncRead, AsyncWrite};
-use tlsn::{
-    transcript::PartialTranscript,
-    verifier::{Verifier as TlsnVerifier, VerifierConfig, VerifyConfig},
-};
+use tlsn::{Session, config::verifier::VerifierConfig, transcript::PartialTranscript};
 pub use validator::{ExpectedValue, FieldAssertion, Validator, ValidatorBuilder};
 
 use crate::error::Error;
@@ -32,8 +29,18 @@ impl Verifier {
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let verifier = TlsnVerifier::new(self.verifier_config);
-        let output = verifier.verify(socket, &VerifyConfig::default()).await?;
+        let mut session = Session::new(socket);
+        let verifier = session.new_verifier(self.verifier_config)?;
+        let (driver, handle) = session.split();
+        smol::spawn(driver).detach();
+
+        let verifier = verifier.commit().await?;
+        let verifier = verifier.accept().await?;
+        let verifier = verifier.run().await?;
+        let verifier = verifier.verify().await?;
+        let (output, verifier) = verifier.accept().await?;
+        verifier.close().await?;
+        handle.close();
 
         let server_name = output
             .server_name

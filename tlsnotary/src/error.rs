@@ -21,19 +21,28 @@ pub enum Error {
     InvalidInput(String),
 
     #[error(transparent)]
-    TlsnProver(#[from] tlsn::prover::ProverError),
+    Tlsn(#[from] tlsn::Error),
 
     #[error(transparent)]
-    TlsnVerifier(#[from] tlsn::verifier::VerifierError),
-
-    #[error(transparent)]
-    TlsnProtocolConfigBuilder(#[from] tlsn::config::ProtocolConfigBuilderError),
-
-    #[error(transparent)]
-    TlsnProveConfigBuilder(#[from] tlsn::prover::ProveConfigBuilderError),
+    TlsnProveConfig(#[from] tlsn::config::prove::ProveConfigError),
 
     #[error(transparent)]
     TlsnTranscriptCommitConfigBuilder(#[from] tlsn::transcript::TranscriptCommitConfigBuilderError),
+
+    #[error(transparent)]
+    TlsnTlsConfig(#[from] tlsn::config::tls::TlsConfigError),
+
+    #[error(transparent)]
+    TlsnTlsCommitConfig(#[from] tlsn::config::tls_commit::TlsCommitConfigError),
+
+    #[error(transparent)]
+    TlsnMpcTlsConfig(#[from] tlsn::config::tls_commit::mpc::MpcTlsConfigError),
+
+    #[error(transparent)]
+    TlsnProverConfig(#[from] tlsn::config::prover::ProverConfigError),
+
+    #[error(transparent)]
+    TlsnVerifierConfig(#[from] tlsn::config::verifier::VerifierConfigError),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

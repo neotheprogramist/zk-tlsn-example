@@ -9,8 +9,11 @@ pub use reveal::{
     BodyFieldConfig, KeyValueCommitConfig, RevealConfig, reveal_request, reveal_response,
 };
 use tlsn::{
+    Session, SessionHandle,
+    config::{
+        prove::ProveConfig, prover::ProverConfig, tls::TlsClientConfig, tls_commit::TlsCommitConfig,
+    },
     hash::HashAlgId,
-    prover::{ProveConfig, Prover as TlsnProver, ProverConfig},
     transcript::{TranscriptCommitConfig, TranscriptCommitmentKind},
 };
 
@@ -26,7 +29,8 @@ pub struct ProverOutput {
 }
 
 pub struct Prover {
-    prover_config: ProverConfig,
+    tls_client_config: TlsClientConfig,
+    tls_commit_config: TlsCommitConfig,
     request: Request<Empty<Bytes>>,
     request_reveal_config: RevealConfig,
     response_reveal_config: RevealConfig,
@@ -48,8 +52,13 @@ impl Prover {
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let (mpc_tls_connection, prover_fut) =
-            Self::setup_and_connect(self.prover_config, verifier_socket, server_socket).await?;
+        let (mpc_tls_connection, prover_fut, session_handle) = Self::setup_and_connect(
+            self.tls_client_config,
+            self.tls_commit_config,
+            verifier_socket,
+            server_socket,
+        )
+        .await?;
 
         let (mut prover, response_body) =
             Self::execute_http_exchange(mpc_tls_connection, prover_fut, self.request).await?;
@@ -65,6 +74,8 @@ impl Prover {
         let received = prover.transcript().received().to_owned();
         let prover_output = Self::generate_and_finalize_proof(prover, &prove_config).await?;
 
+        session_handle.close();
+
         Ok(ProverOutput {
             sent,
             received,
@@ -75,18 +86,20 @@ impl Prover {
     }
 
     async fn setup_and_connect<T, S>(
-        config: ProverConfig,
+        tls_client_config: TlsClientConfig,
+        tls_commit_config: TlsCommitConfig,
         verifier_socket: T,
         server_socket: S,
     ) -> Result<
         (
             impl AsyncRead + AsyncWrite + Send + Unpin,
             impl std::future::Future<
-                Output = Result<
+                Output = std::result::Result<
                     tlsn::prover::Prover<tlsn::prover::state::Committed>,
-                    tlsn::prover::ProverError,
+                    tlsn::Error,
                 >,
             > + Send,
+            SessionHandle,
         ),
         Error,
     >
@@ -94,16 +107,22 @@ impl Prover {
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let prover = TlsnProver::new(config).setup(verifier_socket).await?;
-        Ok(prover.connect(server_socket).await?)
+        let mut session = Session::new(verifier_socket);
+        let prover = session.new_prover(ProverConfig::builder().build()?)?;
+        let (driver, handle) = session.split();
+        smol::spawn(driver).detach();
+
+        let prover = prover.commit(tls_commit_config).await?;
+        let (connection, prover_future) = prover.connect(tls_client_config, server_socket).await?;
+        Ok((connection, prover_future, handle))
     }
 
     async fn execute_http_exchange<C>(
         mpc_tls_connection: C,
         prover_fut: impl std::future::Future<
-            Output = Result<
+            Output = std::result::Result<
                 tlsn::prover::Prover<tlsn::prover::state::Committed>,
-                tlsn::prover::ProverError,
+                tlsn::Error,
             >,
         > + Send,
         request: Request<Empty<Bytes>>,
@@ -185,7 +204,8 @@ impl Prover {
 
 #[derive(Debug)]
 pub struct ProverBuilder {
-    prover_config: Option<ProverConfig>,
+    tls_client_config: Option<TlsClientConfig>,
+    tls_commit_config: Option<TlsCommitConfig>,
     request: Option<Request<Empty<Bytes>>>,
     request_reveal_config: RevealConfig,
     response_reveal_config: RevealConfig,
@@ -195,7 +215,8 @@ pub struct ProverBuilder {
 impl ProverBuilder {
     fn new() -> Self {
         Self {
-            prover_config: None,
+            tls_client_config: None,
+            tls_commit_config: None,
             request: None,
             request_reveal_config: RevealConfig::default(),
             response_reveal_config: RevealConfig::default(),
@@ -204,8 +225,14 @@ impl ProverBuilder {
     }
 
     #[must_use]
-    pub fn prover_config(mut self, config: ProverConfig) -> Self {
-        self.prover_config = Some(config);
+    pub fn tls_client_config(mut self, config: TlsClientConfig) -> Self {
+        self.tls_client_config = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn tls_commit_config(mut self, config: TlsCommitConfig) -> Self {
+        self.tls_commit_config = Some(config);
         self
     }
 
@@ -235,9 +262,12 @@ impl ProverBuilder {
 
     pub fn build(self) -> Result<Prover, Error> {
         Ok(Prover {
-            prover_config: self
-                .prover_config
-                .ok_or_else(|| Error::InvalidConfig("prover_config is required".into()))?,
+            tls_client_config: self
+                .tls_client_config
+                .ok_or_else(|| Error::InvalidConfig("tls_client_config is required".into()))?,
+            tls_commit_config: self
+                .tls_commit_config
+                .ok_or_else(|| Error::InvalidConfig("tls_commit_config is required".into()))?,
             request: self
                 .request
                 .ok_or_else(|| Error::InvalidConfig("request is required".into()))?,
