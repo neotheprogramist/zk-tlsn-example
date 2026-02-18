@@ -6,7 +6,7 @@ Zero-knowledge TLS notarization system combining [TLSNotary](https://tlsnotary.o
 
 Install the following tools:
 
-**Rust** (nightly `1.93.1` is auto-selected via `rust-toolchain.toml`):
+**Rust** (`1.93.1` is auto-selected via `rust-toolchain.toml`):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

@@ -114,11 +114,11 @@ fn main() {
         tracing::info!("Got upgraded stream from verifier");
 
         // Step 3: Connect to TLS server
-        let prover_server_socket = TcpStream::connect("127.0.0.1:8443")
+        let prover_server_socket = TcpStream::connect("localhost:8443")
             .await
             .expect("Failed to connect to TLS server");
 
-        tracing::info!("Connected to TLS server at 127.0.0.1:8443");
+        tracing::info!("Connected to TLS server at localhost:8443");
 
         // Step 4: Setup prover configuration
         let TestTlsConfig { cert_bytes, .. } =

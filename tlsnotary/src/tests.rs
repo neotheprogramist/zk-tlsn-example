@@ -240,7 +240,7 @@ pub fn verify_parsed_response(verifier_output: &VerifierOutput, received_data: &
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use futures::join;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;

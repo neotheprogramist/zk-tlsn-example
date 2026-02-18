@@ -16,11 +16,11 @@ fn main() {
         let test_tls_config = shared::get_or_create_test_tls_config(cert_path, key_path).unwrap();
         let app = get_app(create_test_balances());
 
-        let listener = TcpListener::bind("127.0.0.1:8443")
+        let listener = TcpListener::bind("localhost:8443")
             .await
             .expect("Failed to bind to port 8443");
 
-        tracing::info!("TLS server listening on 127.0.0.1:8443");
+        tracing::info!("TLS server listening on localhost:8443");
         tracing::info!("Waiting for prover connection...");
 
         loop {

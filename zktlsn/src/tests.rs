@@ -310,7 +310,7 @@ fn verify_username_field(username_field: &parser::redacted::Body, received_data:
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use futures::join;
     use noir::blackbox_solver::blake3;
     use server::{app::get_app, handle_connection};
