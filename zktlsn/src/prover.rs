@@ -1,10 +1,5 @@
-use noir::{
-    barretenberg::{prove::prove_ultra_honk, verify::get_ultra_honk_verification_key},
-    blackbox_solver::blake3,
-    witness::from_vec_str_to_witness_map,
-};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use stwo_circuit::{ProofData, compute_commitment_hash, prove_commitment};
+use stwo::core::vcs_lifted::blake2_merkle::Blake2sMerkleHasher;
 use tlsnotary::{
     Direction, HashAlgId, PlaintextHash, PlaintextHashSecret, TranscriptCommitment,
     TranscriptSecret,
@@ -15,20 +10,9 @@ use crate::{
     padding::PaddingConfig,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Proof {
-    pub verification_key: Vec<u8>,
-    pub proof: Vec<u8>,
-}
+pub type Proof = ProofData<Blake2sMerkleHasher>;
 
-impl Proof {
-    pub fn new(verification_key: Vec<u8>, proof: Vec<u8>) -> Self {
-        Self {
-            verification_key,
-            proof,
-        }
-    }
-}
+const PROOF_LOG_SIZE: u32 = 4;
 
 pub fn generate_proof(
     transcript_commitments: &[TranscriptCommitment],
@@ -38,14 +22,13 @@ pub fn generate_proof(
 ) -> Result<Proof> {
     let received_commitment = extract_received_commitment(transcript_commitments)?;
     let received_secret = extract_received_secret(transcript_secrets)?;
-    let proof_input = prepare_proof_input(
+    let (x, blinder, hash) = prepare_proof_input(
         received_data,
         received_commitment,
         received_secret,
         padding_config,
     )?;
-
-    generate_zk_proof(&proof_input)
+    Ok(prove_commitment(&x, blinder, hash, PROOF_LOG_SIZE))
 }
 
 fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<PlaintextHash> {
@@ -68,19 +51,12 @@ fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHash
         .ok_or(ZkTlsnError::NoReceivedSecrets)
 }
 
-#[derive(Debug, Clone)]
-struct ProofInput {
-    committed_hash: Vec<u8>,
-    committed_data: Vec<u8>,
-    blinder: Vec<u8>,
-}
-
 fn prepare_proof_input(
     received_data: &[u8],
     commitment: PlaintextHash,
     secret: PlaintextHashSecret,
     padding_config: PaddingConfig,
-) -> Result<ProofInput> {
+) -> Result<(Vec<u8>, [u8; 16], [u8; 32])> {
     if commitment.direction != Direction::Received || commitment.hash.alg != HashAlgId::BLAKE3 {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
@@ -96,43 +72,28 @@ fn prepare_proof_input(
         });
     }
 
-    let committed_data = received_data[range].to_vec();
-    let blinder = secret.blinder.as_bytes().to_vec();
-    let data_to_hash = [&committed_data[..], &blinder[..]].concat();
-    let committed_hash = blake3(&data_to_hash).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
+    let x = received_data
+        .get(range)
+        .ok_or_else(|| ZkTlsnError::InvalidInput("commitment range out of bounds".into()))?
+        .to_vec();
 
-    let tlsnotary_hash = commitment.hash.value.as_bytes();
-    if tlsnotary_hash != committed_hash.as_slice() {
+    let blinder: [u8; 16] = secret
+        .blinder
+        .as_bytes()
+        .try_into()
+        .map_err(|_| ZkTlsnError::InvalidInput("blinder must be exactly 16 bytes".into()))?;
+
+    let hash: [u8; 32] = commitment
+        .hash
+        .value
+        .as_bytes()
+        .try_into()
+        .map_err(|_| ZkTlsnError::InvalidInput("committed hash must be exactly 32 bytes".into()))?;
+
+    let computed = compute_commitment_hash(&x, &blinder);
+    if computed != hash {
         return Err(ZkTlsnError::HashVerificationFailed);
     }
 
-    Ok(ProofInput {
-        committed_hash: committed_hash.to_vec(),
-        committed_data,
-        blinder,
-    })
-}
-
-pub(crate) fn load_circuit_bytecode() -> Result<String> {
-    const PROGRAM_JSON: &str = include_str!("../../target/circuit.json");
-    let json: Value = serde_json::from_str(PROGRAM_JSON)?;
-    json["bytecode"]
-        .as_str()
-        .ok_or(ZkTlsnError::BytecodeNotFound)
-        .map(String::from)
-}
-
-fn generate_zk_proof(input: &ProofInput) -> Result<Proof> {
-    let bytecode = load_circuit_bytecode()?;
-    let inputs: Vec<String> = [&input.committed_hash, &input.committed_data, &input.blinder]
-        .iter()
-        .flat_map(|v| v.iter().map(|b| b.to_string()))
-        .collect();
-    let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-
-    let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
-    let vk = get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
-    let proof =
-        prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
-    Ok(Proof::new(vk, proof))
+    Ok((x, blinder, hash))
 }

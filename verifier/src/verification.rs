@@ -67,7 +67,7 @@ pub async fn verify(
 
     let verified_fields: Vec<String> = bindings.keys().cloned().collect();
 
-    if let Err(e) = verify_proof(&request.proof) {
+    if let Err(e) = verify_proof(request.proof) {
         return VerificationError::ProofVerificationFailed(e.to_string()).into_response();
     }
 

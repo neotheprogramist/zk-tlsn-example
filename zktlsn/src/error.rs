@@ -32,8 +32,8 @@ pub enum ZkTlsnError {
     #[error("Proof is invalid")]
     InvalidProof,
 
-    #[error("Noir error: {0}")]
-    NoirError(String),
+    #[error("STARK proof verification failed: {0}")]
+    StwoError(#[from] stwo_circuit::VerifyError),
 
     #[error(
         "Balance too large: balance length {balance_length} + prefix {prefix_length} + suffix {suffix_length} exceeds total length {total_length}"

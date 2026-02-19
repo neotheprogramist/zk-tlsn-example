@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-noir.workspace = true
+stwo-circuit = { path = "../stwo-circuit" }
+stwo.workspace = true
 parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true
