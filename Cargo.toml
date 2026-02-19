@@ -43,7 +43,18 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 uuid = { version = "1.21.0", features = ["v4", "serde"] }
 verifier = { path = "./verifier" }
 zktlsn = { path = "./zktlsn" }
+num-traits = "0.2"
+itertools = "0.13"
 
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
     "barretenberg",
 ] }
+stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+] }
+stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+    "std",
+] }
+smol-macros = "0.1.1"
+macro_rules_attribute = "0.2.2"

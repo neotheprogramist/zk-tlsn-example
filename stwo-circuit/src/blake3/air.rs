@@ -175,6 +175,8 @@ impl BlakeComponents {
                     log_size: stmt0.log_size,
                     blake_lookup_elements: all_elements.blake_elements.clone(),
                     round_lookup_elements: all_elements.round_elements.clone(),
+                    xor_lookup_elements: all_elements.xor_elements.clone(),
+                    committed_hash_words: [0u32; 8],
                     claimed_sum: stmt1.scheduler_claimed_sum,
                 },
                 stmt1.scheduler_claimed_sum,
@@ -288,7 +290,8 @@ impl BlakeComponentsForIntegration {
         tree_span_provider: &mut TraceLocationAllocator,
         all_elements: &AllElements,
         blake_stmt0: &BlakeStatement0,
-        blake_stmt1: &BlakeStatement1
+        blake_stmt1: &BlakeStatement1,
+        committed_hash_words: [u32; 8],
     ) -> Self {
         Self {
             scheduler_component: BlakeSchedulerComponent::new(
@@ -297,6 +300,8 @@ impl BlakeComponentsForIntegration {
                     log_size: blake_stmt0.log_size,
                     blake_lookup_elements: all_elements.blake_elements.clone(),
                     round_lookup_elements: all_elements.round_elements.clone(),
+                    xor_lookup_elements: all_elements.xor_elements.clone(),
+                    committed_hash_words,
                     claimed_sum: blake_stmt1.scheduler_claimed_sum,
                 },
                 blake_stmt1.scheduler_claimed_sum,

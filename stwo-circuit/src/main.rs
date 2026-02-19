@@ -13,20 +13,38 @@ use smol_macros::main;
 use stwo::{core::{channel::{Blake2sChannel, Channel}, fields::qm31::SecureField, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs_lifted::{MerkleHasherLifted, blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher}}, verifier::verify}, prover::{CommitmentSchemeProver, backend::simd::{SimdBackend, m31::LOG_N_LANES}, poly::circle::PolyOps, prove}};
 use stwo_constraint_framework::TraceLocationAllocator;
 
-use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler::{self}, xor_table};
+use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler::{self, compute_commitment_hash}, xor_table};
+
+#[derive(Debug)]
+pub enum VerifyError {
+    LogupImbalance(SecureField),
+    StarkVerification,
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::LogupImbalance(sum) => {
+                write!(f, "logup claimed sums do not balance (got {sum:?}, expected zero)")
+            }
+            VerifyError::StarkVerification => write!(f, "STARK verification failed"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProofData<H: MerkleHasherLifted> {
-    commitment_stmt0: CommitmentStatement0,
-    blake_stmt0: BlakeStatement0,
-    blake_stmt1: BlakeStatement1,
-    proof: StarkProof<H>,
+    pub commitment_stmt0: CommitmentStatement0,
+    pub blake_stmt1: BlakeStatement1,
+    pub proof: StarkProof<H>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitmentStatement0 {
     pub log_size: u32,
-    pub committed_hash: [u8; 32] 
+    pub committed_hash: [u8; 32],
 }
 
 impl CommitmentStatement0 {
@@ -42,22 +60,35 @@ impl CommitmentStatement0 {
     pub fn log_sizes(&self) -> stwo::core::pcs::TreeVec<Vec<u32>> {
         BlakeStatement0 { log_size: self.log_size }.log_sizes()
     }
+
+    pub fn committed_hash_words(&self) -> [u32; 8] {
+        self.committed_hash
+            .array_chunks::<4>()
+            .map(|&c| u32::from_le_bytes(c))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("committed_hash is [u8; 32], 32 / 4 = 8 words exactly")
+    }
 }
 
-fn prove_commitment(
+pub fn prove_commitment(
     balance_committed_part: &[u8],
     blinder: [u8; 16],
     balance_committed_hash: [u8; 32],
     log_size: u32,
 ) -> ProofData<Blake2sMerkleHasher> {
-    let (blake_scheduler_trace, blake_scheduler_lookup_data, blake_round_inputs) =
-        scheduler::gen_trace(log_size, balance_committed_part, blinder);
-    println!(
-        "Blake scheduler trace generated: {} columns",
-        blake_scheduler_trace.len()
-    );
+    let commitment_stmt0 = CommitmentStatement0 {
+        log_size,
+        committed_hash: balance_committed_hash,
+    };
+    let committed_hash_words = commitment_stmt0.committed_hash_words();
 
     let mut xor_accums = XorAccums::default();
+
+    let (blake_scheduler_trace, blake_scheduler_lookup_data, blake_round_inputs) =
+        scheduler::gen_trace(log_size, balance_committed_part, blinder, &mut xor_accums);
+    tracing::info!(columns = blake_scheduler_trace.len(), "Blake scheduler trace generated");
+
     let mut rest = &blake_round_inputs[..];
     let (blake_round_traces, blake_round_lookup_data): (Vec<_>, Vec<_>) =
         multiunzip(ROUND_LOG_SPLIT.map(|l| {
@@ -81,7 +112,7 @@ fn prove_commitment(
 
     const XOR_TABLE_MAX_LOG_SIZE: u32 = 16;
     let log_max_rows =
-        (log_size + *ROUND_LOG_SPLIT.iter().max().unwrap()).max(XOR_TABLE_MAX_LOG_SIZE);
+        (log_size + *ROUND_LOG_SPLIT.iter().max().expect("ROUND_LOG_SPLIT is a non-empty const array")).max(XOR_TABLE_MAX_LOG_SIZE);
     let twiddles = SimdBackend::precompute_twiddles(
         CanonicCoset::new(log_max_rows + 1 + config.fri_config.log_blowup_factor)
             .circle_domain()
@@ -91,7 +122,7 @@ fn prove_commitment(
     let prover_channel = &mut Blake2sChannel::default();
     let mut commitment_scheme =
         CommitmentSchemeProver::<SimdBackend, Blake2sMerkleChannel>::new(config, &twiddles);
-    
+
     let mut tree_builder = commitment_scheme.tree_builder();
     tree_builder.extend_evals(
         chain![
@@ -104,12 +135,7 @@ fn prove_commitment(
         .collect_vec(),
     );
     tree_builder.commit(prover_channel);
-    println!("Preprocessed trace committed");
-
-    let commitment_stmt0 = CommitmentStatement0 {
-        log_size,
-        committed_hash: balance_committed_hash
-    };
+    tracing::info!("Preprocessed trace committed");
 
     commitment_stmt0.mix_into(prover_channel);
 
@@ -129,10 +155,10 @@ fn prove_commitment(
         .collect_vec(),
     );
     tree_builder.commit(prover_channel);
-    println!("Base trace committed");
+    tracing::info!("Base trace committed");
 
     let all_elements = AllElements::draw(prover_channel);
-    println!("Challenges drawn");
+    tracing::info!("Challenges drawn");
 
     let (blake_scheduler_interaction_trace, blake_scheduler_claimed_sum) =
         scheduler::gen_interaction_trace(
@@ -140,11 +166,10 @@ fn prove_commitment(
             blake_scheduler_lookup_data,
             &all_elements.round_elements,
             &all_elements.blake_elements,
+            &all_elements.xor_elements,
+            committed_hash_words,
         );
-    println!(
-        "Blake scheduler claimed sum: {:?}",
-        blake_scheduler_claimed_sum
-    );
+    tracing::info!(sum = ?blake_scheduler_claimed_sum, "Blake scheduler claimed sum");
 
     let (blake_round_interaction_traces, blake_round_claimed_sums): (Vec<_>, Vec<_>) =
         multiunzip(ROUND_LOG_SPLIT.iter().zip(blake_round_lookup_data).map(
@@ -205,11 +230,11 @@ fn prove_commitment(
         xor9_claimed_sum: blake_xor_claimed_sum9,
         xor8_claimed_sum: blake_xor_claimed_sum8,
         xor7_claimed_sum: blake_xor_claimed_sum7,
-        xor4_claimed_sum: blake_xor_claimed_sum4
+        xor4_claimed_sum: blake_xor_claimed_sum4,
     };
     blake_stmt1.mix_into(prover_channel);
     tree_builder.commit(prover_channel);
-    println!("Interaction trace committed");
+    tracing::info!("Interaction trace committed");
 
     let mut tree_span_provider = TraceLocationAllocator::default();
     let blake_components = BlakeComponentsForIntegration::new(
@@ -217,8 +242,9 @@ fn prove_commitment(
         &all_elements,
         &blake_stmt0,
         &blake_stmt1,
+        committed_hash_words,
     );
-    println!("Components created");
+    tracing::info!("Components created");
 
     let all_component_provers = chain![
         [&blake_components.scheduler_component
@@ -242,25 +268,25 @@ fn prove_commitment(
     )
     .expect("Failed to generate proof");
 
-    println!("PROOF GENERATED!");
     ProofData {
         commitment_stmt0,
-        blake_stmt0,
         blake_stmt1,
-        proof
+        proof,
     }
 }
 
-fn verify_proof(
+pub fn verify_proof(
     proof: StarkProof<Blake2sMerkleHasher>,
-    blake_stmt0: BlakeStatement0,
     blake_stmt1: BlakeStatement1,
-    commitment_stmt0: CommitmentStatement0
-) -> bool {
-    let blake_log_sizes = blake_stmt0.log_sizes();
+    commitment_stmt0: CommitmentStatement0,
+) -> Result<(), VerifyError> {
+    let committed_hash_words = commitment_stmt0.committed_hash_words();
+    let blake_stmt0 = BlakeStatement0 { log_size: commitment_stmt0.log_size };
+    let blake_log_sizes = commitment_stmt0.log_sizes();
 
     let channel = &mut Blake2sChannel::default();
-    let commitment_scheme = &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
+    let commitment_scheme =
+        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof.config);
 
     commitment_scheme.commit(proof.commitments[0], &blake_log_sizes[0], channel);
     commitment_stmt0.mix_into(channel);
@@ -277,9 +303,9 @@ fn verify_proof(
         &mut tree_span_provider,
         &all_elements,
         &blake_stmt0,
-        &blake_stmt1
+        &blake_stmt1,
+        committed_hash_words,
     );
-    println!("Components created");
 
     let claimed_sum = blake_stmt1.scheduler_claimed_sum
         + blake_stmt1.round_claimed_sums.iter().sum::<SecureField>()
@@ -289,22 +315,145 @@ fn verify_proof(
         + blake_stmt1.xor7_claimed_sum
         + blake_stmt1.xor4_claimed_sum;
 
-    assert_eq!(claimed_sum, SecureField::zero());
+    if claimed_sum != SecureField::zero() {
+        return Err(VerifyError::LogupImbalance(claimed_sum));
+    }
 
-    let verification_result = verify( &blake_components.as_components_vec(), channel, commitment_scheme, proof);
-    match verification_result {
-        Ok(()) => return true,
-        Err(_) => return false
+    verify(&blake_components.as_components_vec(), channel, commitment_scheme, proof)
+        .map_err(|_| VerifyError::StarkVerification)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blake3::scheduler::compute_commitment_hash;
+    use proptest::prelude::*;
+
+    fn x_strategy() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 1..=12)
+    }
+
+    fn run_proof_cycle(x: Vec<u8>, blinder: [u8; 16], hash: [u8; 32]) -> Result<(), VerifyError> {
+        let proof_data = prove_commitment(&x, blinder, hash, 4);
+        verify_proof(proof_data.proof, proof_data.blake_stmt1, proof_data.commitment_stmt0)
+    }
+
+    // Fast property tests: verify compute_commitment_hash properties without ZK overhead.
+    proptest! {
+        #[test]
+        fn prop_hash_determinism(
+            x in x_strategy(),
+            blinder in any::<[u8; 16]>(),
+        ) {
+            let h1 = compute_commitment_hash(&x, &blinder);
+            let h2 = compute_commitment_hash(&x, &blinder);
+            prop_assert_eq!(h1, h2);
+        }
+
+        #[test]
+        fn prop_hash_binding_on_input(
+            x1 in x_strategy(),
+            x2 in x_strategy(),
+            blinder in any::<[u8; 16]>(),
+        ) {
+            prop_assume!(x1 != x2);
+            let h1 = compute_commitment_hash(&x1, &blinder);
+            let h2 = compute_commitment_hash(&x2, &blinder);
+            prop_assert_ne!(h1, h2, "Blake3 collision: different x gave identical hash");
+        }
+
+        #[test]
+        fn prop_hash_hiding_via_blinder(
+            x in x_strategy(),
+            b1 in any::<[u8; 16]>(),
+            b2 in any::<[u8; 16]>(),
+        ) {
+            prop_assume!(b1 != b2);
+            let h1 = compute_commitment_hash(&x, &b1);
+            let h2 = compute_commitment_hash(&x, &b2);
+            prop_assert_ne!(h1, h2, "Different blinders gave identical hash (hiding broken)");
+        }
+    }
+
+    // Slow integration tests: full prove + verify cycle (~10-30s per case).
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3))]
+
+        // Completeness: honest prover always convinces verifier.
+        #[test]
+        fn prop_honest_proof_verifies(
+            x in x_strategy(),
+            blinder in any::<[u8; 16]>(),
+        ) {
+            let hash = compute_commitment_hash(&x, &blinder);
+            prop_assert!(run_proof_cycle(x, blinder, hash).is_ok());
+        }
+
+        // Soundness: flipping any byte of committed_hash causes LogupImbalance.
+        #[test]
+        fn prop_tampered_hash_rejected(
+            x in x_strategy(),
+            blinder in any::<[u8; 16]>(),
+            flip_idx in 0usize..32usize,
+        ) {
+            let correct = compute_commitment_hash(&x, &blinder);
+            let mut tampered = correct;
+            tampered[flip_idx] ^= 0xFF;
+            prop_assume!(tampered != correct);
+            let err = run_proof_cycle(x, blinder, tampered)
+                .expect_err("tampered hash should fail verification");
+            prop_assert!(
+                matches!(err, VerifyError::LogupImbalance(_)),
+                "expected LogupImbalance, got: {err}"
+            );
+        }
+
+        // Soundness: prover who uses wrong x but claims hash(correct_x) is rejected.
+        #[test]
+        fn prop_wrong_x_rejected(
+            x1 in x_strategy(),
+            x2 in x_strategy(),
+            blinder in any::<[u8; 16]>(),
+        ) {
+            prop_assume!(x1 != x2);
+            let hash_x1 = compute_commitment_hash(&x1, &blinder);
+            let err = run_proof_cycle(x2, blinder, hash_x1)
+                .expect_err("wrong x should fail verification");
+            prop_assert!(
+                matches!(err, VerifyError::LogupImbalance(_)),
+                "expected LogupImbalance, got: {err}"
+            );
+        }
+
+        // Soundness: prover who uses wrong blinder but claims hash(x, correct_blinder) is rejected.
+        #[test]
+        fn prop_wrong_blinder_rejected(
+            x in x_strategy(),
+            b1 in any::<[u8; 16]>(),
+            b2 in any::<[u8; 16]>(),
+        ) {
+            prop_assume!(b1 != b2);
+            let hash = compute_commitment_hash(&x, &b1);
+            let err = run_proof_cycle(x, b2, hash)
+                .expect_err("wrong blinder should fail verification");
+            prop_assert!(
+                matches!(err, VerifyError::LogupImbalance(_)),
+                "expected LogupImbalance, got: {err}"
+            );
+        }
     }
 }
 
 #[apply(main!)]
 async fn main() {
-    let x = b"123";
+    let x = b"123456789012";
     let blinder = [0u8; 16];
-    let hash = [0u8; 32]; 
-    let proof_data = prove_commitment(x, blinder, hash, 4);
-    println!("Done: {:?}", proof_data.proof.commitments.len());
-    let verify = verify_proof(proof_data.proof, proof_data.blake_stmt0, proof_data.blake_stmt1, proof_data.commitment_stmt0);
-    print!("Verification result: {:?}", verify);
+    let expected_hash = compute_commitment_hash(x, &blinder);
+    tracing::info!(hash = ?expected_hash, "Computed commitment hash");
+    let proof_data = prove_commitment(x, blinder, expected_hash, 4);
+    tracing::info!("Proof generated");
+    match verify_proof(proof_data.proof, proof_data.blake_stmt1, proof_data.commitment_stmt0) {
+        Ok(()) => tracing::info!("Verification: OK"),
+        Err(e) => tracing::error!("Verification failed: {e}"),
+    }
 }
