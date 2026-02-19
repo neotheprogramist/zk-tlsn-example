@@ -47,9 +47,6 @@ struct VerificationResponse {
 }
 
 fn main() {
-    // Setup Barretenberg SRS (required before proof generation)
-    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
-
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -179,9 +176,8 @@ fn main() {
         .expect("Failed to generate ZK proof");
 
         tracing::info!(
-            "ZK proof generated: {} bytes proof, {} bytes verification key",
-            proof.proof.len(),
-            proof.verification_key.len()
+            log_size = proof.commitment_stmt0.log_size,
+            "ZK proof generated (STARK)"
         );
 
         // Step 7: Call /verify endpoint to verify the ZK proof
