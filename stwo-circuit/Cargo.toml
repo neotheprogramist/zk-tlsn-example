@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
-    "prover",
-] }
-stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
-    "prover",
-    "std",
-] }
+stwo.workspace = true
+stwo-constraint-framework.workspace = true
+smol-macros.workspace = true
+macro_rules_attribute.workspace = true
+num-traits.workspace = true
+serde.workspace = true
+itertools.workspace = true
+tracing.workspace = true
