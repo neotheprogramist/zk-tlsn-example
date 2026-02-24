@@ -123,6 +123,13 @@ mod tests {
 
 #[apply(main!)]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
     let x = b"123456789012";
     let blinder = [0u8; 16];
     let hash = compute_commitment_hash(x, &blinder);

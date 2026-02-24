@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 async-compat = "0.2.5"
 axum = "0.8.8"
+alloy = { version = "1.1", features = ["full", "node-bindings", "rpc-types", "sol-types"] }
 chrono = { version = "0.4.43", features = ["serde"] }
 futures = "0.3.32"
 futures-rustls = "0.26.0"

@@ -2,16 +2,21 @@
 #![feature(iter_array_chunks)]
 #![feature(array_chunks)]
 
-pub mod trace;
-pub mod eval;
 pub mod blake3;
+pub mod merkle_membership;
+pub mod poseidon_chain;
+pub mod poseidon_hash;
+pub mod relations;
+pub mod scheduler;
+pub mod combined_circuit;
 
 use itertools::{Itertools, chain, multiunzip};
 use num_traits::Zero;
 use stwo::{core::{channel::{Blake2sChannel, Channel}, fields::qm31::SecureField, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs_lifted::{MerkleHasherLifted, blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher}}, verifier::verify}, prover::{CommitmentSchemeProver, backend::simd::{SimdBackend, m31::LOG_N_LANES}, poly::circle::PolyOps, prove}};
 use stwo_constraint_framework::TraceLocationAllocator;
+pub use combined_circuit::{prove_withdraw, verify_withdraw, WithdrawInputs, WithdrawProof};
 
-use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler, xor_table};
+use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler as BlakeScheduler, xor_table};
 pub use blake3::scheduler::compute_commitment_hash;
 
 #[derive(Debug)]
@@ -90,7 +95,7 @@ pub fn prove_commitment(
     let mut xor_accums = XorAccums::default();
 
     let (blake_scheduler_trace, blake_scheduler_lookup_data, blake_round_inputs) =
-        scheduler::gen_trace(log_size, x, blinder, &mut xor_accums);
+        BlakeScheduler::gen_trace(log_size, x, blinder, &mut xor_accums);
     tracing::info!(columns = blake_scheduler_trace.len(), "Blake scheduler trace generated");
 
     let mut rest = &blake_round_inputs[..];
@@ -169,7 +174,7 @@ pub fn prove_commitment(
     tracing::info!("Challenges drawn");
 
     let (blake_scheduler_interaction_trace, blake_scheduler_claimed_sum) =
-        scheduler::gen_interaction_trace(
+        BlakeScheduler::gen_interaction_trace(
             log_size,
             blake_scheduler_lookup_data,
             &all_elements.round_elements,
