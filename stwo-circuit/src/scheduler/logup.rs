@@ -11,13 +11,12 @@ use stwo::prover::poly::circle::CircleEvaluation;
 use stwo::prover::poly::BitReversedOrder;
 use stwo_constraint_framework::{LogupTraceGenerator, Relation};
 
-use crate::relations::{LeafRelation, RefundLeafRelation, RootRelation};
+use crate::relations::{LeafRelation, RootRelation};
 
 pub fn gen_scheduler_interaction_trace(
     trace: &ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
     leaf_relation: &LeafRelation,
     root_relation: &RootRelation,
-    refund_leaf_relation: &RefundLeafRelation,
     log_size: u32,
 ) -> (
     ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
@@ -76,7 +75,7 @@ pub fn gen_scheduler_interaction_trace(
             let col_data = &trace[5].data;
             let refund_leaf_value: PackedSecureField = col_data[vec_row].into();
 
-            let denom: PackedSecureField = refund_leaf_relation.combine(&[refund_leaf_value]);
+            let denom: PackedSecureField = leaf_relation.combine(&[refund_leaf_value]);
 
             let is_first_value = is_first_col.data[vec_row];
             let is_first_secure: PackedSecureField = is_first_value.into();

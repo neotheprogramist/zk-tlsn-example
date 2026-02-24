@@ -36,7 +36,7 @@ use crate::poseidon_chain::{
     is_last_column_id, is_step_column_id, ChainInputs, PoseidonChainComponent,
     PoseidonChainEval,
 };
-use crate::relations::{LeafRelation, RefundLeafRelation, RootRelation};
+use crate::relations::{LeafRelation, RootRelation};
 use crate::scheduler::{
     gen_is_first_column as gen_scheduler_is_first_column, gen_scheduler_interaction_trace,
     gen_scheduler_trace, is_first_column_id as scheduler_is_first_column_id,
@@ -332,7 +332,6 @@ pub fn prove_withdraw(
     let all_elements = AllElements::draw(prover_channel);
     let leaf_relation = LeafRelation::draw(prover_channel);
     let root_relation = RootRelation::draw(prover_channel);
-    let refund_leaf_relation = RefundLeafRelation::draw(prover_channel);
 
     // Blake3 interaction traces
     let (blake_scheduler_interaction_trace, blake_scheduler_claimed_sum) =
@@ -413,7 +412,6 @@ pub fn prove_withdraw(
         &scheduler_trace,
         &leaf_relation,
         &root_relation,
-        &refund_leaf_relation,
         log_size,
     );
 
@@ -473,7 +471,7 @@ pub fn prove_withdraw(
             is_step_id: is_step_column_id(log_size, "deposit"),
             is_last_id: is_last_column_id(log_size, "deposit"),
             leaf_relation: leaf_relation.clone(),
-            leaf_multiplicity: 1,
+            leaf_multiplicity: 2,
             claimed_sum: deposit_claimed_sum,
         },
         deposit_claimed_sum,
@@ -502,7 +500,6 @@ pub fn prove_withdraw(
             is_first_id: scheduler_is_first_column_id(log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            refund_leaf_relation: refund_leaf_relation.clone(),
             amount: inputs.amount,
             refund_commitment_hash: BaseField::from_u32_unchecked(0),
             claimed_sum: scheduler_claimed_sum,

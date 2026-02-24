@@ -5,7 +5,7 @@ use stwo_constraint_framework::{
     EvalAtRow, FrameworkComponent, FrameworkEval, RelationEntry,
 };
 
-use crate::relations::{LeafRelation, RefundLeafRelation, RootRelation};
+use crate::relations::{LeafRelation, RootRelation};
 
 #[derive(Clone)]
 pub struct PrivacyPoolSchedulerEval {
@@ -13,7 +13,6 @@ pub struct PrivacyPoolSchedulerEval {
     pub is_first_id: PreProcessedColumnId,
     pub leaf_relation: LeafRelation,
     pub root_relation: RootRelation,
-    pub refund_leaf_relation: RefundLeafRelation,
     pub amount: BaseField,
     pub refund_commitment_hash: BaseField,
     pub claimed_sum: SecureField,
@@ -61,7 +60,7 @@ impl FrameworkEval for PrivacyPoolSchedulerEval {
         ));
 
         eval.add_to_relation(RelationEntry::new(
-            &self.refund_leaf_relation,
+            &self.leaf_relation,
             (-is_first).into(),
             &[refund_leaf],
         ));
