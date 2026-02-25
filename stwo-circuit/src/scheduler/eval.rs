@@ -24,7 +24,7 @@ impl FrameworkEval for PrivacyPoolSchedulerEval {
     }
 
     fn max_constraint_log_degree_bound(&self) -> u32 {
-        self.log_n_rows + 3 // LOG_EXPAND
+        self.log_n_rows + 3
     }
 
     fn evaluate<E: EvalAtRow>(&self, mut eval: E) -> E {

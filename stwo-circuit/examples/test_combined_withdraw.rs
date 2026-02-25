@@ -8,7 +8,6 @@ use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[apply(main!)]
 async fn main() {
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -19,11 +18,8 @@ async fn main() {
 
     tracing::info!("Starting combined withdraw circuit test");
 
-    // ========== STEP 1: Simulate TLSN response ==========
-    // User queries balance server and gets: {"balance":100,"username":"alice","z":"            "}
-    // TLSN commits to balance value with padding
-    let balance_fragment = b"100         "; // 12 bytes (balance + 11 spaces padding)
-    let blinder = [42u8; 16]; // Random blinder from TLSN verifier
+    let balance_fragment = b"100         ";
+    let blinder = [42u8; 16];
     let commitment_hash = compute_commitment_hash(balance_fragment, &blinder);
 
     tracing::info!(
@@ -31,11 +27,9 @@ async fn main() {
         "Step 1: TLSN commitment generated"
     );
 
-    // ========== STEP 2: User deposit parameters ==========
-    // These were used when user made original deposit
     let secret = BaseField::from_u32_unchecked(12345);
     let nullifier = BaseField::from_u32_unchecked(67890);
-    let amount = BaseField::from_u32_unchecked(100); // Must match balance_fragment
+    let amount = BaseField::from_u32_unchecked(100);
     let token_address = BaseField::from_u32_unchecked(0xABCD);
 
     tracing::info!(
@@ -45,8 +39,6 @@ async fn main() {
         "Step 2: User deposit parameters"
     );
 
-    // ========== STEP 3: Simulate merkle tree ==========
-    // In production, this would come from on-chain contract or indexer
     let merkle_siblings = vec![
         BaseField::from_u32_unchecked(11111),
         BaseField::from_u32_unchecked(22222),
@@ -56,8 +48,6 @@ async fn main() {
     ];
     let merkle_index = 1;
 
-    // Compute what the merkle root SHOULD be (in production, comes from contract)
-    // For this test, we'll compute it by running the merkle circuit once
     use stwo_circuit::{
         poseidon_chain::{gen_poseidon_chain_trace, ChainInputs},
         merkle_membership::{gen_merkle_trace, MerkleInputs},
@@ -71,7 +61,7 @@ async fn main() {
         deposit_leaf,
         merkle_siblings.clone(),
         merkle_index,
-        BaseField::from_u32_unchecked(0), // Dummy, will be overwritten
+        BaseField::from_u32_unchecked(0),
     );
     let (_, computed_root) = gen_merkle_trace(4, &merkle_inputs_temp);
     let merkle_root = computed_root;
@@ -82,20 +72,14 @@ async fn main() {
         "Step 3: Merkle tree parameters"
     );
 
-    // ========== STEP 4: Create WithdrawInputs ==========
     let inputs = WithdrawInputs {
-        // Blake3 (from TLSN)
         balance_fragment: balance_fragment.to_vec(),
         blinder,
         commitment_hash,
-
-        // Poseidon chain
         secret,
         nullifier,
         amount,
         token_address,
-
-        // Merkle proof
         merkle_siblings,
         merkle_index,
         merkle_root,
@@ -103,10 +87,7 @@ async fn main() {
 
     tracing::info!("Step 4: WithdrawInputs created");
 
-    // ========== STEP 5: Generate combined proof ==========
-    tracing::info!("Step 5: Generating combined withdraw proof...");
-
-    let log_size = 4; // Small size for testing
+    let log_size = 8;
     let proof = match prove_withdraw(inputs, log_size) {
         Ok(p) => {
             tracing::info!("✅ Proof generated successfully!");
@@ -123,9 +104,6 @@ async fn main() {
         }
     };
 
-    // ========== STEP 6: Verify proof ==========
-    tracing::info!("Step 6: Verifying proof...");
-
     match verify_withdraw(proof.clone()) {
         Ok(()) => {
             tracing::info!("✅ Proof verified successfully!");
@@ -136,7 +114,6 @@ async fn main() {
         }
     }
 
-    // ========== STEP 7: Display proof details ==========
     tracing::info!("========== Proof Summary ==========");
     tracing::info!("Public inputs:");
     tracing::info!("  - Merkle root: {}", proof.merkle_root.0);

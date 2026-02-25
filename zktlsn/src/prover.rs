@@ -1,5 +1,5 @@
+use stwo::core::vcs::keccak_merkle::KeccakMerkleHasher;
 use stwo_circuit::{ProofData, compute_commitment_hash, prove_commitment};
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sMerkleHasher;
 use tlsnotary::{
     Direction, HashAlgId, PlaintextHash, PlaintextHashSecret, TranscriptCommitment,
     TranscriptSecret,
@@ -10,7 +10,7 @@ use crate::{
     padding::PaddingConfig,
 };
 
-pub type Proof = ProofData<Blake2sMerkleHasher>;
+pub type Proof = ProofData<KeccakMerkleHasher>;
 
 const PROOF_LOG_SIZE: u32 = 4;
 

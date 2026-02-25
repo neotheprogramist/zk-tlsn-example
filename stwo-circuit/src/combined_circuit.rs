@@ -1,86 +1,65 @@
 use itertools::{chain, multiunzip};
 use num_traits::Zero;
-use stwo::core::{
-    channel::{Blake2sChannel, Channel},
-    fields::{m31::BaseField, qm31::SecureField},
-    pcs::{CommitmentSchemeVerifier, PcsConfig},
-    poly::circle::CanonicCoset,
-    proof::StarkProof,
-    vcs_lifted::{
-        blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher},
-        MerkleHasherLifted,
-    },
-    verifier::verify,
-};
-use stwo::prover::{poly::circle::PolyOps, prove, CommitmentSchemeProver};
+use stwo::{core::{
+    channel::{Channel, KeccakChannel}, fields::{m31::BaseField, qm31::SecureField}, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs::{MerkleHasher, keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher}}, verifier::verify
+}, prover::prove_with_composition_polynomial};
+use stwo::prover::{poly::circle::PolyOps, CommitmentSchemeProver};
 use stwo::prover::backend::simd::{SimdBackend, m31::LOG_N_LANES};
 use stwo_constraint_framework::TraceLocationAllocator;
 
-// Blake3 imports
 use crate::blake3::{
     AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1,
     ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable,
     round, scheduler as BlakeScheduler, xor_table,
 };
 
-// Poseidon/Merkle/Scheduler imports
 use crate::merkle_membership::{
     gen_merkle_is_active_column, gen_merkle_is_first_column, gen_merkle_is_last_column,
     gen_merkle_is_step_column, gen_merkle_membership_interaction_trace, gen_merkle_trace,
     merkle_is_active_column_id, merkle_is_first_column_id, merkle_is_last_column_id,
     merkle_is_step_column_id, MerkleInputs, MerkleMembershipComponent, MerkleMembershipEval,
+    MerkleStatement0,
 };
 use crate::poseidon_chain::{
     gen_is_active_column, gen_is_last_column, gen_is_step_column,
     gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace, is_active_column_id,
     is_last_column_id, is_step_column_id, ChainInputs, PoseidonChainComponent,
-    PoseidonChainEval,
+    PoseidonChainEval, ChainStatement0,
 };
 use crate::relations::{LeafRelation, RootRelation};
 use crate::scheduler::{
     gen_is_first_column as gen_scheduler_is_first_column, gen_scheduler_interaction_trace,
     gen_scheduler_trace, is_first_column_id as scheduler_is_first_column_id,
-    PrivacyPoolSchedulerComponent, PrivacyPoolSchedulerEval,
+    PrivacyPoolSchedulerComponent, PrivacyPoolSchedulerEval, SchedulerStatement0,
 };
 
-/// Inputs for the combined withdraw proof
 #[derive(Clone, Debug)]
 pub struct WithdrawInputs {
-    // Blake3 inputs (HTTP response verification from TLSN)
-    pub balance_fragment: Vec<u8>,     // Only fragment with balance (e.g., "100         ")
-    pub blinder: [u8; 16],              // Secret blinder from TLSN Verifier
-    pub commitment_hash: [u8; 32],      // Blake3(balance_fragment, blinder)
-
-    // Deposit inputs (Poseidon chain)
-    pub secret: BaseField,              // User secret
-    pub nullifier: BaseField,           // Unique nullifier (prevents double-spend)
-    pub amount: BaseField,              // Amount to withdraw (parsed from balance_fragment)
-    pub token_address: BaseField,       // Token address
-
-    // Merkle proof inputs
-    pub merkle_siblings: Vec<BaseField>, // Merkle path siblings
-    pub merkle_index: u32,               // Position in tree
-    pub merkle_root: BaseField,          // Current merkle root on-chain
+    pub balance_fragment: Vec<u8>,
+    pub blinder: [u8; 16],
+    pub commitment_hash: [u8; 32],
+    pub secret: BaseField,
+    pub nullifier: BaseField,
+    pub amount: BaseField,
+    pub token_address: BaseField,
+    pub merkle_siblings: Vec<BaseField>,
+    pub merkle_index: u32,
+    pub merkle_root: BaseField,
 }
 
-/// Combined proof data structure
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct WithdrawProof<H: MerkleHasherLifted> {
-    // Blake3 statements
+pub struct WithdrawProof<H: MerkleHasher> {
     pub commitment_stmt0: CommitmentStatement0,
     pub blake_stmt1: BlakeStatement1,
-
-    // Public inputs
     pub merkle_root: BaseField,
     pub nullifier: BaseField,
     pub amount: BaseField,
     pub token_address: BaseField,
-
-    // Metadata
     pub log_size: u32,
     pub merkle_depth: usize,
-
-    // The actual STARK proof
+    pub deposit_claimed_sum: SecureField,
+    pub merkle_claimed_sum: SecureField,
+    pub scheduler_claimed_sum: SecureField,
     pub proof: StarkProof<H>,
 }
 
@@ -114,7 +93,6 @@ impl CommitmentStatement0 {
     }
 }
 
-/// Parse balance from fragment (e.g., "100         " -> 100)
 fn parse_balance_from_fragment(fragment: &[u8]) -> Result<u64, String> {
     let fragment_str = std::str::from_utf8(fragment)
         .map_err(|e| format!("Invalid UTF-8 in fragment: {}", e))?;
@@ -125,14 +103,12 @@ fn parse_balance_from_fragment(fragment: &[u8]) -> Result<u64, String> {
         .map_err(|e| format!("Failed to parse balance: {}", e))
 }
 
-/// Generate combined withdraw proof
 pub fn prove_withdraw(
     inputs: WithdrawInputs,
     log_size: u32,
-) -> Result<WithdrawProof<Blake2sMerkleHasher>, String> {
+) -> Result<WithdrawProof<KeccakMerkleHasher>, String> {
     tracing::info!("Starting combined withdraw proof generation");
 
-    // ========== STEP 0: Validate & Parse Amount ==========
     let parsed_amount = parse_balance_from_fragment(&inputs.balance_fragment)?;
     let amount_u32 = u32::try_from(parsed_amount)
         .map_err(|_| format!("Amount {} too large for u32", parsed_amount))?;
@@ -146,7 +122,6 @@ pub fn prove_withdraw(
 
     tracing::info!("Parsed amount from fragment: {}", parsed_amount);
 
-    // ========== STEP 1: Blake3 Circuit (HTTP Response Fragment) ==========
     tracing::info!("Step 1: Generating Blake3 proof for HTTP response fragment");
 
     let commitment_stmt0 = CommitmentStatement0 {
@@ -185,7 +160,6 @@ pub fn prove_withdraw(
     let (blake_xor_trace4, blake_xor_lookup_data4) =
         xor_table::xor4::generate_trace(xor_accums.xor4);
 
-    // ========== STEP 2: Poseidon Chain (Deposit Leaf) ==========
     tracing::info!("Step 2: Generating Poseidon chain for deposit leaf");
 
     let deposit_inputs = ChainInputs::for_deposit(
@@ -199,7 +173,6 @@ pub fn prove_withdraw(
     let deposit_leaf = deposit_outputs.leaf;
     tracing::info!("Deposit leaf computed: {}", deposit_leaf.0);
 
-    // ========== STEP 3: Merkle Membership ==========
     tracing::info!("Step 3: Generating Merkle membership proof");
 
     let merkle_inputs = MerkleInputs::new(
@@ -219,7 +192,6 @@ pub fn prove_withdraw(
     }
     tracing::info!("Merkle root verified: {}", computed_root.0);
 
-    // ========== STEP 4: Scheduler (Binds Everything) ==========
     tracing::info!("Step 4: Generating scheduler trace");
 
     let scheduler_trace = gen_scheduler_trace(
@@ -227,12 +199,11 @@ pub fn prove_withdraw(
         computed_root,
         inputs.merkle_root,
         inputs.amount,
-        BaseField::from_u32_unchecked(0), // refund_amount = 0 for withdraw
+        BaseField::from_u32_unchecked(0),
         deposit_leaf,
-        BaseField::from_u32_unchecked(0), // no refund leaf
+        BaseField::from_u32_unchecked(0),
     );
 
-    // ========== STEP 5: Setup Prover ==========
     tracing::info!("Step 5: Setting up prover");
 
     let config = PcsConfig::default();
@@ -243,7 +214,7 @@ pub fn prove_withdraw(
             .max()
             .expect("ROUND_LOG_SPLIT is non-empty"))
     .max(XOR_TABLE_MAX_LOG_SIZE)
-    .max(log_size + 3); // For Poseidon chain
+    .max(log_size + 3);
 
     let twiddles = SimdBackend::precompute_twiddles(
         CanonicCoset::new(log_max_rows + 1 + config.fri_config.log_blowup_factor)
@@ -251,14 +222,12 @@ pub fn prove_withdraw(
             .half_coset,
     );
 
-    let prover_channel = &mut Blake2sChannel::default();
+    let prover_channel = &mut KeccakChannel::default();
     let mut commitment_scheme =
-        CommitmentSchemeProver::<SimdBackend, Blake2sMerkleChannel>::new(config, &twiddles);
+        CommitmentSchemeProver::<SimdBackend, KeccakMerkleChannel>::new(config, &twiddles);
 
-    // ========== STEP 6: Commit Preprocessed Columns ==========
     tracing::info!("Step 6: Committing preprocessed columns");
 
-    // Blake3 preprocessed (XOR tables)
     let mut tree_builder = commitment_scheme.tree_builder();
     tree_builder.extend_evals(
         chain![
@@ -271,7 +240,6 @@ pub fn prove_withdraw(
         .collect::<Vec<_>>(),
     );
 
-    // Poseidon/Merkle/Scheduler preprocessed
     let chain_is_active = gen_is_active_column(log_size);
     let chain_is_step = gen_is_step_column(log_size);
     let chain_is_last = gen_is_last_column(log_size);
@@ -297,10 +265,8 @@ pub fn prove_withdraw(
     tree_builder.commit(prover_channel);
     tracing::info!("Preprocessed trace committed");
 
-    // Mix public inputs
     commitment_stmt0.mix_into(prover_channel);
 
-    // ========== STEP 7: Commit Base Traces ==========
     tracing::info!("Step 7: Committing base traces");
 
     let blake_stmt0 = BlakeStatement0 { log_size };
@@ -326,14 +292,12 @@ pub fn prove_withdraw(
     tree_builder.commit(prover_channel);
     tracing::info!("Base traces committed");
 
-    // ========== STEP 8: Draw Challenges and Generate Interaction Traces ==========
     tracing::info!("Step 8: Drawing challenges");
 
     let all_elements = AllElements::draw(prover_channel);
     let leaf_relation = LeafRelation::draw(prover_channel);
     let root_relation = RootRelation::draw(prover_channel);
 
-    // Blake3 interaction traces
     let (blake_scheduler_interaction_trace, blake_scheduler_claimed_sum) =
         BlakeScheduler::gen_interaction_trace(
             log_size,
@@ -392,12 +356,11 @@ pub fn prove_withdraw(
         xor4_claimed_sum: blake_xor_claimed_sum4,
     };
 
-    // Poseidon/Merkle/Scheduler interaction traces
     let (deposit_interaction, deposit_claimed_sum) = gen_poseidon_chain_interaction_trace(
         &deposit_trace,
         &leaf_relation,
         log_size,
-        1,
+        2,
     );
 
     let (merkle_interaction, merkle_claimed_sum) = gen_merkle_membership_interaction_trace(
@@ -438,7 +401,6 @@ pub fn prove_withdraw(
     tree_builder.commit(prover_channel);
     tracing::info!("Interaction traces committed");
 
-    // ========== STEP 9: Create Components and Generate Proof ==========
     tracing::info!("Step 9: Creating components");
 
     let mut tree_span_provider = TraceLocationAllocator::default();
@@ -450,18 +412,6 @@ pub fn prove_withdraw(
         &blake_stmt1,
         committed_hash_words,
     );
-
-    // Reset tree_span_provider for Poseidon/Merkle/Scheduler components
-    tree_span_provider = TraceLocationAllocator::new_with_preprocessed_columns(&[
-        is_active_column_id(log_size, "deposit"),
-        is_step_column_id(log_size, "deposit"),
-        is_last_column_id(log_size, "deposit"),
-        merkle_is_active_column_id(log_size, merkle_depth),
-        merkle_is_step_column_id(log_size, merkle_depth),
-        merkle_is_first_column_id(log_size, merkle_depth),
-        merkle_is_last_column_id(log_size, merkle_depth),
-        scheduler_is_first_column_id(log_size),
-    ]);
 
     let deposit_component = PoseidonChainComponent::new(
         &mut tree_span_provider,
@@ -526,7 +476,7 @@ pub fn prove_withdraw(
     .collect::<Vec<_>>();
 
     tracing::info!("Generating STARK proof...");
-    let proof = prove::<SimdBackend, Blake2sMerkleChannel>(
+    let (proof, _composition_poly) = prove_with_composition_polynomial::<SimdBackend, KeccakMerkleChannel>(
         &all_component_provers,
         prover_channel,
         commitment_scheme,
@@ -544,13 +494,15 @@ pub fn prove_withdraw(
         token_address: inputs.token_address,
         log_size,
         merkle_depth,
+        deposit_claimed_sum,
+        merkle_claimed_sum,
+        scheduler_claimed_sum,
         proof,
     })
 }
 
-/// Verify combined withdraw proof
 pub fn verify_withdraw(
-    proof_data: WithdrawProof<Blake2sMerkleHasher>,
+    proof_data: WithdrawProof<KeccakMerkleHasher>,
 ) -> Result<(), String> {
     tracing::info!("Starting combined withdraw proof verification");
 
@@ -559,26 +511,46 @@ pub fn verify_withdraw(
         log_size: proof_data.log_size,
     };
     let blake_log_sizes = proof_data.commitment_stmt0.log_sizes();
+    let chain_log_sizes = ChainStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let merkle_log_sizes = MerkleStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let scheduler_log_sizes = SchedulerStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
 
-    let channel = &mut Blake2sChannel::default();
+    let mut full_log_sizes = blake_log_sizes.clone();
+    full_log_sizes[0].extend(chain_log_sizes[0].iter().copied());
+    full_log_sizes[0].extend(merkle_log_sizes[0].iter().copied());
+    full_log_sizes[0].extend(scheduler_log_sizes[0].iter().copied());
+    full_log_sizes[1].extend(chain_log_sizes[1].iter().copied());
+    full_log_sizes[1].extend(merkle_log_sizes[1].iter().copied());
+    full_log_sizes[1].extend(scheduler_log_sizes[1].iter().copied());
+    full_log_sizes[2].extend(chain_log_sizes[2].iter().copied());
+    full_log_sizes[2].extend(merkle_log_sizes[2].iter().copied());
+    full_log_sizes[2].extend(scheduler_log_sizes[2].iter().copied());
+
+    let channel = &mut KeccakChannel::default();
     let commitment_scheme =
-        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof_data.proof.config);
+        &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
-    // Commit preprocessed (Blake3 XOR tables + Poseidon/Merkle/Scheduler columns)
-    commitment_scheme.commit(proof_data.proof.commitments[0], &blake_log_sizes[0], channel);
+    commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     proof_data.commitment_stmt0.mix_into(channel);
 
-    // Commit base traces
-    commitment_scheme.commit(proof_data.proof.commitments[1], &blake_log_sizes[1], channel);
+    commitment_scheme.commit(proof_data.proof.commitments[1], &full_log_sizes[1], channel);
 
-    // Draw challenges
     let all_elements = AllElements::draw(channel);
+    let leaf_relation = LeafRelation::draw(channel);
+    let root_relation = RootRelation::draw(channel);
     proof_data.blake_stmt1.mix_into(channel);
 
-    // Commit interaction traces
-    commitment_scheme.commit(proof_data.proof.commitments[2], &blake_log_sizes[2], channel);
+    commitment_scheme.commit(proof_data.proof.commitments[2], &full_log_sizes[2], channel);
 
-    // Create verifier components
     let mut tree_span_provider = TraceLocationAllocator::default();
     let blake_components = BlakeComponentsForIntegration::new(
         &mut tree_span_provider,
@@ -588,7 +560,6 @@ pub fn verify_withdraw(
         committed_hash_words,
     );
 
-    // Check logup balance (all claimed sums must sum to zero)
     let blake_total = proof_data.blake_stmt1.scheduler_claimed_sum
         + proof_data.blake_stmt1.round_claimed_sums.iter().sum::<SecureField>()
         + proof_data.blake_stmt1.xor12_claimed_sum
@@ -597,14 +568,67 @@ pub fn verify_withdraw(
         + proof_data.blake_stmt1.xor7_claimed_sum
         + proof_data.blake_stmt1.xor4_claimed_sum;
 
-    // Note: For full verification, we would also need the Poseidon/Merkle/Scheduler claimed sums
-    // They should be stored in WithdrawProof structure in production
     if blake_total != SecureField::zero() {
         tracing::warn!("Blake3 logup imbalance (partial check): {:?}", blake_total);
     }
 
+    let deposit_component = PoseidonChainComponent::new(
+        &mut tree_span_provider,
+        PoseidonChainEval {
+            log_n_rows: proof_data.log_size,
+            is_active_id: is_active_column_id(proof_data.log_size, "deposit"),
+            is_step_id: is_step_column_id(proof_data.log_size, "deposit"),
+            is_last_id: is_last_column_id(proof_data.log_size, "deposit"),
+            leaf_relation: leaf_relation.clone(),
+            leaf_multiplicity: 2,
+            claimed_sum: proof_data.deposit_claimed_sum,
+        },
+        proof_data.deposit_claimed_sum,
+    );
+
+    let merkle_component = MerkleMembershipComponent::new(
+        &mut tree_span_provider,
+        MerkleMembershipEval {
+            log_n_rows: proof_data.log_size,
+            depth: proof_data.merkle_depth,
+            is_active_id: merkle_is_active_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_step_id: merkle_is_step_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_first_id: merkle_is_first_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_last_id: merkle_is_last_column_id(proof_data.log_size, proof_data.merkle_depth),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            claimed_sum: proof_data.merkle_claimed_sum,
+        },
+        proof_data.merkle_claimed_sum,
+    );
+
+    let scheduler_component = PrivacyPoolSchedulerComponent::new(
+        &mut tree_span_provider,
+        PrivacyPoolSchedulerEval {
+            log_n_rows: proof_data.log_size,
+            is_first_id: scheduler_is_first_column_id(proof_data.log_size),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            amount: proof_data.amount,
+            refund_commitment_hash: BaseField::from_u32_unchecked(0),
+            claimed_sum: proof_data.scheduler_claimed_sum,
+        },
+        proof_data.scheduler_claimed_sum,
+    );
+
+    let all_components = chain![
+        blake_components
+            .as_components_vec()
+            .into_iter()
+            .map(|c| c as &dyn stwo::core::air::Component),
+        [&deposit_component as &dyn stwo::core::air::Component],
+        [&merkle_component as &dyn stwo::core::air::Component],
+        [&scheduler_component as &dyn stwo::core::air::Component],
+    ]
+    .collect::<Vec<_>>();
+
     verify(
-        &blake_components.as_components_vec(),
+        &all_components,
         channel,
         commitment_scheme,
         proof_data.proof,

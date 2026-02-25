@@ -50,12 +50,8 @@ itertools = "0.13"
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
     "barretenberg",
 ] }
-stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
-    "prover",
-] }
-stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
-    "prover",
-    "std",
-] }
+stwo = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = ["prover"], branch = "channel/solidity" }
+stwo-constraint-framework = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = ["prover", "std"], branch = "channel/solidity" }
+stwo-polynomial = { git = "https://github.com/piotr-stec/stwo-polynomial", branch = "feat/privacy-pool-with-merkle" }
 smol-macros = "0.1.1"
 macro_rules_attribute = "0.2.2"
