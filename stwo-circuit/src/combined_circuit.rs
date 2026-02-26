@@ -1,36 +1,52 @@
 use itertools::{chain, multiunzip};
 use num_traits::Zero;
-use stwo::{core::{
-    channel::{Channel, KeccakChannel}, fields::{m31::BaseField, qm31::SecureField}, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs::{MerkleHasher, keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher}}, verifier::verify
-}, prover::prove_with_composition_polynomial};
-use stwo::prover::{poly::circle::PolyOps, CommitmentSchemeProver};
-use stwo::prover::backend::simd::{SimdBackend, m31::LOG_N_LANES};
+use stwo::{
+    core::{
+        channel::{Channel, KeccakChannel},
+        fields::{m31::BaseField, qm31::SecureField},
+        pcs::{CommitmentSchemeVerifier, PcsConfig},
+        poly::circle::CanonicCoset,
+        proof::StarkProof,
+        vcs::{
+            MerkleHasher,
+            keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher},
+        },
+        verifier::verify,
+    },
+    prover::{
+        CommitmentSchemeProver,
+        backend::simd::{SimdBackend, m31::LOG_N_LANES},
+        poly::circle::{PolyOps, SecureCirclePoly},
+    },
+};
 use stwo_constraint_framework::TraceLocationAllocator;
+use stwo_polynomial::prove::prove;
 
-use crate::blake3::{
-    AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1,
-    ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable,
-    round, scheduler as BlakeScheduler, xor_table,
-};
-
-use crate::merkle_membership::{
-    gen_merkle_is_active_column, gen_merkle_is_first_column, gen_merkle_is_last_column,
-    gen_merkle_is_step_column, gen_merkle_membership_interaction_trace, gen_merkle_trace,
-    merkle_is_active_column_id, merkle_is_first_column_id, merkle_is_last_column_id,
-    merkle_is_step_column_id, MerkleInputs, MerkleMembershipComponent, MerkleMembershipEval,
-    MerkleStatement0,
-};
-use crate::poseidon_chain::{
-    gen_is_active_column, gen_is_last_column, gen_is_step_column,
-    gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace, is_active_column_id,
-    is_last_column_id, is_step_column_id, ChainInputs, PoseidonChainComponent,
-    PoseidonChainEval, ChainStatement0,
-};
-use crate::relations::{LeafRelation, RootRelation};
-use crate::scheduler::{
-    gen_is_first_column as gen_scheduler_is_first_column, gen_scheduler_interaction_trace,
-    gen_scheduler_trace, is_first_column_id as scheduler_is_first_column_id,
-    PrivacyPoolSchedulerComponent, PrivacyPoolSchedulerEval, SchedulerStatement0,
+use crate::{
+    blake3::{
+        AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1,
+        ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round,
+        scheduler as BlakeScheduler, xor_table,
+    },
+    merkle_membership::{
+        MerkleInputs, MerkleMembershipComponent, MerkleMembershipEval, MerkleStatement0,
+        gen_merkle_is_active_column, gen_merkle_is_first_column, gen_merkle_is_last_column,
+        gen_merkle_is_step_column, gen_merkle_membership_interaction_trace, gen_merkle_trace,
+        merkle_is_active_column_id, merkle_is_first_column_id, merkle_is_last_column_id,
+        merkle_is_step_column_id,
+    },
+    poseidon_chain::{
+        ChainInputs, ChainStatement0, PoseidonChainComponent, PoseidonChainEval,
+        gen_is_active_column, gen_is_last_column, gen_is_step_column,
+        gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace, is_active_column_id,
+        is_last_column_id, is_step_column_id,
+    },
+    relations::{LeafRelation, RootRelation},
+    scheduler::{
+        PrivacyPoolSchedulerComponent, PrivacyPoolSchedulerEval, SchedulerStatement0,
+        gen_is_first_column as gen_scheduler_is_first_column, gen_scheduler_interaction_trace,
+        gen_scheduler_trace, is_first_column_id as scheduler_is_first_column_id,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -47,7 +63,7 @@ pub struct WithdrawInputs {
     pub merkle_root: BaseField,
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 pub struct WithdrawProof<H: MerkleHasher> {
     pub commitment_stmt0: CommitmentStatement0,
     pub blake_stmt1: BlakeStatement1,
@@ -60,6 +76,9 @@ pub struct WithdrawProof<H: MerkleHasher> {
     pub deposit_claimed_sum: SecureField,
     pub merkle_claimed_sum: SecureField,
     pub scheduler_claimed_sum: SecureField,
+    pub composition_polynomial: SecureCirclePoly<SimdBackend>,
+    pub transcript_digest: [u8; 32],
+    pub transcript_n_draws: u32,
     pub proof: StarkProof<H>,
 }
 
@@ -80,7 +99,10 @@ impl CommitmentStatement0 {
     }
 
     pub fn log_sizes(&self) -> stwo::core::pcs::TreeVec<Vec<u32>> {
-        BlakeStatement0 { log_size: self.log_size }.log_sizes()
+        BlakeStatement0 {
+            log_size: self.log_size,
+        }
+        .log_sizes()
     }
 
     pub fn committed_hash_words(&self) -> [u32; 8] {
@@ -94,12 +116,13 @@ impl CommitmentStatement0 {
 }
 
 fn parse_balance_from_fragment(fragment: &[u8]) -> Result<u64, String> {
-    let fragment_str = std::str::from_utf8(fragment)
-        .map_err(|e| format!("Invalid UTF-8 in fragment: {}", e))?;
+    let fragment_str =
+        std::str::from_utf8(fragment).map_err(|e| format!("Invalid UTF-8 in fragment: {}", e))?;
 
     let trimmed = fragment_str.trim();
 
-    trimmed.parse::<u64>()
+    trimmed
+        .parse::<u64>()
         .map_err(|e| format!("Failed to parse balance: {}", e))
 }
 
@@ -139,7 +162,10 @@ pub fn prove_withdraw(
             inputs.blinder,
             &mut xor_accums,
         );
-    tracing::info!(columns = blake_scheduler_trace.len(), "Blake scheduler trace generated");
+    tracing::info!(
+        columns = blake_scheduler_trace.len(),
+        "Blake scheduler trace generated"
+    );
 
     let mut rest = &blake_round_inputs[..];
     let (blake_round_traces, blake_round_lookup_data): (Vec<_>, Vec<_>) =
@@ -308,17 +334,19 @@ pub fn prove_withdraw(
             committed_hash_words,
         );
 
-    let (blake_round_interaction_traces, blake_round_claimed_sums): (Vec<_>, Vec<_>) =
-        multiunzip(ROUND_LOG_SPLIT.iter().zip(blake_round_lookup_data).map(
-            |(l, lookup_data)| {
+    let (blake_round_interaction_traces, blake_round_claimed_sums): (Vec<_>, Vec<_>) = multiunzip(
+        ROUND_LOG_SPLIT
+            .iter()
+            .zip(blake_round_lookup_data)
+            .map(|(l, lookup_data)| {
                 round::generate_interaction_trace(
                     log_size + l,
                     lookup_data,
                     &all_elements.xor_elements,
                     &all_elements.round_elements,
                 )
-            },
-        ));
+            }),
+    );
 
     let (blake_xor_interaction_trace12, blake_xor_claimed_sum12) =
         xor_table::xor12::generate_interaction_trace(
@@ -356,12 +384,8 @@ pub fn prove_withdraw(
         xor4_claimed_sum: blake_xor_claimed_sum4,
     };
 
-    let (deposit_interaction, deposit_claimed_sum) = gen_poseidon_chain_interaction_trace(
-        &deposit_trace,
-        &leaf_relation,
-        log_size,
-        2,
-    );
+    let (deposit_interaction, deposit_claimed_sum) =
+        gen_poseidon_chain_interaction_trace(&deposit_trace, &leaf_relation, log_size, 2);
 
     let (merkle_interaction, merkle_claimed_sum) = gen_merkle_membership_interaction_trace(
         &merkle_trace,
@@ -371,12 +395,8 @@ pub fn prove_withdraw(
         merkle_depth,
     );
 
-    let (scheduler_interaction, scheduler_claimed_sum) = gen_scheduler_interaction_trace(
-        &scheduler_trace,
-        &leaf_relation,
-        &root_relation,
-        log_size,
-    );
+    let (scheduler_interaction, scheduler_claimed_sum) =
+        gen_scheduler_interaction_trace(&scheduler_trace, &leaf_relation, &root_relation, log_size);
 
     blake_stmt1.mix_into(prover_channel);
 
@@ -399,6 +419,7 @@ pub fn prove_withdraw(
     tree_builder.extend_evals(scheduler_interaction.clone());
 
     tree_builder.commit(prover_channel);
+    let transcript_digest = prover_channel.digest().0;
     tracing::info!("Interaction traces committed");
 
     tracing::info!("Step 9: Creating components");
@@ -457,26 +478,27 @@ pub fn prove_withdraw(
         scheduler_claimed_sum,
     );
 
-    let all_component_provers = chain![
-        [&blake_components.scheduler_component
-            as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        blake_components
-            .round_components
-            .iter()
-            .map(|c| c as &dyn stwo::prover::ComponentProver<SimdBackend>),
-        [&blake_components.xor12 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor9 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor8 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor7 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor4 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&deposit_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&merkle_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&scheduler_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
-    ]
-    .collect::<Vec<_>>();
+    let all_component_provers =
+        chain![
+            [&blake_components.scheduler_component
+                as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            blake_components
+                .round_components
+                .iter()
+                .map(|c| c as &dyn stwo::prover::ComponentProver<SimdBackend>),
+            [&blake_components.xor12 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor9 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor8 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor7 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor4 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&deposit_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&merkle_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&scheduler_component as &dyn stwo::prover::ComponentProver<SimdBackend>],
+        ]
+        .collect::<Vec<_>>();
 
     tracing::info!("Generating STARK proof...");
-    let (proof, _composition_poly) = prove_with_composition_polynomial::<SimdBackend, KeccakMerkleChannel>(
+    let (proof, composition_polynomial) = prove(
         &all_component_provers,
         prover_channel,
         commitment_scheme,
@@ -497,13 +519,14 @@ pub fn prove_withdraw(
         deposit_claimed_sum,
         merkle_claimed_sum,
         scheduler_claimed_sum,
+        composition_polynomial,
+        transcript_digest,
+        transcript_n_draws: 0,
         proof,
     })
 }
 
-pub fn verify_withdraw(
-    proof_data: WithdrawProof<KeccakMerkleHasher>,
-) -> Result<(), String> {
+pub fn verify_withdraw(proof_data: WithdrawProof<KeccakMerkleHasher>) -> Result<(), String> {
     tracing::info!("Starting combined withdraw proof verification");
 
     let committed_hash_words = proof_data.commitment_stmt0.committed_hash_words();
@@ -561,7 +584,11 @@ pub fn verify_withdraw(
     );
 
     let blake_total = proof_data.blake_stmt1.scheduler_claimed_sum
-        + proof_data.blake_stmt1.round_claimed_sums.iter().sum::<SecureField>()
+        + proof_data
+            .blake_stmt1
+            .round_claimed_sums
+            .iter()
+            .sum::<SecureField>()
         + proof_data.blake_stmt1.xor12_claimed_sum
         + proof_data.blake_stmt1.xor9_claimed_sum
         + proof_data.blake_stmt1.xor8_claimed_sum

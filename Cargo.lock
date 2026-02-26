@@ -5855,6 +5855,7 @@ dependencies = [
  "stwo",
  "stwo-constraint-framework",
  "stwo-polynomial",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "zkhash",

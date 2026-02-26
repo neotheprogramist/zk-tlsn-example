@@ -15,6 +15,7 @@ itertools.workspace = true
 alloy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "net", "time"] }
 
 [dev-dependencies]
 proptest = "1"

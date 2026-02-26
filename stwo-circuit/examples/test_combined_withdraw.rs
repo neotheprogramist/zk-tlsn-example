@@ -1,8 +1,10 @@
+use alloy::primitives::Address;
 use macro_rules_attribute::apply;
 use smol_macros::main;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, compute_commitment_hash, prove_withdraw, verify_withdraw,
+    WithdrawInputs, build_onchain_verification_input, compute_commitment_hash, prove_withdraw,
+    verify_onchain_call, verify_withdraw,
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
@@ -49,8 +51,8 @@ async fn main() {
     let merkle_index = 1;
 
     use stwo_circuit::{
-        poseidon_chain::{gen_poseidon_chain_trace, ChainInputs},
-        merkle_membership::{gen_merkle_trace, MerkleInputs},
+        merkle_membership::{MerkleInputs, gen_merkle_trace},
+        poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
     };
 
     let deposit_inputs = ChainInputs::for_deposit(secret, nullifier, amount, token_address);
@@ -112,6 +114,52 @@ async fn main() {
             tracing::error!("❌ Proof verification failed: {}", e);
             panic!("Proof verification failed");
         }
+    }
+
+    let rpc_url = std::env::var("RPC_URL").ok();
+    let verifier_address = std::env::var("VERIFIER_ADDRESS").ok();
+    if let (Some(rpc_url), Some(verifier_address)) = (rpc_url, verifier_address) {
+        tracing::info!("Step 6: On-chain verify call");
+        let input = match build_onchain_verification_input(&proof) {
+            Ok(input) => input,
+            Err(err) => {
+                tracing::error!("❌ Failed to build on-chain verify input: {}", err);
+                panic!("Failed to build on-chain verify input");
+            }
+        };
+        tracing::info!(
+            "On-chain payload: roots={}, trees={}, tree0_cols={}, tree1_cols={}, tree2_cols={}, n_draws={}",
+            input.tree_roots.len(),
+            input.tree_column_log_sizes.len(),
+            input.tree_column_log_sizes.first().map(|v| v.len()).unwrap_or(0),
+            input.tree_column_log_sizes.get(1).map(|v| v.len()).unwrap_or(0),
+            input.tree_column_log_sizes.get(2).map(|v| v.len()).unwrap_or(0),
+            input.n_draws,
+        );
+
+        let verifier_address: Address = match verifier_address.parse() {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::error!("❌ Invalid VERIFIER_ADDRESS: {}", err);
+                panic!("Invalid verifier address");
+            }
+        };
+
+        match verify_onchain_call(&rpc_url, verifier_address, input) {
+            Ok(true) => tracing::info!("✅ On-chain verification returned true"),
+            Ok(false) => {
+                tracing::error!("❌ On-chain verification returned false");
+                panic!("On-chain verification returned false");
+            }
+            Err(err) => {
+                tracing::error!("❌ On-chain verification call failed: {}", err);
+                panic!("On-chain verification call failed");
+            }
+        }
+    } else {
+        tracing::info!(
+            "On-chain verification skipped (set RPC_URL and VERIFIER_ADDRESS to enable it)"
+        );
     }
 
     tracing::info!("========== Proof Summary ==========");

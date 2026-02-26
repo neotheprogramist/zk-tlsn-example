@@ -3,21 +3,45 @@
 #![feature(array_chunks)]
 
 pub mod blake3;
+pub mod combined_circuit;
 pub mod merkle_membership;
+pub mod onchain;
 pub mod poseidon_chain;
 pub mod poseidon_hash;
 pub mod relations;
 pub mod scheduler;
-pub mod combined_circuit;
 
+pub use blake3::scheduler::compute_commitment_hash;
+pub use combined_circuit::{WithdrawInputs, WithdrawProof, prove_withdraw, verify_withdraw};
 use itertools::{Itertools, chain, multiunzip};
 use num_traits::Zero;
-use stwo::{core::{channel::{Channel, KeccakChannel}, fields::qm31::SecureField, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs::{MerkleHasher, keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher}}, verifier::verify}, prover::{CommitmentSchemeProver, backend::simd::{SimdBackend, m31::LOG_N_LANES}, poly::circle::PolyOps, prove}};
+pub use onchain::{build_onchain_verification_input, verify_onchain_call};
+use stwo::{
+    core::{
+        channel::{Channel, KeccakChannel},
+        fields::qm31::SecureField,
+        pcs::{CommitmentSchemeVerifier, PcsConfig},
+        poly::circle::CanonicCoset,
+        proof::StarkProof,
+        vcs::{
+            MerkleHasher,
+            keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher},
+        },
+        verifier::verify,
+    },
+    prover::{
+        CommitmentSchemeProver,
+        backend::simd::{SimdBackend, m31::LOG_N_LANES},
+        poly::circle::PolyOps,
+        prove,
+    },
+};
 use stwo_constraint_framework::TraceLocationAllocator;
-pub use combined_circuit::{prove_withdraw, verify_withdraw, WithdrawInputs, WithdrawProof};
 
-use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler as BlakeScheduler, xor_table};
-pub use blake3::scheduler::compute_commitment_hash;
+use crate::blake3::{
+    AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT,
+    XorAccums, preprocessed_columns::XorTable, round, scheduler as BlakeScheduler, xor_table,
+};
 
 #[derive(Debug)]
 pub enum VerifyError {
@@ -29,7 +53,10 @@ impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VerifyError::LogupImbalance(sum) => {
-                write!(f, "logup claimed sums do not balance (got {sum:?}, expected zero)")
+                write!(
+                    f,
+                    "logup claimed sums do not balance (got {sum:?}, expected zero)"
+                )
             }
             VerifyError::StarkVerification => write!(f, "STARK verification failed"),
         }
@@ -70,7 +97,10 @@ impl CommitmentStatement0 {
     }
 
     pub fn log_sizes(&self) -> stwo::core::pcs::TreeVec<Vec<u32>> {
-        BlakeStatement0 { log_size: self.log_size }.log_sizes()
+        BlakeStatement0 {
+            log_size: self.log_size,
+        }
+        .log_sizes()
     }
 
     pub fn committed_hash_words(&self) -> [u32; 8] {
@@ -89,14 +119,20 @@ pub fn prove_commitment(
     hash: [u8; 32],
     log_size: u32,
 ) -> ProofData<KeccakMerkleHasher> {
-    let commitment_stmt0 = CommitmentStatement0 { log_size, committed_hash: hash };
+    let commitment_stmt0 = CommitmentStatement0 {
+        log_size,
+        committed_hash: hash,
+    };
     let committed_hash_words = commitment_stmt0.committed_hash_words();
 
     let mut xor_accums = XorAccums::default();
 
     let (blake_scheduler_trace, blake_scheduler_lookup_data, blake_round_inputs) =
         BlakeScheduler::gen_trace(log_size, x, blinder, &mut xor_accums);
-    tracing::info!(columns = blake_scheduler_trace.len(), "Blake scheduler trace generated");
+    tracing::info!(
+        columns = blake_scheduler_trace.len(),
+        "Blake scheduler trace generated"
+    );
 
     let mut rest = &blake_round_inputs[..];
     let (blake_round_traces, blake_round_lookup_data): (Vec<_>, Vec<_>) =
@@ -184,17 +220,19 @@ pub fn prove_commitment(
         );
     tracing::info!(sum = ?blake_scheduler_claimed_sum, "Blake scheduler claimed sum");
 
-    let (blake_round_interaction_traces, blake_round_claimed_sums): (Vec<_>, Vec<_>) =
-        multiunzip(ROUND_LOG_SPLIT.iter().zip(blake_round_lookup_data).map(
-            |(l, lookup_data)| {
+    let (blake_round_interaction_traces, blake_round_claimed_sums): (Vec<_>, Vec<_>) = multiunzip(
+        ROUND_LOG_SPLIT
+            .iter()
+            .zip(blake_round_lookup_data)
+            .map(|(l, lookup_data)| {
                 round::generate_interaction_trace(
                     log_size + l,
                     lookup_data,
                     &all_elements.xor_elements,
                     &all_elements.round_elements,
                 )
-            },
-        ));
+            }),
+    );
 
     let (blake_xor_interaction_trace12, blake_xor_claimed_sum12) =
         xor_table::xor12::generate_interaction_trace(
@@ -259,20 +297,21 @@ pub fn prove_commitment(
     );
     tracing::info!("Components created");
 
-    let all_component_provers = chain![
-        [&blake_components.scheduler_component
-            as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        blake_components
-            .round_components
-            .iter()
-            .map(|c| c as &dyn stwo::prover::ComponentProver<SimdBackend>),
-        [&blake_components.xor12 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor9 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor8 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor7 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-        [&blake_components.xor4 as &dyn stwo::prover::ComponentProver<SimdBackend>],
-    ]
-    .collect_vec();
+    let all_component_provers =
+        chain![
+            [&blake_components.scheduler_component
+                as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            blake_components
+                .round_components
+                .iter()
+                .map(|c| c as &dyn stwo::prover::ComponentProver<SimdBackend>),
+            [&blake_components.xor12 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor9 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor8 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor7 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+            [&blake_components.xor4 as &dyn stwo::prover::ComponentProver<SimdBackend>],
+        ]
+        .collect_vec();
 
     let proof = prove::<SimdBackend, KeccakMerkleChannel>(
         &all_component_provers,
@@ -281,27 +320,45 @@ pub fn prove_commitment(
     )
     .expect("Failed to generate proof");
 
-    ProofData { commitment_stmt0, blake_stmt1, proof }
+    ProofData {
+        commitment_stmt0,
+        blake_stmt1,
+        proof,
+    }
 }
 
 pub fn verify_proof(proof_data: ProofData<KeccakMerkleHasher>) -> Result<(), VerifyError> {
     let committed_hash_words = proof_data.commitment_stmt0.committed_hash_words();
-    let blake_stmt0 = BlakeStatement0 { log_size: proof_data.commitment_stmt0.log_size };
+    let blake_stmt0 = BlakeStatement0 {
+        log_size: proof_data.commitment_stmt0.log_size,
+    };
     let blake_log_sizes = proof_data.commitment_stmt0.log_sizes();
 
     let channel = &mut KeccakChannel::default();
     let commitment_scheme =
         &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
-    commitment_scheme.commit(proof_data.proof.commitments[0], &blake_log_sizes[0], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[0],
+        &blake_log_sizes[0],
+        channel,
+    );
     proof_data.commitment_stmt0.mix_into(channel);
 
-    commitment_scheme.commit(proof_data.proof.commitments[1], &blake_log_sizes[1], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[1],
+        &blake_log_sizes[1],
+        channel,
+    );
 
     let all_elements = AllElements::draw(channel);
     proof_data.blake_stmt1.mix_into(channel);
 
-    commitment_scheme.commit(proof_data.proof.commitments[2], &blake_log_sizes[2], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[2],
+        &blake_log_sizes[2],
+        channel,
+    );
 
     let mut tree_span_provider = TraceLocationAllocator::default();
     let blake_components = BlakeComponentsForIntegration::new(
@@ -313,7 +370,11 @@ pub fn verify_proof(proof_data: ProofData<KeccakMerkleHasher>) -> Result<(), Ver
     );
 
     let claimed_sum = proof_data.blake_stmt1.scheduler_claimed_sum
-        + proof_data.blake_stmt1.round_claimed_sums.iter().sum::<SecureField>()
+        + proof_data
+            .blake_stmt1
+            .round_claimed_sums
+            .iter()
+            .sum::<SecureField>()
         + proof_data.blake_stmt1.xor12_claimed_sum
         + proof_data.blake_stmt1.xor9_claimed_sum
         + proof_data.blake_stmt1.xor8_claimed_sum
