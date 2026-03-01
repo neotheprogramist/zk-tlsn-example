@@ -49,10 +49,10 @@ itertools = "0.13"
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
     "barretenberg",
 ] }
-stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+stwo = { git = "https://github.com/piotr-stec/stwo-fork-keccak", rev = "b522d834ad42ba1e7392025bf87dd6602d692798", features = [
     "prover",
 ] }
-stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+stwo-constraint-framework = { git = "https://github.com/piotr-stec/stwo-fork-keccak", rev = "b522d834ad42ba1e7392025bf87dd6602d692798", features = [
     "prover",
     "std",
 ] }

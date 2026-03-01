@@ -10,8 +10,15 @@ smol-macros.workspace = true
 macro_rules_attribute.workspace = true
 num-traits.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 itertools.workspace = true
 tracing.workspace = true
+alloy = { version = "1.1", features = ["full", "node-bindings", "rpc-types", "sol-types"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time"], optional = true }
+
+[features]
+onchain-rpc = ["tokio"]
 
 [dev-dependencies]
 proptest = "1"
+

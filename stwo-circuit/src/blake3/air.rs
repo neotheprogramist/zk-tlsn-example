@@ -1,11 +1,11 @@
 use itertools::{Itertools, chain};
 use serde::{Serialize, Deserialize};
-use stwo::core::vcs_lifted::MerkleHasherLifted;
 use stwo::core::air::Component;
 use stwo::core::channel::{Channel};
 use stwo::core::fields::qm31::SecureField;
 use stwo::core::pcs::{TreeVec};
 use stwo::core::proof::StarkProof;
+use stwo::core::vcs::MerkleHasher;
 use stwo::prover::backend::simd::SimdBackend;
 use stwo::prover::ComponentProver;
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
@@ -142,7 +142,7 @@ impl BlakeStatement1 {
     }
 }
 
-pub struct BlakeProof<H: MerkleHasherLifted> {
+pub struct BlakeProof<H: MerkleHasher> {
     stmt0: BlakeStatement0,
     stmt1: BlakeStatement1,
     stark_proof: StarkProof<H>,

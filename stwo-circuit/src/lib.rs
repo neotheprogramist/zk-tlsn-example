@@ -5,10 +5,20 @@
 pub mod trace;
 pub mod eval;
 pub mod blake3;
+pub mod onchain_blake;
+pub use onchain_blake::{
+    OnchainVerifyInput,
+    VerificationParams as BlakeVerificationParams,
+    build_blake_onchain_input,
+    build_blake_verification_params,
+    convert_stark_proof_to_solidity,
+};
+#[cfg(feature = "onchain-rpc")]
+pub use onchain_blake::{verify_onchain_call};
 
 use itertools::{Itertools, chain, multiunzip};
 use num_traits::Zero;
-use stwo::{core::{channel::{Blake2sChannel, Channel}, fields::qm31::SecureField, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs_lifted::{MerkleHasherLifted, blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher}}, verifier::verify}, prover::{CommitmentSchemeProver, backend::simd::{SimdBackend, m31::LOG_N_LANES}, poly::circle::PolyOps, prove}};
+use stwo::{core::{channel::{Channel, KeccakChannel}, fields::qm31::SecureField, pcs::{CommitmentSchemeVerifier, PcsConfig}, poly::circle::CanonicCoset, proof::StarkProof, vcs::{MerkleHasher, keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher}}, verifier::verify}, prover::{CommitmentSchemeProver, backend::simd::{SimdBackend, m31::LOG_N_LANES}, poly::circle::{PolyOps, SecureCirclePoly}, prove_with_composition_polynomial}};
 use stwo_constraint_framework::TraceLocationAllocator;
 
 use crate::blake3::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1, ROUND_LOG_SPLIT, XorAccums, preprocessed_columns::XorTable, round, scheduler, xor_table};
@@ -33,14 +43,15 @@ impl std::fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProofData<H: MerkleHasherLifted> {
+#[derive(Clone)]
+pub struct ProofData<H: MerkleHasher> {
     pub commitment_stmt0: CommitmentStatement0,
     pub blake_stmt1: BlakeStatement1,
+    pub composition_polynomial: SecureCirclePoly<SimdBackend>,
     pub proof: StarkProof<H>,
 }
 
-impl<H: MerkleHasherLifted> std::fmt::Debug for ProofData<H> {
+impl<H: MerkleHasher> std::fmt::Debug for ProofData<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofData")
             .field("log_size", &self.commitment_stmt0.log_size)
@@ -83,7 +94,7 @@ pub fn prove_commitment(
     blinder: [u8; 16],
     hash: [u8; 32],
     log_size: u32,
-) -> ProofData<Blake2sMerkleHasher> {
+) -> ProofData<KeccakMerkleHasher> {
     let commitment_stmt0 = CommitmentStatement0 { log_size, committed_hash: hash };
     let committed_hash_words = commitment_stmt0.committed_hash_words();
 
@@ -127,9 +138,9 @@ pub fn prove_commitment(
             .half_coset,
     );
 
-    let prover_channel = &mut Blake2sChannel::default();
+    let prover_channel = &mut KeccakChannel::default();
     let mut commitment_scheme =
-        CommitmentSchemeProver::<SimdBackend, Blake2sMerkleChannel>::new(config, &twiddles);
+        CommitmentSchemeProver::<SimdBackend, KeccakMerkleChannel>::new(config, &twiddles);
 
     let mut tree_builder = commitment_scheme.tree_builder();
     tree_builder.extend_evals(
@@ -269,24 +280,24 @@ pub fn prove_commitment(
     ]
     .collect_vec();
 
-    let proof = prove::<SimdBackend, Blake2sMerkleChannel>(
+    let (proof, composition_polynomial) = prove_with_composition_polynomial::<SimdBackend, KeccakMerkleChannel>(
         &all_component_provers,
         prover_channel,
         commitment_scheme,
     )
     .expect("Failed to generate proof");
 
-    ProofData { commitment_stmt0, blake_stmt1, proof }
+    ProofData { commitment_stmt0, blake_stmt1, composition_polynomial, proof }
 }
 
-pub fn verify_proof(proof_data: ProofData<Blake2sMerkleHasher>) -> Result<(), VerifyError> {
+pub fn verify_proof(proof_data: ProofData<KeccakMerkleHasher>) -> Result<(), VerifyError> {
     let committed_hash_words = proof_data.commitment_stmt0.committed_hash_words();
     let blake_stmt0 = BlakeStatement0 { log_size: proof_data.commitment_stmt0.log_size };
     let blake_log_sizes = proof_data.commitment_stmt0.log_sizes();
 
-    let channel = &mut Blake2sChannel::default();
+    let channel = &mut KeccakChannel::default();
     let commitment_scheme =
-        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof_data.proof.config);
+        &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
     commitment_scheme.commit(proof_data.proof.commitments[0], &blake_log_sizes[0], channel);
     proof_data.commitment_stmt0.mix_into(channel);
