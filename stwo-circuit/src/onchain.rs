@@ -15,6 +15,7 @@ use stwo::{
         circle::CirclePoint,
         fields::{m31::BaseField, qm31::SecureField},
         pcs::{CommitmentSchemeVerifier, TreeVec},
+        poly::circle::CanonicCoset,
         utils::bit_reverse,
         vcs::{
             keccak_hash::KeccakHash,
@@ -306,21 +307,16 @@ pub fn convert_to_solidity_proof(
         lastLayerPoly: last_layer_coeffs.into_iter().map(qm31).collect(),
     };
 
-    let mut composition_coordinates: Vec<Vec<u32>> = composition_polynomial
+    let composition_coordinates: Vec<Vec<u32>> = composition_polynomial
         .clone()
         .into_coordinate_polys()
         .iter()
         .map(|poly| {
-            let mut packed = Vec::new();
-            for coeff in &poly.coeffs.data {
-                packed.extend(coeff.to_array().iter().map(|value| value.0));
-            }
-            packed
+            let domain = CanonicCoset::new(poly.log_size()).circle_domain();
+            let cpu_poly = poly.evaluate(domain).to_cpu().interpolate();
+            cpu_poly.coeffs.iter().map(|value| value.0).collect()
         })
         .collect();
-    for coordinate in &mut composition_coordinates {
-        bit_reverse(coordinate);
-    }
 
     let composition_poly = CompositionPoly {
         coeffs0: composition_coordinates[0].clone(),
