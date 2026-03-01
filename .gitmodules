@@ -1,3 +1,0 @@
-[submodule "contracts/lib/poseidon2-M31-solidity"]
-	path = contracts/lib/poseidon2-M31-solidity
-	url = https://github.com/anhelinakruk/poseidon2-M31-solidity

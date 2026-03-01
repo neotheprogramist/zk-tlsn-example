@@ -57,3 +57,4 @@ contracts/broadcast/
 contracts/.env
 contracts/lcov.info
 contracts/coverage/
+contracts/lib/
