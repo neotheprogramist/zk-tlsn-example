@@ -12,7 +12,7 @@ pub use error::{Result, ZkTlsnError};
 use noir::barretenberg::srs::setup_srs_from_bytecode;
 pub use padding::PaddingConfig;
 pub use prover::{Proof, generate_proof};
-pub use verifier::verify_proof;
+pub use verifier::{extract_committed_hash_from_proof, verify_proof, verify_proof_against_hash};
 
 pub fn setup_barretenberg_srs() -> Result<()> {
     let bytecode = prover::load_circuit_bytecode()?;

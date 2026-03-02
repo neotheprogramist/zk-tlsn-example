@@ -26,6 +26,8 @@ curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/head
 bbup
 ```
 
+> **Network note:** Running Rust examples/tests that call `zktlsn::setup_barretenberg_srs()` requires internet access on first run to download CRS data from `https://crs.aztec.network`.
+
 ## Quick Start
 
 ```bash
@@ -35,10 +37,10 @@ git clone <repo-url> && cd zk-tlsn-example
 nargo compile
 
 # Build the project
-cargo build
+cargo build --release
 
 # Run all tests
-cargo test
+cargo test --release
 ```
 
 > **Version mismatch warning:** The `noir-rs` Rust crate pins to nargo **v1.0.0-beta.8**. Using a different nargo version to compile the circuit will cause a runtime abort (`SIGABRT: Rust cannot catch foreign exceptions`) because the Barretenberg C++ backend rejects incompatible bytecode formats.
@@ -46,11 +48,11 @@ cargo test
 ## Test
 
 ```bash
-cargo test                     # All workspace tests (15 tests, ~35s)
-cargo test -p parser           # Parser crate only
-cargo test -p tlsnotary        # TLS notarization protocol tests (~17s)
-cargo test -p zktlsn           # ZK proof tests (~10s, runs Barretenberg)
-cargo test --lib               # Library tests only, skip doc-tests
+cargo test --release                               # All workspace tests (15 tests, ~35s)
+cargo test --package parser --release             # Parser crate only
+cargo test --package tlsnotary --release          # TLS notarization protocol tests (~17s)
+cargo test --package zktlsn --release             # ZK proof tests (~10s, runs Barretenberg)
+cargo test --lib --release                        # Library tests only, skip doc-tests
 ```
 
 ## Lint & Format
@@ -78,29 +80,30 @@ The full end-to-end flow requires three processes. Start them **in order** in se
 **Terminal 1 — Backend server** (serves balance data over TLS on `localhost:8443`):
 
 ```bash
-cargo run --example server
+cargo run --package zktlsn --release --example server
 # Wait for: "TLS server listening on localhost:8443"
 ```
 
 **Terminal 2 — Verifier/Notary** (QUIC-based notary service on `localhost:5000`):
 
 ```bash
-cargo run --example verifier
+cargo run --package zktlsn --release --example verifier
 # Wait for: "Reliable streams server listening on [::1]:5000"
 ```
 
 **Terminal 3 — Prover** (connects to both, generates and submits ZK proof):
 
 ```bash
-cargo run --example prover
+cargo run --package zktlsn --release --example prover
 ```
 
 The prover will:
 
-1. Connect to the Verifier and request a notarization session
-2. Make a TLS request to the Backend through the MPC-TLS protocol
-3. Generate a ZK proof (HONK via Barretenberg) from the notarized transcript
-4. Submit the proof to the Verifier's `/verify` endpoint
+1. Open one QUIC bi-directional stream to the Verifier
+2. Run TLSNotary notarization over that stream using `tlsn::Session<Io>`
+3. Make a TLS request to the Backend through the MPC-TLS protocol
+4. Generate a ZK proof (HONK via Barretenberg) from the notarized transcript
+5. Submit the proof and receive verification result on the same stream
 
 On success you'll see: `Full ZK-TLS notarization and verification flow completed successfully!`
 
@@ -111,17 +114,17 @@ zktlsn (examples: prover, server, verifier)
   ├── tlsnotary   — TLS notarization protocol (wraps tlsn crate)
   ├── parser      — HTTP request/response parsing (pest PEG grammar)
   ├── server      — Backend HTTP server (axum, serves /api/balance/{username})
-  ├── verifier    — QUIC-based notary service (session mgmt, notarization, ZK verification)
+  ├── verifier    — QUIC-based single-stream notarization + ZK verification service
   ├── shared      — TLS/QUIC config, test utilities, smol executor
   └── circuit     — Noir ZK circuit (BLAKE3 commitment verification)
 ```
 
 ### Data Flow
 
-1. **Notarization** — Prover connects to Notary (QUIC), gets a session, makes an HTTPS request to Backend. Notary co-signs the TLS transcript.
+1. **Notarization** — Prover opens one QUIC stream to Notary and runs the TLSN verifier/prover protocol over `Session<Io>` while making an HTTPS request to Backend.
 2. **Selective Disclosure** — Prover reveals chosen fields from the HTTP response, keeping others committed (BLAKE3 hash + blinder).
 3. **ZK Proof** — Prover generates a HONK proof (Noir circuit) proving the committed balance value matches its hash without revealing the value.
-4. **Verification** — Notary's `/verify` endpoint checks the ZK proof against the transcript commitments.
+4. **Verification** — Notary validates proof and commitments, then returns verification result over the same QUIC stream.
 
 ### Noir Circuit
 
@@ -137,11 +140,11 @@ BLAKE3(balance_value || blinder) == committed_hash
 
 ### Transport
 
-| Path                 | Protocol                         |
-| -------------------- | -------------------------------- |
-| Server ↔ Prover      | HTTP/1.1 over TLS (rustls)       |
-| Prover ↔ Notary      | QUIC (quinn, `runtime-smol`)     |
-| Notarization session | HTTP/1.1 upgrade on QUIC streams |
+| Path            | Protocol                                    |
+| --------------- | ------------------------------------------- |
+| Server ↔ Prover | HTTP/1.1 over TLS (rustls)                  |
+| Prover ↔ Notary | QUIC (quinn, `runtime-smol`)                |
+| Proof exchange  | Length-prefixed JSON on same QUIC bi-stream |
 
 ### Async Runtime
 

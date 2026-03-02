@@ -94,9 +94,9 @@ pub fn create_request_reveal_config() -> RevealConfig {
     RevealConfig {
         reveal_headers: vec!["content-type".into()],
         commit_headers: vec!["connection".into()],
-        reveal_body_keypaths: vec![],
-        commit_body_keypaths: vec![],
-        reveal_key_commit_value_keypaths: vec![],
+        reveal_body_fields: vec![],
+        commit_body_fields: vec![],
+        reveal_keys_commit_values: vec![],
     }
 }
 
@@ -107,9 +107,9 @@ pub fn create_response_reveal_config() -> RevealConfig {
     RevealConfig {
         reveal_headers: vec![],
         commit_headers: vec![],
-        reveal_body_keypaths: vec![BodyFieldConfig::Quoted(".username".into())],
-        commit_body_keypaths: vec![BodyFieldConfig::UnquotedPadded(".balance".into(), 12)],
-        reveal_key_commit_value_keypaths: vec![],
+        reveal_body_fields: vec![BodyFieldConfig::Quoted(".username".into())],
+        commit_body_fields: vec![BodyFieldConfig::UnquotedPadded(".balance".into(), 12)],
+        reveal_keys_commit_values: vec![],
     }
 }
 

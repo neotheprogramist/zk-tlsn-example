@@ -88,7 +88,18 @@ fn prepare_proof_input(
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
 
-    let range = commitment.idx.min().unwrap()..commitment.idx.end().unwrap();
+    let range_start = commitment.idx.min().ok_or_else(|| {
+        ZkTlsnError::InvalidInput("received commitment is missing range start".to_string())
+    })?;
+    let range_end = commitment.idx.end().ok_or_else(|| {
+        ZkTlsnError::InvalidInput("received commitment is missing range end".to_string())
+    })?;
+    if range_end < range_start {
+        return Err(ZkTlsnError::InvalidInput(format!(
+            "received commitment has invalid range: start={range_start}, end={range_end}"
+        )));
+    }
+    let range = range_start..range_end;
     if range.len() != padding_config.commitment_length {
         return Err(ZkTlsnError::InvalidCommitmentLength {
             expected: padding_config.commitment_length,
@@ -96,7 +107,15 @@ fn prepare_proof_input(
         });
     }
 
-    let committed_data = received_data[range].to_vec();
+    let committed_data = received_data
+        .get(range.clone())
+        .ok_or_else(|| {
+            ZkTlsnError::InvalidInput(format!(
+                "received commitment range {range_start}..{range_end} is out of transcript bounds {}",
+                received_data.len()
+            ))
+        })?
+        .to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
     let data_to_hash = [&committed_data[..], &blinder[..]].concat();
     let committed_hash = blake3(&data_to_hash).map_err(|_| ZkTlsnError::HashVerificationFailed)?;

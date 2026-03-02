@@ -92,10 +92,16 @@ pub enum ClientError {
     InvalidServerName(#[from] rustls::pki_types::InvalidDnsNameError),
 
     #[error(transparent)]
+    InvalidRequest(#[from] hyper::http::Error),
+
+    #[error(transparent)]
     TlsConnection(#[from] std::io::Error),
 
     #[error(transparent)]
     Hyper(#[from] hyper::Error),
+
+    #[error("failed to acquire captured traffic lock for {0}")]
+    CapturedTrafficLock(&'static str),
 }
 
 pub struct CapturedTraffic {
@@ -127,21 +133,19 @@ where
             .uri(uri)
             .header("Connection", "close")
             .header("content-type", "application/json")
-            .body(Full::new(Bytes::new()))
-            .expect("valid request");
+            .body(Full::new(Bytes::new()))?;
 
         let res = sender.send_request(req).await?;
-        let status = res.status();
         let body = res.into_body().collect().await?.to_bytes().to_vec();
 
-        Ok::<_, ClientError>((status, body))
+        Ok::<_, ClientError>(body)
     };
 
     let (conn_result, response) = futures::join!(conn, request_task);
     response?;
 
-    let raw_request = captured_write_bytes.lock().unwrap().clone();
-    let raw_response = captured_read_bytes.lock().unwrap().clone();
+    let raw_request = clone_captured_bytes(&captured_write_bytes, "request")?;
+    let raw_response = clone_captured_bytes(&captured_read_bytes, "response")?;
 
     // BrokenPipe is expected when server closes connection first
     if let Err(e) = conn_result {
@@ -160,4 +164,14 @@ where
         raw_request,
         raw_response,
     })
+}
+
+fn clone_captured_bytes(
+    captured: &CapturedBytes,
+    label: &'static str,
+) -> Result<Vec<u8>, ClientError> {
+    captured
+        .lock()
+        .map(|bytes| bytes.clone())
+        .map_err(|_| ClientError::CapturedTrafficLock(label))
 }

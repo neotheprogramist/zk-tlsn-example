@@ -1,36 +1,40 @@
-use axum::Router;
-use hyper::{Request, body::Incoming};
-use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncRead, AsyncWrite, join};
-use tower::Service;
+use thiserror::Error;
+use tokio::io::join;
+use tracing::{error, info};
 
-pub async fn handle(incoming: quinn::Incoming, tower_service: Router) {
-    let connection = incoming.await.unwrap();
+use crate::protocol::run_notarize_and_verify_stream;
+
+#[derive(Debug, Error)]
+pub enum HandlerError {
+    #[error("failed to accept connection: {0}")]
+    Accept(#[from] quinn::ConnectionError),
+}
+
+pub async fn handle(incoming: quinn::Incoming) -> Result<(), HandlerError> {
+    let connection = incoming.await?;
+    let remote_addr = connection.remote_address();
+    info!(%remote_addr, "Accepted QUIC connection");
 
     loop {
         let (send, recv) = match connection.accept_bi().await {
             Ok(stream) => stream,
             Err(quinn::ConnectionError::ApplicationClosed { .. }) => break,
-            Err(_) => break,
+            Err(error) => return Err(error.into()),
         };
 
+        let stream_id = send.id();
         let stream = join(recv, send);
-        smol::spawn(handle_stream(stream, tower_service.clone())).detach();
+        smol::spawn(async move {
+            info!(%stream_id, "Starting notarize+verify pipeline on stream");
+            if let Err(error) = run_notarize_and_verify_stream(stream).await {
+                error!(%stream_id, error = %error, "Pipeline failed");
+            } else {
+                info!(%stream_id, "Pipeline completed");
+            }
+        })
+        .detach();
     }
-}
 
-async fn handle_stream<IO>(stream: IO, tower_service: Router)
-where
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let stream = TokioIo::new(stream);
-    let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
-        tower_service.clone().call(request)
-    });
-
-    hyper::server::conn::http1::Builder::new()
-        .serve_connection(stream, hyper_service)
-        .with_upgrades()
-        .await
-        .unwrap();
+    info!(%remote_addr, "Connection closed");
+    Ok(())
 }

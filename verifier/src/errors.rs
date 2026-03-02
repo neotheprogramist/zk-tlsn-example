@@ -1,70 +1,43 @@
-use axum::response::IntoResponse;
-use hyper::StatusCode;
+use thiserror::Error;
 
-#[derive(Debug, thiserror::Error)]
-pub enum NotaryServerError {
-    #[error("Failed to connect to prover: {0}")]
-    Connection(String),
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    #[error("protocol message frame too large: {0} bytes")]
+    FrameTooLarge(usize),
 
-    #[error("Invalid request from prover: {0}")]
-    BadProverRequest(String),
+    #[error("missing required notarization field: {0}")]
+    MissingField(&'static str),
 
-    #[error("Unauthorized request from prover: {0}")]
-    UnauthorizedProverRequest(String),
-}
+    #[error("invalid protocol configuration: {0}")]
+    InvalidConfig(String),
 
-impl IntoResponse for NotaryServerError {
-    fn into_response(self) -> axum::response::Response {
-        match self {
-            bad_request_error @ NotaryServerError::BadProverRequest(_) => {
-                (StatusCode::BAD_REQUEST, bad_request_error.to_string()).into_response()
-            }
-            unauthorized_request_error @ NotaryServerError::UnauthorizedProverRequest(_) => (
-                StatusCode::UNAUTHORIZED,
-                unauthorized_request_error.to_string(),
-            )
-                .into_response(),
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Something wrong happened.",
-            )
-                .into_response(),
-        }
-    }
-}
+    #[error("invalid proving request: {0}")]
+    InvalidProvingRequest(String),
 
-#[derive(Debug, thiserror::Error)]
-pub enum VerificationError {
-    #[error("Session not found: {0}")]
-    SessionNotFound(String),
+    #[error("commitment binding failed: {0}")]
+    CommitmentBindingFailed(String),
 
-    #[error("Invalid session phase: expected Verification, got {0}")]
-    InvalidSessionPhase(String),
-
-    #[error("Failed to parse response: {0}")]
-    ResponseParseError(String),
-
-    #[error("No commitments found for binding")]
+    #[error("no commitments found for binding")]
     NoCommitmentsFound,
 
-    #[error("ZK proof verification failed: {0}")]
+    #[error("proof verification failed: {0}")]
     ProofVerificationFailed(String),
 
-    #[error("Commitment binding failed: {0}")]
-    CommitmentBindingFailed(String),
-}
+    #[error("request parsing failed: {0}")]
+    RequestParse(String),
 
-impl IntoResponse for VerificationError {
-    fn into_response(self) -> axum::response::Response {
-        let status = match &self {
-            VerificationError::SessionNotFound(_) => StatusCode::NOT_FOUND,
-            VerificationError::InvalidSessionPhase(_) => StatusCode::BAD_REQUEST,
-            VerificationError::ResponseParseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            VerificationError::NoCommitmentsFound => StatusCode::BAD_REQUEST,
-            VerificationError::ProofVerificationFailed(_) => StatusCode::BAD_REQUEST,
-            VerificationError::CommitmentBindingFailed(_) => StatusCode::BAD_REQUEST,
-        };
+    #[error("response parsing failed: {0}")]
+    ResponseParse(String),
 
-        (status, self.to_string()).into_response()
-    }
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    Utf8(#[from] std::string::FromUtf8Error),
+
+    #[error(transparent)]
+    TlsNotary(#[from] tlsnotary::Error),
 }

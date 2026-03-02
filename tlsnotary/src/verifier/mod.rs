@@ -49,13 +49,24 @@ impl Verifier {
 
         let sent_data = String::from_utf8(transcript.sent_unsafe().to_vec())?;
         let received_data = String::from_utf8(transcript.received_unsafe().to_vec())?;
+        let parsed_request: parser::redacted::Request = sent_data.parse().map_err(|error| {
+            Error::InvalidTranscript(format!(
+                "failed to parse redacted request from transcript: {error:?}"
+            ))
+        })?;
+        let parsed_response: parser::redacted::Response =
+            received_data.parse().map_err(|error| {
+                Error::InvalidTranscript(format!(
+                    "failed to parse redacted response from transcript: {error:?}"
+                ))
+            })?;
 
         Ok(VerifierOutput {
             transcript,
             transcript_commitments: output.transcript_commitments,
             server_name: server_name.to_string(),
-            parsed_request: sent_data.parse().ok(),
-            parsed_response: received_data.parse().ok(),
+            parsed_request: Some(parsed_request),
+            parsed_response: Some(parsed_response),
         })
     }
 }

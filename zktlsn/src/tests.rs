@@ -92,9 +92,9 @@ pub fn create_request_reveal_config() -> RevealConfig {
     RevealConfig {
         reveal_headers: vec!["content-type".into()],
         commit_headers: vec!["connection".into()],
-        reveal_body_keypaths: vec![],
-        commit_body_keypaths: vec![],
-        reveal_key_commit_value_keypaths: vec![],
+        reveal_body_fields: vec![],
+        commit_body_fields: vec![],
+        reveal_keys_commit_values: vec![],
     }
 }
 
@@ -105,12 +105,9 @@ pub fn create_response_reveal_config() -> RevealConfig {
     RevealConfig {
         reveal_headers: vec![],
         commit_headers: vec![],
-        reveal_body_keypaths: vec![BodyFieldConfig::Quoted(".username".into())],
-        commit_body_keypaths: vec![],
-        reveal_key_commit_value_keypaths: vec![KeyValueCommitConfig::with_padding(
-            ".balance".into(),
-            12,
-        )],
+        reveal_body_fields: vec![BodyFieldConfig::Quoted(".username".into())],
+        commit_body_fields: vec![],
+        reveal_keys_commit_values: vec![KeyValueCommitConfig::with_padding(".balance".into(), 12)],
     }
 }
 
@@ -243,7 +240,15 @@ pub fn verify_balance_commitment_and_proof(
         "Committed range should start right after balance key"
     );
 
-    crate::verify_proof(proof)?;
+    let commitment_hash_bytes = balance_binding.hash.hash.value.as_bytes();
+    assert_eq!(
+        commitment_hash_bytes.len(),
+        32,
+        "Balance commitment hash must be 32 bytes"
+    );
+    let mut commitment_hash = [0u8; 32];
+    commitment_hash.copy_from_slice(commitment_hash_bytes);
+    crate::verify_proof_against_hash(proof, &commitment_hash)?;
 
     tracing::info!("Successfully verified balance commitment and ZK proof");
     tracing::info!(

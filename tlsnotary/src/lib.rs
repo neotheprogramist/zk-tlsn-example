@@ -9,15 +9,17 @@ pub use prover::{
 pub use tlsn::{
     Session,
     config::{
+        prove::ProveConfig,
         prover::ProverConfig,
         tls::TlsClientConfig,
-        tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
+        tls_commit::{TlsCommitConfig, TlsCommitProtocolConfig, mpc::MpcTlsConfig},
         verifier::VerifierConfig,
     },
     connection::ServerName,
     hash::HashAlgId,
     transcript::{
-        Direction, PartialTranscript, TranscriptCommitment, TranscriptSecret,
+        Direction, PartialTranscript, TranscriptCommitConfig, TranscriptCommitment,
+        TranscriptCommitmentKind, TranscriptSecret,
         hash::{PlaintextHash, PlaintextHashSecret},
     },
     webpki::{CertificateDer, RootCertStore},

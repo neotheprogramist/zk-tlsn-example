@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use tlsnotary::{Direction, PlaintextHash, TranscriptCommitment};
 
-use crate::Result;
+use crate::{Result, ZkTlsnError};
 
 #[derive(Debug, Clone)]
 pub struct BoundCommitment {
@@ -14,15 +14,19 @@ pub fn bind_commitments_to_keys(
     parsed_response: &parser::redacted::Response,
     transcript_commitments: &[TranscriptCommitment],
 ) -> Result<HashMap<String, BoundCommitment>> {
-    let commitments_by_position: BTreeMap<usize, &PlaintextHash> = transcript_commitments
-        .iter()
-        .filter_map(|commitment| match commitment {
-            TranscriptCommitment::Hash(hash) if hash.direction == Direction::Received => {
-                Some((hash.idx.min().unwrap(), hash))
-            }
-            _ => None,
-        })
-        .collect();
+    let mut commitments_by_position: BTreeMap<usize, &PlaintextHash> = BTreeMap::new();
+    for commitment in transcript_commitments {
+        if let TranscriptCommitment::Hash(hash) = commitment
+            && hash.direction == Direction::Received
+        {
+            let start = hash.idx.min().ok_or_else(|| {
+                ZkTlsnError::InvalidInput(
+                    "received transcript commitment is missing range start".to_string(),
+                )
+            })?;
+            commitments_by_position.insert(start, hash);
+        }
+    }
 
     let bindings = parsed_response
         .body
@@ -55,7 +59,7 @@ fn find_nearest_commitment<'a>(
 ) -> Option<&'a PlaintextHash> {
     commitments_by_position
         .range(key_end..)
-        .take_while(|(start, _)| *start - key_end <= 2)
+        .take_while(|(start, _)| (*start).saturating_sub(key_end) <= 2)
         .map(|(_, hash)| *hash)
         .next()
 }
