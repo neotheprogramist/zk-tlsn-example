@@ -133,6 +133,17 @@ sol! {
             uint32 nDraws
         ) external view returns (bool);
     }
+
+    interface IPrivacyPool {
+        function withdraw(
+            uint256 root,
+            uint256 nullifier,
+            address token,
+            uint256 amount,
+            address recipient,
+            bytes calldata verifyCalldata
+        ) external;
+    }
 }
 
 pub struct OnchainVerificationInput {
@@ -719,5 +730,64 @@ pub fn verify_onchain_call(
             .map_err(|e| format!("Failed to decode verify() return value: {e}"))?;
 
         Ok(decoded)
+    })
+}
+
+pub fn build_verify_calldata(input: &OnchainVerificationInput) -> Bytes {
+    IStwoVerifier::verifyCall {
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeRoots: input.tree_roots.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
+        digest: input.digest,
+        nDraws: input.n_draws,
+    }
+    .abi_encode()
+    .into()
+}
+
+pub fn simulate_withdraw_with_proof_call(
+    rpc_url: &str,
+    pool_address: Address,
+    root: U256,
+    nullifier: U256,
+    token: Address,
+    amount: U256,
+    recipient: Address,
+    verify_input: &OnchainVerificationInput,
+) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Failed to create Tokio runtime: {e}"))?;
+
+    let verify_calldata = build_verify_calldata(verify_input);
+
+    runtime.block_on(async move {
+        let provider = ProviderBuilder::new().connect_http(
+            rpc_url
+                .parse()
+                .map_err(|e| format!("Invalid RPC URL: {e}"))?,
+        );
+
+        let call_data = IPrivacyPool::withdrawCall {
+            root,
+            nullifier,
+            token,
+            amount,
+            recipient,
+            verifyCalldata: verify_calldata,
+        };
+
+        let tx = TransactionRequest::default()
+            .to(pool_address)
+            .input(call_data.abi_encode().into());
+
+        provider
+            .call(tx)
+            .await
+            .map_err(|err| format!("PrivacyPool withdraw simulation reverted: {err}"))?;
+
+        Ok(())
     })
 }

@@ -55,6 +55,7 @@ contracts/cache/
 contracts/out/
 contracts/broadcast/
 contracts/.env
+.env
 contracts/lcov.info
 contracts/coverage/
 contracts/lib/

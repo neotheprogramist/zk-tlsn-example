@@ -44,6 +44,8 @@ impl ChainInputs {
 
 #[derive(Clone, Debug)]
 pub struct ChainOutputs {
+    pub secret_nullifier_hash: BaseField,
+    pub secret_nullifier_amount_hash: BaseField,
     pub leaf: BaseField,
 }
 

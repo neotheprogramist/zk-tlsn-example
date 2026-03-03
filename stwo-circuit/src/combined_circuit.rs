@@ -119,11 +119,21 @@ fn parse_balance_from_fragment(fragment: &[u8]) -> Result<u64, String> {
     let fragment_str =
         std::str::from_utf8(fragment).map_err(|e| format!("Invalid UTF-8 in fragment: {}", e))?;
 
-    let trimmed = fragment_str.trim();
+    let digits: String = fragment_str
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
 
-    trimmed
+    if digits.is_empty() {
+        return Err(format!(
+            "Failed to parse balance: no digits found in fragment {:?}",
+            fragment_str
+        ));
+    }
+
+    digits
         .parse::<u64>()
-        .map_err(|e| format!("Failed to parse balance: {}", e))
+        .map_err(|e| format!("Failed to parse balance: {} (fragment {:?})", e, fragment_str))
 }
 
 pub fn prove_withdraw(

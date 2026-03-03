@@ -1,11 +1,17 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use macro_rules_attribute::apply;
 use smol_macros::main;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, build_onchain_verification_input, compute_commitment_hash, prove_withdraw,
-    verify_onchain_call, verify_withdraw,
+    WithdrawInputs,
+    build_onchain_verification_input,
+    compute_commitment_hash,
+    prove_withdraw,
+    simulate_withdraw_with_proof_call,
+    verify_onchain_call,
+    verify_withdraw,
 };
+use std::process::Command;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 #[apply(main!)]
@@ -118,7 +124,11 @@ async fn main() {
 
     let rpc_url = std::env::var("RPC_URL").ok();
     let verifier_address = std::env::var("VERIFIER_ADDRESS").ok();
-    if let (Some(rpc_url), Some(verifier_address)) = (rpc_url, verifier_address) {
+    let pool_owner_private_key = std::env::var("POOL_OWNER_PRIVATE_KEY").ok();
+    let auto_setup_pool = std::env::var("AUTO_SETUP_POOL")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if let (Some(rpc_url), Some(verifier_address)) = (rpc_url.clone(), verifier_address) {
         tracing::info!("Step 6: On-chain verify call");
         let input = match build_onchain_verification_input(&proof) {
             Ok(input) => input,
@@ -156,6 +166,100 @@ async fn main() {
                 panic!("On-chain verification call failed");
             }
         }
+
+        let privacy_pool_address = std::env::var("PRIVACY_POOL_ADDRESS").ok();
+        let withdraw_token = std::env::var("WITHDRAW_TOKEN").ok();
+        let withdraw_recipient = std::env::var("WITHDRAW_RECIPIENT").ok();
+
+        if let (Some(pool), Some(token), Some(recipient)) =
+            (privacy_pool_address, withdraw_token, withdraw_recipient)
+        {
+            tracing::info!("Step 7: Simulating PrivacyPool.withdraw with real verify calldata");
+
+            let pool_address: Address = pool
+                .parse()
+                .unwrap_or_else(|_| panic!("Invalid PRIVACY_POOL_ADDRESS"));
+            let token_address: Address = token
+                .parse()
+                .unwrap_or_else(|_| panic!("Invalid WITHDRAW_TOKEN"));
+            let recipient_address: Address = recipient
+                .parse()
+                .unwrap_or_else(|_| panic!("Invalid WITHDRAW_RECIPIENT"));
+
+            let verify_input = build_onchain_verification_input(&proof)
+                .map_err(|e| {
+                    tracing::error!("❌ Failed to build verify input for withdraw simulation: {}", e);
+                    e
+                })
+                .unwrap();
+
+            let root = U256::from(proof.merkle_root.0);
+            let nullifier = U256::from(proof.nullifier.0);
+            let amount = U256::from(proof.amount.0);
+
+            if auto_setup_pool {
+                let owner_key = pool_owner_private_key
+                    .as_deref()
+                    .expect("AUTO_SETUP_POOL=true requires POOL_OWNER_PRIVATE_KEY");
+
+                tracing::info!("Step 7a: Auto-setup PrivacyPool for full E2E");
+                run_cast_send(
+                    &rpc_url,
+                    owner_key,
+                    &pool,
+                    "setVerifier(address)",
+                    &[&verifier_address.to_string()],
+                );
+                run_cast_send(
+                    &rpc_url,
+                    owner_key,
+                    &pool,
+                    "registerRootForTesting(uint256)",
+                    &[&proof.merkle_root.0.to_string()],
+                );
+
+                let fund_amount = std::env::var("POOL_FUND_AMOUNT")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or((proof.amount.0 as u64) * 2);
+
+                run_cast_send(
+                    &rpc_url,
+                    owner_key,
+                    &token,
+                    "approve(address,uint256)",
+                    &[&pool, &fund_amount.to_string()],
+                );
+                run_cast_send(
+                    &rpc_url,
+                    owner_key,
+                    &pool,
+                    "deposit(uint256,uint256,address)",
+                    &["1", &fund_amount.to_string(), &token],
+                );
+            }
+
+            match simulate_withdraw_with_proof_call(
+                &rpc_url,
+                pool_address,
+                root,
+                nullifier,
+                token_address,
+                amount,
+                recipient_address,
+                &verify_input,
+            ) {
+                Ok(()) => tracing::info!("✅ PrivacyPool.withdraw simulation passed"),
+                Err(err) => {
+                    tracing::error!("❌ PrivacyPool.withdraw simulation failed: {}", err);
+                    panic!("PrivacyPool withdraw simulation failed");
+                }
+            }
+        } else {
+            tracing::info!(
+                "PrivacyPool withdraw simulation skipped (set PRIVACY_POOL_ADDRESS, WITHDRAW_TOKEN, WITHDRAW_RECIPIENT)"
+            );
+        }
     } else {
         tracing::info!(
             "On-chain verification skipped (set RPC_URL and VERIFIER_ADDRESS to enable it)"
@@ -174,4 +278,27 @@ async fn main() {
     tracing::info!("=====================================");
 
     tracing::info!("🎉 Combined withdraw circuit test completed successfully!");
+}
+
+fn run_cast_send(rpc_url: &str, private_key: &str, to: &str, sig: &str, args: &[&str]) {
+    let mut cmd_args = vec![
+        "send",
+        "--rpc-url",
+        rpc_url,
+        "--private-key",
+        private_key,
+        to,
+        sig,
+    ];
+    cmd_args.extend(args.iter().copied());
+
+    let output = Command::new("cast")
+        .args(&cmd_args)
+        .output()
+        .unwrap_or_else(|e| panic!("Failed to run cast send for {sig}: {e}"));
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("cast send failed for {sig}: {stderr}");
+    }
 }

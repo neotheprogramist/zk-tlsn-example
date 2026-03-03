@@ -55,7 +55,14 @@ pub fn gen_poseidon_chain_trace(
         .map(|col| CircleEvaluation::new(CanonicCoset::new(log_size).circle_domain(), col))
         .collect::<Vec<_>>();
 
-    (trace_cols, ChainOutputs { leaf })
+    (
+        trace_cols,
+        ChainOutputs {
+            secret_nullifier_hash: hash1,
+            secret_nullifier_amount_hash: hash2,
+            leaf,
+        },
+    )
 }
 
 pub fn fill_poseidon_row(
