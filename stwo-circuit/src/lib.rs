@@ -5,6 +5,7 @@
 pub mod blake3;
 pub mod combined_circuit;
 pub mod merkle_membership;
+pub mod offchain_merkle;
 pub mod onchain;
 pub mod poseidon_chain;
 pub mod poseidon_hash;
@@ -15,7 +16,12 @@ pub use blake3::scheduler::compute_commitment_hash;
 pub use combined_circuit::{WithdrawInputs, WithdrawProof, prove_withdraw, verify_withdraw};
 use itertools::{Itertools, chain, multiunzip};
 use num_traits::Zero;
-pub use onchain::{build_onchain_verification_input, verify_onchain_call};
+pub use onchain::{
+    build_onchain_verification_input,
+    build_verify_calldata,
+    simulate_withdraw_with_proof_call,
+    verify_onchain_call,
+};
 use stwo::{
     core::{
         channel::{Channel, KeccakChannel},
