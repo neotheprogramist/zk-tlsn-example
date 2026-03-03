@@ -59,7 +59,6 @@ impl StepProgress {
 }
 
 fn main() {
-    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
     init_logging("info");
 
     smol::block_on(async {
@@ -230,9 +229,9 @@ where
         &received_transcript,
         PaddingConfig::new(12),
     )?;
+    let proof_bytes = serde_json::to_vec(&proof)?;
     info!(
-        proof_len = proof.proof.len(),
-        vk_len = proof.verification_key.len(),
+        serialized_proof_len = proof_bytes.len(),
         "Generated ZK proof"
     );
     progress.tick("generated ZK proof");
