@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["parser", "server", "shared", "tlsnotary", "verifier", "zktlsn"]
+members = ["parser", "server", "shared", "stwo-circuit", "tlsnotary", "verifier", "zktlsn"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,8 @@ futures-rustls = "0.26.0"
 http-body-util = "0.1.3"
 hyper = "1.8.1"
 hyper-util = { version = "0.1.20", features = ["client", "http2"] }
+itertools = "0.13"
+num-traits = "0.2"
 parser = { path = "./parser" }
 pem = "3.0.4"
 pest = "2.8.6"
@@ -47,3 +49,12 @@ zktlsn = { path = "./zktlsn" }
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
     "barretenberg",
 ] }
+stwo = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+] }
+stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", branch = "dev", features = [
+    "prover",
+    "std",
+] }
+smol-macros = "0.1.1"
+macro_rules_attribute = "0.2.2"

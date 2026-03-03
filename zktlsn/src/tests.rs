@@ -310,27 +310,26 @@ fn verify_username_field(username_field: &parser::redacted::Body, received_data:
 #[cfg(test)]
 mod integration {
     use futures::join;
-    use noir::blackbox_solver::blake3;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;
+    use stwo_circuit::compute_commitment_hash;
     use tlsnotary::{Prover, Verifier};
 
     use super::*;
     use crate::generate_proof;
 
     #[test]
-    fn test_blake3() {
-        let expected = [
-            179, 212, 248, 128, 63, 126, 36, 184, 243, 137, 176, 114, 231, 84, 119, 205, 188, 251,
-            224, 116, 8, 15, 181, 229, 0, 229, 62, 38, 224, 84, 21, 142,
-        ];
-        assert_eq!(blake3("123".as_bytes()).unwrap(), expected);
+    fn test_commitment_hash_is_deterministic() {
+        let x = b"123";
+        let blinder = [0u8; 16];
+        let h1 = compute_commitment_hash(x, &blinder);
+        let h2 = compute_commitment_hash(x, &blinder);
+        assert_eq!(h1, h2);
     }
 
     #[test]
     fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
         shared::init_test_logging();
-        crate::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
 
         smol::block_on(async {
             // Setup

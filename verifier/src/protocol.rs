@@ -143,16 +143,13 @@ where
 
     let proof_message = ProofMessage::read_from(&mut io).await?;
     progress.tick("received proof payload");
+    let proof_bytes = serde_json::to_vec(&proof_message.proof)?;
     info!(
-        proof_len = proof_message.proof.proof.len(),
-        vk_len = proof_message.proof.verification_key.len(),
-        proof_prefix_hex = %hex_preview(&proof_message.proof.proof, 32),
-        vk_prefix_hex = %hex_preview(&proof_message.proof.verification_key, 32),
+        serialized_proof_len = proof_bytes.len(),
         "Received proof payload"
     );
     debug!(
-        proof_bytes = ?proof_message.proof.proof,
-        verification_key_bytes = ?proof_message.proof.verification_key,
+        proof = ?proof_message.proof,
         "Received full proof payload bytes"
     );
 

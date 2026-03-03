@@ -8,8 +8,6 @@ use verifier::serve;
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() {
-    // Setup Barretenberg SRS (required before proof verification)
-    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
     init_logging("info");
 
     smol::block_on(async {
