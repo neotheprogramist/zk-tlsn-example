@@ -49,3 +49,12 @@ Icon[
 Network Trash Folder
 Temporary Items
 .apdisk
+
+/contracts/lib/
+/contracts/cache/
+/contracts/out/
+/contracts/.env
+/contracts/docs/
+/contracts/broadcast/*/31337/
+/contracts/broadcast/**/dry-run/
+!/contracts/broadcast

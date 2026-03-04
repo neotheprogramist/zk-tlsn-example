@@ -45,6 +45,16 @@ cargo test --release
 
 > **Version mismatch warning:** The `noir-rs` Rust crate pins to nargo **v1.0.0-beta.8**. Using a different nargo version to compile the circuit will cause a runtime abort (`SIGABRT: Rust cannot catch foreign exceptions`) because the Barretenberg C++ backend rejects incompatible bytecode formats.
 
+## Contracts Dependencies
+
+Install contract libraries locally (not tracked in git):
+
+```bash
+cd contracts
+forge install --no-git foundry-rs/forge-std
+forge install --no-git anhelinakruk/poseidon2-M31-solidity
+```
+
 ## Test
 
 ```bash
