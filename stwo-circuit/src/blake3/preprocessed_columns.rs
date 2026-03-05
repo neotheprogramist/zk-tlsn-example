@@ -1,10 +1,10 @@
-use stwo::core::ColumnVec;
-use stwo::core::fields::m31::BaseField;
-use stwo::core::poly::circle::CanonicCoset;
-use stwo::prover::backend::simd::SimdBackend;
-use stwo::prover::backend::simd::column::BaseColumn;
-use stwo::prover::poly::BitReversedOrder;
-use stwo::prover::poly::circle::CircleEvaluation;
+use stwo::{
+    core::{ColumnVec, fields::m31::BaseField, poly::circle::CanonicCoset},
+    prover::{
+        backend::simd::{SimdBackend, column::BaseColumn},
+        poly::{BitReversedOrder, circle::CircleEvaluation},
+    },
+};
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
 use tracing::{Level, span};
 

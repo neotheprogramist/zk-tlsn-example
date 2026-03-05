@@ -1,17 +1,17 @@
-use std::fmt::Debug;
-use std::ops::{Add, AddAssign, Mul, Sub};
+use std::{
+    fmt::Debug,
+    ops::{Add, AddAssign, Mul, Sub},
+};
 
 use itertools::{Itertools, chain};
 use num_traits::{One, Zero};
-use stwo::core::fields::FieldExpOps;
-use stwo::core::fields::m31::BaseField;
+use stwo::core::fields::{FieldExpOps, m31::BaseField};
 use stwo_constraint_framework::{EvalAtRow, RelationEntry};
 
-use crate::blake3::blake3::MSG_SCHEDULE;
-
 use super::BlakeElements;
-use crate::blake3::round::RoundElements;
-use crate::blake3::{BlakeXorElements, Fu32, N_ROUNDS, STATE_SIZE};
+use crate::blake3::{
+    BlakeXorElements, Fu32, N_ROUNDS, STATE_SIZE, blake3::MSG_SCHEDULE, round::RoundElements,
+};
 
 const BYTE_SPLIT: BaseField = BaseField::from_u32_unchecked(256);
 
@@ -134,18 +134,10 @@ pub fn eval_blake_scheduler_constraints<E: EvalAtRow>(
         let b_hh = eval.next_trace_mask();
 
         // Decomposition constraints: enforce byte splits are correct
-        eval.add_constraint(
-            a.l.clone() - a_ll.clone() - a_lh.clone() * E::F::from(BYTE_SPLIT),
-        );
-        eval.add_constraint(
-            a.h.clone() - a_hl.clone() - a_hh.clone() * E::F::from(BYTE_SPLIT),
-        );
-        eval.add_constraint(
-            b.l.clone() - b_ll.clone() - b_lh.clone() * E::F::from(BYTE_SPLIT),
-        );
-        eval.add_constraint(
-            b.h.clone() - b_hl.clone() - b_hh.clone() * E::F::from(BYTE_SPLIT),
-        );
+        eval.add_constraint(a.l.clone() - a_ll.clone() - a_lh.clone() * E::F::from(BYTE_SPLIT));
+        eval.add_constraint(a.h.clone() - a_hl.clone() - a_hh.clone() * E::F::from(BYTE_SPLIT));
+        eval.add_constraint(b.l.clone() - b_ll.clone() - b_lh.clone() * E::F::from(BYTE_SPLIT));
+        eval.add_constraint(b.h.clone() - b_hl.clone() - b_hh.clone() * E::F::from(BYTE_SPLIT));
 
         // XOR8 logup lookups (batched in pairs by finalize_logup_in_pairs):
         // pair 0: (a_ll, b_ll, c_ll) and (a_lh, b_lh, c_lh)

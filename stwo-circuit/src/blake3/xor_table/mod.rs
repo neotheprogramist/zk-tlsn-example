@@ -17,18 +17,26 @@ use std::simd::u32x16;
 
 use itertools::Itertools;
 use num_traits::Zero;
-use stwo::core::fields::m31::BaseField;
-use stwo::core::fields::qm31::SecureField;
-use stwo::core::pcs::{TreeSubspan, TreeVec};
-use stwo::core::poly::circle::CanonicCoset;
-use stwo::core::{ColumnVec, Fraction};
-use stwo::prover::backend::Column;
-use stwo::prover::backend::simd::SimdBackend;
-use stwo::prover::backend::simd::column::BaseColumn;
-use stwo::prover::backend::simd::m31::{LOG_N_LANES, PackedBaseField};
-use stwo::prover::backend::simd::qm31::PackedSecureField;
-use stwo::prover::poly::BitReversedOrder;
-use stwo::prover::poly::circle::CircleEvaluation;
+use stwo::{
+    core::{
+        ColumnVec, Fraction,
+        fields::{m31::BaseField, qm31::SecureField},
+        pcs::{TreeSubspan, TreeVec},
+        poly::circle::CanonicCoset,
+    },
+    prover::{
+        backend::{
+            Column,
+            simd::{
+                SimdBackend,
+                column::BaseColumn,
+                m31::{LOG_N_LANES, PackedBaseField},
+                qm31::PackedSecureField,
+            },
+        },
+        poly::{BitReversedOrder, circle::CircleEvaluation},
+    },
+};
 use stwo_constraint_framework::{
     EvalAtRow, FrameworkComponent, FrameworkEval, INTERACTION_TRACE_IDX, InfoEvaluator,
     LogupTraceGenerator, PREPROCESSED_TRACE_IDX, Relation, RelationEntry, relation,
@@ -36,8 +44,10 @@ use stwo_constraint_framework::{
 use tracing::{Level, span};
 
 use super::preprocessed_columns::XorTable;
-use crate::blake3::{XorElements4, XorElements7, XorElements8, XorElements9, XorElements12};
-use crate::{xor_table_eval, xor_table_gen};
+use crate::{
+    blake3::{XorElements4, XorElements7, XorElements8, XorElements9, XorElements12},
+    xor_table_eval, xor_table_gen,
+};
 
 macro_rules! xor_table_component {
     ($modname:tt, $elements:tt, $elem_bits:literal, $expand_bits:literal) => {
@@ -153,12 +163,15 @@ mod tests {
     use std::simd::u32x16;
 
     use stwo::core::poly::circle::CanonicCoset;
-    use stwo_constraint_framework::logup::LookupElements;
-    use stwo_constraint_framework::{FrameworkEval, assert_constraints_on_polys};
+    use stwo_constraint_framework::{
+        FrameworkEval, assert_constraints_on_polys, logup::LookupElements,
+    };
 
-    use crate::blake3::preprocessed_columns::XorTable;
-    use crate::blake3::xor_table::xor12::{
-        XorAccumulator, XorTableEval, generate_interaction_trace, generate_trace,
+    use crate::blake3::{
+        preprocessed_columns::XorTable,
+        xor_table::xor12::{
+            XorAccumulator, XorTableEval, generate_interaction_trace, generate_trace,
+        },
     };
 
     #[test]

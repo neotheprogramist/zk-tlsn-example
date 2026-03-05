@@ -1,21 +1,25 @@
 use itertools::{Itertools, chain};
-use serde::{Serialize, Deserialize};
-use stwo::core::air::Component;
-use stwo::core::channel::{Channel};
-use stwo::core::fields::qm31::SecureField;
-use stwo::core::pcs::{TreeVec};
-use stwo::prover::backend::simd::SimdBackend;
-use stwo::prover::ComponentProver;
-use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
-use stwo_constraint_framework::{PREPROCESSED_TRACE_IDX, TraceLocationAllocator};
+use serde::{Deserialize, Serialize};
+use stwo::{
+    core::{air::Component, channel::Channel, fields::qm31::SecureField, pcs::TreeVec},
+    prover::{ComponentProver, backend::simd::SimdBackend},
+};
+use stwo_constraint_framework::{
+    PREPROCESSED_TRACE_IDX, TraceLocationAllocator, preprocessed_columns::PreProcessedColumnId,
+};
 
-use super::preprocessed_columns::XorTable;
-use super::round::{BlakeRoundComponent, BlakeRoundEval, blake_round_info};
-use super::scheduler::{BlakeSchedulerComponent, BlakeSchedulerEval};
-use super::xor_table::{xor4, xor7, xor8, xor9, xor12};
-use crate::blake3::round::RoundElements;
-use crate::blake3::scheduler::{BlakeElements, blake_scheduler_info};
-use crate::blake3::{BlakeXorElements, ROUND_LOG_SPLIT,xor_table};
+use super::{
+    preprocessed_columns::XorTable,
+    round::{BlakeRoundComponent, BlakeRoundEval, blake_round_info},
+    scheduler::{BlakeSchedulerComponent, BlakeSchedulerEval},
+    xor_table::{xor4, xor7, xor8, xor9, xor12},
+};
+use crate::blake3::{
+    BlakeXorElements, ROUND_LOG_SPLIT,
+    round::RoundElements,
+    scheduler::{BlakeElements, blake_scheduler_info},
+    xor_table,
+};
 
 fn preprocessed_columns(log_size: u32) -> Vec<PreProcessedColumnId> {
     let _ = log_size;
@@ -274,8 +278,6 @@ pub struct BlakeComponentsForIntegration {
     pub xor7: xor7::XorTableComponent<7, 2>,
     pub xor4: xor4::XorTableComponent<4, 0>,
 }
-
-
 
 impl BlakeComponentsForIntegration {
     pub fn new(
