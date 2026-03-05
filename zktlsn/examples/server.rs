@@ -48,7 +48,11 @@ async fn run() -> ExampleResult<()> {
 }
 
 pub fn create_test_balances() -> HashMap<String, u64> {
+    let alice_balance = std::env::var("ALICE_BALANCE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(100);
     let mut balances = HashMap::new();
-    balances.insert("alice".to_string(), 100);
+    balances.insert("alice".to_string(), alice_balance);
     balances
 }

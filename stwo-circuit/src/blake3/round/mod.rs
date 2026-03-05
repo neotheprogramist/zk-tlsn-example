@@ -58,11 +58,13 @@ mod tests {
     use stwo::core::poly::circle::CanonicCoset;
     use stwo_constraint_framework::FrameworkEval;
 
-    use crate::blake3::round::r#generate::{
-        BlakeRoundInput, generate_interaction_trace, generate_trace,
+    use crate::blake3::{
+        BlakeXorElements, XorAccums,
+        round::{
+            BlakeRoundEval, RoundElements,
+            r#generate::{BlakeRoundInput, generate_interaction_trace, generate_trace},
+        },
     };
-    use crate::blake3::round::{BlakeRoundEval, RoundElements};
-    use crate::blake3::{BlakeXorElements, XorAccums};
 
     #[test]
     fn test_blake_round() {

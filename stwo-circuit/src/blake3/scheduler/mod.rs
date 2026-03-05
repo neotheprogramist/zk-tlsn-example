@@ -5,13 +5,9 @@ use constraints::eval_blake_scheduler_constraints;
 pub use generate::{compute_commitment_hash, gen_interaction_trace, gen_trace};
 use num_traits::Zero;
 use stwo::core::fields::qm31::SecureField;
-use stwo_constraint_framework::{
-    EvalAtRow, FrameworkComponent, FrameworkEval,
-    relation,
-};
+use stwo_constraint_framework::{EvalAtRow, FrameworkComponent, FrameworkEval, relation};
 
-use super::N_ROUND_INPUT_FELTS;
-use super::round::RoundElements;
+use super::{N_ROUND_INPUT_FELTS, round::RoundElements};
 use crate::blake3::BlakeXorElements;
 
 pub type BlakeSchedulerComponent = FrameworkComponent<BlakeSchedulerEval>;

@@ -1,4 +1,4 @@
-use stwo_circuit::{compute_commitment_hash, prove_commitment, verify_proof, VerifyError};
+use stwo_circuit::{VerifyError, compute_commitment_hash, prove_commitment, verify_proof};
 
 fn sample_input() -> (Vec<u8>, [u8; 16]) {
     (b"123456789012".to_vec(), [7u8; 16])

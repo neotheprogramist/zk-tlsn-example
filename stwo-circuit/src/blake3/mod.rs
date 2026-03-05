@@ -1,16 +1,20 @@
 //! AIR for blake2s and blake3.
 //! See <https://en.wikipedia.org/wiki/BLAKE_(hash_function)>
 
-use std::fmt::Debug;
-use std::ops::{Add, AddAssign, Mul, Sub};
-use std::simd::u32x16;
+use std::{
+    fmt::Debug,
+    ops::{Add, AddAssign, Mul, Sub},
+    simd::u32x16,
+};
 
 use num_traits::One;
-use stwo::core::channel::Channel;
-use stwo::core::fields::FieldExpOps;
-use stwo::core::fields::m31::BaseField;
-use stwo::prover::backend::simd::m31::PackedBaseField;
-use stwo::prover::backend::simd::qm31::PackedSecureField;
+use stwo::{
+    core::{
+        channel::Channel,
+        fields::{FieldExpOps, m31::BaseField},
+    },
+    prover::backend::simd::{m31::PackedBaseField, qm31::PackedSecureField},
+};
 use stwo_constraint_framework::{EvalAtRow, Relation, RelationEntry, relation};
 use xor_table::{xor4, xor7, xor8, xor9, xor12};
 
@@ -22,9 +26,7 @@ pub mod scheduler;
 pub mod xor_table;
 
 // Re-export for integration
-pub use air::{
-    AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1,
-};
+pub use air::{AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1};
 
 #[cfg(test)]
 mod test_our_blake3;

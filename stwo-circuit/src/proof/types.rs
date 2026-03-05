@@ -1,11 +1,5 @@
-use stwo::{
-    core::{
-        channel::Channel,
-        fields::qm31::SecureField,
-        pcs::TreeVec,
-        proof::StarkProof,
-        vcs_lifted::MerkleHasherLifted,
-    },
+use stwo::core::{
+    channel::Channel, fields::qm31::SecureField, pcs::TreeVec, proof::StarkProof, vcs::MerkleHasher,
 };
 
 use crate::blake3::{BlakeStatement0, BlakeStatement1};
@@ -20,7 +14,10 @@ impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VerifyError::LogupImbalance(sum) => {
-                write!(f, "logup claimed sums do not balance (got {sum:?}, expected zero)")
+                write!(
+                    f,
+                    "logup claimed sums do not balance (got {sum:?}, expected zero)"
+                )
             }
             VerifyError::StarkVerification => write!(f, "STARK verification failed"),
         }
@@ -30,13 +27,13 @@ impl std::fmt::Display for VerifyError {
 impl std::error::Error for VerifyError {}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProofData<H: MerkleHasherLifted> {
+pub struct ProofData<H: MerkleHasher> {
     pub commitment_stmt0: CommitmentStatement0,
     pub blake_stmt1: BlakeStatement1,
     pub proof: StarkProof<H>,
 }
 
-impl<H: MerkleHasherLifted> std::fmt::Debug for ProofData<H> {
+impl<H: MerkleHasher> std::fmt::Debug for ProofData<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProofData")
             .field("log_size", &self.commitment_stmt0.log_size)

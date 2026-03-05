@@ -2,8 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::blake3::blake3;
     use std::simd::u32x16;
+
+    use crate::blake3::blake3;
 
     #[test]
     fn test_our_blake3_with_123() {

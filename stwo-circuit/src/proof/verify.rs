@@ -1,12 +1,10 @@
 use num_traits::Zero;
-use stwo::{
-    core::{
-        channel::Blake2sChannel,
-        fields::qm31::SecureField,
-        pcs::CommitmentSchemeVerifier,
-        vcs_lifted::blake2_merkle::{Blake2sMerkleChannel, Blake2sMerkleHasher},
-        verifier::verify,
-    },
+use stwo::core::{
+    channel::KeccakChannel,
+    fields::qm31::SecureField,
+    pcs::CommitmentSchemeVerifier,
+    vcs::keccak_merkle::{KeccakMerkleChannel, KeccakMerkleHasher},
+    verifier::verify,
 };
 use stwo_constraint_framework::TraceLocationAllocator;
 
@@ -15,26 +13,38 @@ use crate::{
     proof::{ProofData, VerifyError},
 };
 
-pub fn verify_proof(proof_data: ProofData<Blake2sMerkleHasher>) -> Result<(), VerifyError> {
+pub fn verify_proof(proof_data: ProofData<KeccakMerkleHasher>) -> Result<(), VerifyError> {
     let committed_hash_words = proof_data.commitment_stmt0.committed_hash_words();
     let blake_stmt0 = BlakeStatement0 {
         log_size: proof_data.commitment_stmt0.log_size,
     };
     let blake_log_sizes = proof_data.commitment_stmt0.log_sizes();
 
-    let channel = &mut Blake2sChannel::default();
+    let channel = &mut KeccakChannel::default();
     let commitment_scheme =
-        &mut CommitmentSchemeVerifier::<Blake2sMerkleChannel>::new(proof_data.proof.config);
+        &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
-    commitment_scheme.commit(proof_data.proof.commitments[0], &blake_log_sizes[0], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[0],
+        &blake_log_sizes[0],
+        channel,
+    );
     proof_data.commitment_stmt0.mix_into(channel);
 
-    commitment_scheme.commit(proof_data.proof.commitments[1], &blake_log_sizes[1], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[1],
+        &blake_log_sizes[1],
+        channel,
+    );
 
     let all_elements = AllElements::draw(channel);
     proof_data.blake_stmt1.mix_into(channel);
 
-    commitment_scheme.commit(proof_data.proof.commitments[2], &blake_log_sizes[2], channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[2],
+        &blake_log_sizes[2],
+        channel,
+    );
 
     let mut tree_span_provider = TraceLocationAllocator::default();
     let blake_components = BlakeComponentsForIntegration::new(
@@ -61,7 +71,7 @@ pub fn verify_proof(proof_data: ProofData<Blake2sMerkleHasher>) -> Result<(), Ve
         return Err(VerifyError::LogupImbalance(claimed_sum));
     }
 
-    verify::<Blake2sMerkleChannel>(
+    verify::<KeccakMerkleChannel>(
         &blake_components.as_components_vec(),
         channel,
         commitment_scheme,

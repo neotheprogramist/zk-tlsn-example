@@ -2,24 +2,30 @@ use std::simd::u32x16;
 
 use itertools::{Itertools, chain};
 use num_traits::Zero;
-use stwo::core::ColumnVec;
-use stwo::core::fields::m31::BaseField;
-use stwo::core::fields::qm31::SecureField;
-use stwo::core::poly::circle::CanonicCoset;
-use stwo::prover::backend::simd::SimdBackend;
-use stwo::prover::backend::simd::column::BaseColumn;
-use stwo::prover::backend::simd::m31::LOG_N_LANES;
-use stwo::prover::backend::simd::qm31::PackedSecureField;
-use stwo::prover::backend::Column;
-use stwo::prover::poly::BitReversedOrder;
-use stwo::prover::poly::circle::CircleEvaluation;
+use stwo::{
+    core::{
+        ColumnVec,
+        fields::{m31::BaseField, qm31::SecureField},
+        poly::circle::CanonicCoset,
+    },
+    prover::{
+        backend::{
+            Column,
+            simd::{SimdBackend, column::BaseColumn, m31::LOG_N_LANES, qm31::PackedSecureField},
+        },
+        poly::{BitReversedOrder, circle::CircleEvaluation},
+    },
+};
 use stwo_constraint_framework::{LogupTraceGenerator, Relation};
 use tracing::{Level, span};
 
 use super::BlakeElements;
-use crate::blake3::blake3::{self, MSG_SCHEDULE};
-use crate::blake3::round::{BlakeRoundInput, RoundElements};
-use crate::blake3::{BlakeXorElements, N_ROUND_INPUT_FELTS, N_ROUNDS, STATE_SIZE, XorAccums, to_felts};
+use crate::blake3::{
+    BlakeXorElements, N_ROUND_INPUT_FELTS, N_ROUNDS, STATE_SIZE, XorAccums,
+    blake3::{self, MSG_SCHEDULE},
+    round::{BlakeRoundInput, RoundElements},
+    to_felts,
+};
 
 #[derive(Copy, Clone, Default)]
 pub struct BlakeInput {
@@ -196,10 +202,10 @@ pub fn gen_trace(
 
             // byte_pairs[j] = (a_byte_j, b_byte_j)
             let byte_pairs: [(u32, u32); 4] = [
-                (a_l & 0xFF,         b_l & 0xFF),
-                ((a_l >> 8) & 0xFF,  (b_l >> 8) & 0xFF),
-                (a_h & 0xFF,         b_h & 0xFF),
-                ((a_h >> 8) & 0xFF,  (b_h >> 8) & 0xFF),
+                (a_l & 0xFF, b_l & 0xFF),
+                ((a_l >> 8) & 0xFF, (b_l >> 8) & 0xFF),
+                (a_h & 0xFF, b_h & 0xFF),
+                ((a_h >> 8) & 0xFF, (b_h >> 8) & 0xFF),
             ];
 
             for (byte_pos, (a_byte, b_byte)) in byte_pairs.iter().enumerate() {
@@ -222,10 +228,9 @@ pub fn gen_trace(
                 lookup_data.output_xor_data[word_i][byte_pos][0].data[vec_row] = a_packed;
                 lookup_data.output_xor_data[word_i][byte_pos][1].data[vec_row] = b_packed;
 
-                xor_accums.xor8.add_input(
-                    u32x16::splat(*a_byte),
-                    u32x16::splat(*b_byte),
-                );
+                xor_accums
+                    .xor8
+                    .add_input(u32x16::splat(*a_byte), u32x16::splat(*b_byte));
             }
         }
     }

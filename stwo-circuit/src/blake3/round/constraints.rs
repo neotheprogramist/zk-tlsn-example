@@ -1,7 +1,6 @@
 use itertools::{Itertools, chain};
 use num_traits::One;
-use stwo::core::fields::m31::BaseField;
-use stwo::core::fields::qm31::SecureField;
+use stwo::core::fields::{m31::BaseField, qm31::SecureField};
 use stwo_constraint_framework::{EvalAtRow, RelationEntry};
 
 use super::{BlakeXorElements, RoundElements};
