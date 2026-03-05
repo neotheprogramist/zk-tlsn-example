@@ -6,7 +6,7 @@ use stwo::core::{
     air::{Component, Components},
     channel::{Channel, KeccakChannel, MerkleChannel},
     circle::CirclePoint,
-    fields::{m31::BaseField, qm31::SecureField},
+    fields::qm31::SecureField,
     pcs::{CommitmentSchemeVerifier, TreeVec},
     vcs::{keccak_hash::KeccakHash, keccak_merkle::KeccakMerkleChannel},
 };
@@ -211,7 +211,7 @@ pub fn build_onchain_verification_input(
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
             amount: proof_data.amount,
-            refund_commitment_hash: BaseField::from_u32_unchecked(0),
+            refund_commitment_hash: proof_data.refund_commitment_hash,
             claimed_sum: proof_data.scheduler_claimed_sum,
         },
         proof_data.scheduler_claimed_sum,

@@ -59,7 +59,11 @@ pub struct WithdrawInputs {
     pub commitment_hash: [u8; 32],
     pub secret: BaseField,
     pub nullifier: BaseField,
-    pub amount: BaseField,
+    pub commitment_amount: BaseField,
+    pub withdraw_amount: BaseField,
+    pub refund_secret: BaseField,
+    pub refund_nullifier: BaseField,
+    pub refund_amount: BaseField,
     pub token_address: BaseField,
     pub merkle_siblings: Vec<BaseField>,
     pub merkle_index: u32,
@@ -73,6 +77,7 @@ pub struct WithdrawProof<H: MerkleHasher> {
     pub merkle_root: BaseField,
     pub nullifier: BaseField,
     pub amount: BaseField,
+    pub refund_commitment_hash: BaseField,
     pub token_address: BaseField,
     pub log_size: u32,
     pub merkle_depth: usize,
@@ -119,10 +124,10 @@ pub fn prove_withdraw(
     let amount_u32 = u32::try_from(parsed_amount)
         .map_err(|_| format!("Amount {} too large for u32", parsed_amount))?;
 
-    if inputs.amount.0 != amount_u32 {
+    if inputs.withdraw_amount.0 != amount_u32 {
         return Err(format!(
-            "Amount mismatch: parsed={}, provided={}",
-            amount_u32, inputs.amount.0
+            "Withdraw amount mismatch: parsed={}, provided={}",
+            amount_u32, inputs.withdraw_amount.0
         ));
     }
 
@@ -173,13 +178,23 @@ pub fn prove_withdraw(
     let deposit_inputs = ChainInputs::for_deposit(
         inputs.secret,
         inputs.nullifier,
-        inputs.amount,
+        inputs.commitment_amount,
         inputs.token_address,
     );
     let (deposit_trace, deposit_outputs) =
         gen_poseidon_chain_trace(log_size, deposit_inputs.clone());
     let deposit_leaf = deposit_outputs.leaf;
     tracing::info!("Deposit leaf computed: {}", deposit_leaf.0);
+
+    let refund_inputs = ChainInputs::for_refund(
+        inputs.refund_secret,
+        inputs.refund_nullifier,
+        inputs.refund_amount,
+        inputs.token_address,
+    );
+    let (_, refund_outputs) = gen_poseidon_chain_trace(log_size, refund_inputs);
+    let refund_leaf = refund_outputs.leaf;
+    tracing::info!("Refund leaf computed: {}", refund_leaf.0);
 
     tracing::info!("Step 3: Generating Merkle membership proof");
 
@@ -206,10 +221,10 @@ pub fn prove_withdraw(
         log_size,
         computed_root,
         inputs.merkle_root,
-        inputs.amount,
-        BaseField::from_u32_unchecked(0),
+        inputs.commitment_amount,
+        inputs.refund_amount,
         deposit_leaf,
-        BaseField::from_u32_unchecked(0),
+        refund_leaf,
     );
 
     tracing::info!("Step 5: Setting up prover");
@@ -453,8 +468,8 @@ pub fn prove_withdraw(
             is_first_id: scheduler_is_first_column_id(log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            amount: inputs.amount,
-            refund_commitment_hash: BaseField::from_u32_unchecked(0),
+            amount: inputs.withdraw_amount,
+            refund_commitment_hash: refund_leaf,
             claimed_sum: scheduler_claimed_sum,
         },
         scheduler_claimed_sum,
@@ -491,7 +506,8 @@ pub fn prove_withdraw(
         blake_stmt1,
         merkle_root: inputs.merkle_root,
         nullifier: inputs.nullifier,
-        amount: inputs.amount,
+        amount: inputs.withdraw_amount,
+        refund_commitment_hash: refund_leaf,
         token_address: inputs.token_address,
         log_size,
         merkle_depth,
@@ -616,7 +632,7 @@ pub fn verify_withdraw(proof_data: WithdrawProof<KeccakMerkleHasher>) -> Result<
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
             amount: proof_data.amount,
-            refund_commitment_hash: BaseField::from_u32_unchecked(0),
+            refund_commitment_hash: proof_data.refund_commitment_hash,
             claimed_sum: proof_data.scheduler_claimed_sum,
         },
         proof_data.scheduler_claimed_sum,

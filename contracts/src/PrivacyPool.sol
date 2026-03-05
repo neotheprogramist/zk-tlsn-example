@@ -111,6 +111,7 @@ contract PrivacyPool {
         address token,
         uint256 amount,
         address recipient,
+        uint256 refundCommitmentHash,
         bytes calldata verifyCalldata
     ) external {
         // Check if nullifier already used
@@ -135,6 +136,11 @@ contract PrivacyPool {
 
         // Mark nullifier as used
         nullifierHashes[nullifier] = true;
+
+        // For partial withdrawals, insert the change/refund commitment as a new leaf.
+        if (refundCommitmentHash != 0) {
+            tree.addLeaf(refundCommitmentHash);
+        }
 
         // Transfer tokens to recipient
         IERC20 erc20 = IERC20(token);

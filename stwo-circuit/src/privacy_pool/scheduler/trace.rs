@@ -23,7 +23,7 @@ pub fn gen_scheduler_trace(
     let refund_u32 = refund_amount.0;
     assert!(
         commitment_u32 >= refund_u32,
-        "🚨 SECURITY: Amount underflow detected! commitment_amount ({}) < refund_amount ({}). \
+        "Amount underflow detected! commitment_amount ({}) < refund_amount ({}). \
          This would allow withdrawing more funds than deposited.",
         commitment_u32,
         refund_u32

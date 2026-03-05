@@ -71,6 +71,7 @@ pub async fn simulate_withdraw_with_proof_call(
     token: Address,
     amount: U256,
     recipient: Address,
+    refund_commitment_hash: U256,
     verify_input: &OnchainVerificationInput,
 ) -> Result<(), String> {
     let verify_calldata = build_verify_calldata(verify_input);
@@ -88,6 +89,7 @@ pub async fn simulate_withdraw_with_proof_call(
             token,
             amount,
             recipient,
+            refundCommitmentHash: refund_commitment_hash,
             verifyCalldata: verify_calldata,
         };
 
@@ -114,6 +116,7 @@ pub async fn send_withdraw_with_proof_tx(
     token: Address,
     amount: U256,
     recipient: Address,
+    refund_commitment_hash: U256,
     verify_input: &OnchainVerificationInput,
 ) -> Result<String, String> {
     let verify_calldata = build_verify_calldata(verify_input);
@@ -137,6 +140,7 @@ pub async fn send_withdraw_with_proof_tx(
             token,
             amount,
             recipient,
+            refundCommitmentHash: refund_commitment_hash,
             verifyCalldata: verify_calldata,
         };
 

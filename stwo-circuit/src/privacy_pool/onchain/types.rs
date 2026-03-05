@@ -94,6 +94,7 @@ sol! {
             address token,
             uint256 amount,
             address recipient,
+            uint256 refundCommitmentHash,
             bytes calldata verifyCalldata
         ) external;
     }

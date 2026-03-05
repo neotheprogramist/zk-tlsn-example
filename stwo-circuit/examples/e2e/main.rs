@@ -51,6 +51,8 @@ pub(crate) struct AppState {
     pub withdraw_secret: u32,
     #[arg(long, env = "WITHDRAW_NULLIFIER", default_value_t = 67890u32)]
     pub withdraw_nullifier: u32,
+    #[arg(long, env = "DEPOSIT_AMOUNT", default_value_t = 100u32)]
+    pub deposit_amount: u32,
     #[arg(
         long,
         env = "WITHDRAW_GAS_LIMIT",
@@ -91,6 +93,7 @@ sol! {
             address token,
             uint256 amount,
             address recipient,
+            uint256 refundCommitmentHash,
             bytes calldata verifyCalldata
         ) external;
         function getNextLeafIndex() external view returns (uint64);
@@ -118,7 +121,22 @@ fn main() {
             parsed_amount,
             "Amount extracted from TLSN committed fragment"
         );
-        let amount = BaseField::from_u32_unchecked(parsed_amount);
+        if parsed_amount > app.deposit_amount {
+            panic!(
+                "Requested withdraw amount {} is greater than deposited amount {}",
+                parsed_amount, app.deposit_amount
+            );
+        }
+        let commitment_amount = BaseField::from_u32_unchecked(app.deposit_amount);
+        let withdraw_amount = BaseField::from_u32_unchecked(parsed_amount);
+        let refund_amount =
+            BaseField::from_u32_unchecked(app.deposit_amount.wrapping_sub(parsed_amount));
+        tracing::info!(
+            deposit_amount = app.deposit_amount,
+            withdraw_amount = parsed_amount,
+            refund_amount = refund_amount.0,
+            "Resolved partial-withdraw amounts"
+        );
         let token_address =
             BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
 
@@ -156,7 +174,8 @@ fn main() {
             "Using per-run secret/nullifier derived from merkle index"
         );
 
-        let deposit_inputs = ChainInputs::for_deposit(secret, nullifier, amount, token_address);
+        let deposit_inputs =
+            ChainInputs::for_deposit(secret, nullifier, commitment_amount, token_address);
         let (_, deposit_outputs) = gen_poseidon_chain_trace(4, deposit_inputs);
         let offchain_index = offchain_tree.add_leaf(deposit_outputs.leaf);
         assert_eq!(
@@ -167,7 +186,7 @@ fn main() {
         let expected_root = offchain_tree.root();
 
         let secret_nullifier_hash = deposit_outputs.secret_nullifier_hash;
-        let deposit_amount_u64 = amount.0 as u64;
+        let deposit_amount_u64 = commitment_amount.0 as u64;
         tracing::info!(
             merkle_depth = MERKLE_SIBLING_DEPTH,
             "Built Merkle siblings from off-chain tree"
@@ -207,7 +226,13 @@ fn main() {
             commitment_hash,
             secret,
             nullifier,
-            amount,
+            commitment_amount,
+            withdraw_amount,
+            refund_secret: BaseField::from_u32_unchecked(app.withdraw_secret.wrapping_add(1_000_000)),
+            refund_nullifier: BaseField::from_u32_unchecked(
+                app.withdraw_nullifier.wrapping_add(1_000_000),
+            ),
+            refund_amount,
             token_address,
             merkle_siblings,
             merkle_index,
@@ -231,6 +256,7 @@ fn main() {
             app.withdraw_token,
             U256::from(proof.amount.0),
             app.withdraw_recipient,
+            U256::from(proof.refund_commitment_hash.0),
             &verify_input,
         )
         .await
@@ -245,6 +271,7 @@ fn main() {
             app.withdraw_token,
             U256::from(proof.amount.0),
             app.withdraw_recipient,
+            U256::from(proof.refund_commitment_hash.0),
             &verify_input,
         )
         .await
