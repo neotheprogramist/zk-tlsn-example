@@ -248,24 +248,12 @@ fn main() {
             build_onchain_verification_input(&proof).expect("Failed to build onchain input");
 
         tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
-        simulate_withdraw_with_proof_call(
-            &app.rpc_url,
-            app.privacy_pool_address,
-            U256::from(proof.merkle_root.0),
-            U256::from(proof.nullifier.0),
-            app.withdraw_token,
-            U256::from(proof.amount.0),
-            app.withdraw_recipient,
-            U256::from(proof.refund_commitment_hash.0),
-            &verify_input,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("Preflight withdraw simulation failed: {e}"));
 
-        send_withdraw_with_proof_tx(
+        let tx_hash = send_withdraw_with_proof_tx(
             &app.rpc_url,
             &app.owner_private_key,
             app.privacy_pool_address,
+            app.withdraw_gas_limit,
             U256::from(proof.merkle_root.0),
             U256::from(proof.nullifier.0),
             app.withdraw_token,
@@ -276,6 +264,7 @@ fn main() {
         )
         .await
         .expect("Failed to send withdraw transaction");
+        tracing::info!(%tx_hash, "Withdraw tx sent");
 
         tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
     });

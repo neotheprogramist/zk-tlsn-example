@@ -28,6 +28,7 @@ contract PrivacyPool {
         uint256 newRoot
     );
     event Withdraw(uint256 indexed nullifier, address indexed recipient, address token, uint256 amount);
+    event VerificationGasUsed(uint256 gasUsed, bool isValid);
     event VerifierUpdated(address indexed verifier);
     event RootRegisteredForTesting(uint256 indexed root);
 
@@ -128,10 +129,13 @@ contract PrivacyPool {
 
         // Verify STWO proof atomically in the same transaction.
         // STWOVerifier.verify() is non-view and updates internal state, so staticcall reverts.
+        uint256 gasBeforeVerification = gasleft();
         (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
         if (!callSuccess) revert VerifierCallFailed();
         if (returndata.length != 32) revert InvalidVerifierResponse();
         bool isValid = abi.decode(returndata, (bool));
+        emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
         // Mark nullifier as used

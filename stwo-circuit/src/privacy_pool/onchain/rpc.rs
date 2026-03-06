@@ -13,24 +13,23 @@ use super::types::{IPrivacyPool, IStwoVerifier, OnchainVerificationInput};
 pub async fn verify_onchain_call(
     rpc_url: &str,
     verifier_address: Address,
-    input: OnchainVerificationInput,
+    input: &OnchainVerificationInput,
 ) -> Result<bool, String> {
     let rpc_url = rpc_url.to_string();
+    let call_data = IStwoVerifier::verifyCall {
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeRoots: input.tree_roots.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
+        digest: input.digest,
+        nDraws: input.n_draws,
+    };
     Compat::new(async move {
         let provider = ProviderBuilder::new().connect_http(
             rpc_url
                 .parse()
                 .map_err(|e| format!("Invalid RPC URL: {e}"))?,
         );
-
-        let call_data = IStwoVerifier::verifyCall {
-            proof: input.proof,
-            params: input.params,
-            treeRoots: input.tree_roots,
-            treeColumnLogSizes: input.tree_column_log_sizes,
-            digest: input.digest,
-            nDraws: input.n_draws,
-        };
 
         let tx = TransactionRequest::default()
             .to(verifier_address)
@@ -111,6 +110,7 @@ pub async fn send_withdraw_with_proof_tx(
     rpc_url: &str,
     sender_private_key: &str,
     pool_address: Address,
+    gas_limit: u64,
     root: U256,
     nullifier: U256,
     token: Address,
@@ -146,6 +146,7 @@ pub async fn send_withdraw_with_proof_tx(
 
         let tx = TransactionRequest::default()
             .to(pool_address)
+            .gas_limit(gas_limit)
             .input(call_data.abi_encode().into());
 
         let pending = provider
