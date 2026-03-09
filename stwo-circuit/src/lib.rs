@@ -3,14 +3,17 @@
 #![feature(array_chunks)]
 
 pub mod blake3;
-pub mod combined_circuit;
+pub mod offer_circuit;
 pub mod offchain_merkle;
 pub mod privacy_pool;
+pub mod withdraw_circuit;
 mod proof;
 
 pub use blake3::scheduler::compute_commitment_hash;
-pub use combined_circuit::{WithdrawInputs, WithdrawProof, prove_withdraw, verify_withdraw};
-// Backward-compatible exports: keep old paths working after moving modules to privacy_pool/.
+pub use offer_circuit::{
+    OfferSpendInputs, OfferSpendProof, prove_offer_withdraw, verify_offer_withdraw,
+};
+pub use withdraw_circuit::{WithdrawInputs, WithdrawProof, prove_withdraw, verify_withdraw};
 pub use privacy_pool::merkle_membership;
 pub use privacy_pool::{
     onchain,

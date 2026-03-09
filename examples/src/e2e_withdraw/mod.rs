@@ -141,9 +141,6 @@ pub fn run() {
         tracing::info!("Step 2: Preparing pool state and performing real deposit");
 
         chain::ensure_owner_has_eth_for_gas(&app).await;
-        chain::send_set_verifier_tx(&app)
-            .await
-            .expect("Failed to send setVerifier tx");
 
         let mut offchain_tree: OffchainMerkleTree = chain::build_offchain_merkle_tree(&app).await;
         let merkle_index = u32::try_from(offchain_tree.leaf_count())

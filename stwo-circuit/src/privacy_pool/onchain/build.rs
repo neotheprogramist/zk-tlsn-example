@@ -17,7 +17,7 @@ use crate::{
     blake3::{
         AllElements, BlakeComponentsForIntegration, BlakeStatement0, preprocessed_columns::XorTable,
     },
-    combined_circuit::WithdrawProof,
+    withdraw_circuit::WithdrawProof,
     privacy_pool::{
         merkle_membership::{
             MerkleMembershipComponent, MerkleMembershipEval, MerkleStatement0,

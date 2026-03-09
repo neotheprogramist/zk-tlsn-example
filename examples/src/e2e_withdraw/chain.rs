@@ -11,20 +11,6 @@ use stwo_circuit::offchain_merkle::OffchainMerkleTree;
 use crate::common_rpc;
 use super::{ANVIL_TOPUP_BALANCE_HEX, AppState, IERC20, IPrivacyPool, MERKLE_SIBLING_DEPTH};
 
-pub async fn send_set_verifier_tx(app: &AppState) -> Result<(), String> {
-    let calldata = IPrivacyPool::setVerifierCall {
-        verifier: app.verifier_address,
-    }
-    .abi_encode();
-    send_simple_tx(
-        app,
-        app.privacy_pool_address,
-        calldata.into(),
-        "setVerifier",
-    )
-    .await
-}
-
 pub async fn send_approve_tx(app: &AppState, amount: U256) -> Result<(), String> {
     let calldata = IERC20::approveCall {
         spender: app.privacy_pool_address,

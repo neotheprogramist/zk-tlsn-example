@@ -1,7 +1,7 @@
 use alloy::primitives::U256;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    compute_commitment_hash,
+    OfferSpendInputs, prove_offer_withdraw, verify_offer_withdraw,
     poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
@@ -122,46 +122,37 @@ pub fn run() {
             "Prepared Merkle proof inputs"
         );
 
-        let _spend_amount = BaseField::from_u32_unchecked(app.offer_amount);
-        let _refund_amount =
+        let withdraw_amount = BaseField::from_u32_unchecked(app.offer_amount);
+        let refund_amount =
             BaseField::from_u32_unchecked(app.deposit_amount.wrapping_sub(app.offer_amount));
 
-        let balance_fragment = app.offer_amount.to_string().into_bytes();
-        let blinder = [42u8; 16];
-        let _commitment_hash = compute_commitment_hash(&balance_fragment, &blinder);
+        let inputs = OfferSpendInputs {
+            secret: deposit_secret,
+            nullifier: deposit_nullifier,
+            commitment_amount: deposit_amount,
+            withdraw_amount,
+            refund_secret: BaseField::from_u32_unchecked(app.deposit_secret.wrapping_add(1_000_000)),
+            refund_nullifier: BaseField::from_u32_unchecked(
+                app.deposit_nullifier.wrapping_add(1_000_000),
+            ),
+            refund_amount,
+            token_address,
+            merkle_siblings,
+            merkle_index,
+            merkle_root,
+        };
 
-        // let spend_inputs = WithdrawInputs {
-        //     balance_fragment,
-        //     blinder,
-        //     commitment_hash,
-        //     secret: deposit_secret,
-        //     nullifier: deposit_nullifier,
-        //     commitment_amount: deposit_amount,
-        //     spend_amount,
-        //     refund_secret: BaseField::from_u32_unchecked(app.deposit_secret.wrapping_add(1_000_000)),
-        //     refund_nullifier: BaseField::from_u32_unchecked(
-        //         app.deposit_nullifier.wrapping_add(1_000_000),
-        //     ),
-        //     refund_amount,
-        //     token_address,
-        //     merkle_siblings,
-        //     merkle_index,
-        //     merkle_root,
-        // };
+        tracing::info!("Generating offer-withdraw proof");
+        let proof = prove_offer_withdraw(inputs, 8).expect("Offer proof generation failed");
+        verify_offer_withdraw(proof).expect("Offer proof verification failed");
 
-        // tracing::info!(
-        //     spend_amount = spend_inputs.spend_amount.0,
-        //     refund_amount = spend_inputs.refund_amount.0,
-        //     "Built spend-note inputs"
-        // );
-
-        // tracing::info!(
-        //     idx_before,
-        //     idx_after,
-        //     root_before = %root_before,
-        //     root_after = %root_after,
-        //     "Deposit step completed and verified"
-        // );
+        tracing::info!(
+            idx_before,
+            idx_after,
+            root_before = %root_before,
+            root_after = %root_after,
+            "Offer flow completed with proof generation"
+        );
           
     });
 }
