@@ -1,12 +1,12 @@
 use alloy::primitives::U256;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, compute_commitment_hash,
+    compute_commitment_hash,
     poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
-use crate::{
+use self::{
     chain::{
         build_offchain_merkle_tree, send_approve_tx, send_deposit_tx, try_call_current_root,
         try_call_next_leaf_index,
@@ -17,7 +17,7 @@ use crate::{
 mod chain;
 mod config;
 
-fn main() {
+pub fn run() {
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -122,13 +122,13 @@ fn main() {
             "Prepared Merkle proof inputs"
         );
 
-        let spend_amount = BaseField::from_u32_unchecked(app.offer_amount);
-        let refund_amount =
+        let _spend_amount = BaseField::from_u32_unchecked(app.offer_amount);
+        let _refund_amount =
             BaseField::from_u32_unchecked(app.deposit_amount.wrapping_sub(app.offer_amount));
 
         let balance_fragment = app.offer_amount.to_string().into_bytes();
         let blinder = [42u8; 16];
-        let commitment_hash = compute_commitment_hash(&balance_fragment, &blinder);
+        let _commitment_hash = compute_commitment_hash(&balance_fragment, &blinder);
 
         // let spend_inputs = WithdrawInputs {
         //     balance_fragment,

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["parser", "server", "shared", "stwo-circuit", "tlsnotary", "verifier", "zktlsn"]
+members = [
+    "examples",
+    "parser",
+    "server",
+    "shared",
+    "stwo-circuit",
+    "tlsnotary",
+    "verifier",
+    "zktlsn",
+]
 
 [workspace.package]
 version = "0.1.0"

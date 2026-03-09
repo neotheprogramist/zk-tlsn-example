@@ -17,7 +17,7 @@ use tlsnotary::{
 };
 use tokio::io::join;
 
-use crate::AppState;
+use super::AppState;
 
 const MAX_SENT_DATA: usize = 1 << 12;
 const MAX_RECV_DATA: usize = 1 << 14;

@@ -16,7 +16,6 @@ mod chain;
 mod tlsn;
 
 pub(crate) const MERKLE_SIBLING_DEPTH: usize = 31;
-pub(crate) const M31_MODULUS: u32 = 2_147_483_647;
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
 
 #[derive(Debug, Parser)]
@@ -100,7 +99,7 @@ sol! {
     }
 }
 
-fn main() {
+pub fn run() {
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()

@@ -2595,6 +2595,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "examples"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "async-compat",
+ "axum",
+ "clap",
+ "dotenvy",
+ "http-body-util",
+ "hyper",
+ "quinn",
+ "shared",
+ "smol",
+ "stwo",
+ "stwo-circuit",
+ "tlsnotary",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fastbloom"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

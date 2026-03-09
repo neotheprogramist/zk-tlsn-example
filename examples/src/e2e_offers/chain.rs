@@ -1,8 +1,7 @@
 use alloy::{
     primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    rpc::types::{Filter, TransactionRequest},
-    signers::local::PrivateKeySigner,
+    rpc::types::Filter,
     sol,
     sol_types::SolCall,
 };
@@ -10,7 +9,8 @@ use async_compat::Compat;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::offchain_merkle::OffchainMerkleTree;
 
-use crate::config::AppState;
+use crate::common_rpc;
+use super::config::AppState;
 
 sol! {
     interface IERC20 {
@@ -25,13 +25,10 @@ sol! {
     }
 }
 
-const M31_MODULUS: u32 = 2_147_483_647;
 const MERKLE_SIBLING_DEPTH: usize = 31;
 
 pub fn address_to_m31(address: Address) -> u32 {
-    let address_u256 = U256::from_be_slice(address.as_slice());
-    let reduced = address_u256 % U256::from(M31_MODULUS);
-    u32::try_from(reduced).expect("Address modulo M31 should fit into u32")
+    common_rpc::address_to_m31(address)
 }
 
 pub async fn send_approve_tx(app: &AppState, amount: U256) -> Result<(), String> {
@@ -63,54 +60,21 @@ async fn send_simple_tx(
     input: Bytes,
     label: &str,
 ) -> Result<(), String> {
-    let owner_private_key = app.owner_private_key.clone();
-    let rpc_url = app.rpc_url.clone();
-    let max_fee = app.max_fee_per_gas;
-    let max_priority = app.max_priority_fee_per_gas;
-    let label = label.to_string();
-
-    Compat::new(async move {
-        let signer: PrivateKeySigner = owner_private_key
-            .parse()
-            .map_err(|e| format!("Invalid private key: {e}"))?;
-        let provider = ProviderBuilder::new().wallet(signer).connect_http(
-            rpc_url
-                .parse()
-                .map_err(|e| format!("Invalid RPC URL: {e}"))?,
-        );
-
-        let tx = TransactionRequest::default()
-            .to(to)
-            .input(input.into())
-            .max_fee_per_gas(max_fee)
-            .max_priority_fee_per_gas(max_priority);
-
-        let pending = provider
-            .send_transaction(tx)
-            .await
-            .map_err(|e| format!("{label} send_transaction failed: {e}"))?;
-
-        let receipt =
-            tokio::time::timeout(std::time::Duration::from_secs(120), pending.get_receipt())
-                .await
-                .map_err(|_| format!("{label} get_receipt timed out after 120s"))?
-                .map_err(|e| format!("{label} receipt failed: {e}"))?;
-
-        if !receipt.status() {
-            return Err(format!(
-                "{label} transaction reverted, tx hash: {}, gas_used: {:?}",
-                receipt.transaction_hash, receipt.gas_used
-            ));
-        }
-
-        Ok(())
-    })
+    common_rpc::send_simple_tx(
+        app.rpc_url.clone(),
+        app.owner_private_key.clone(),
+        app.max_fee_per_gas,
+        app.max_priority_fee_per_gas,
+        to,
+        input,
+        label,
+    )
     .await
 }
 
 pub async fn try_call_next_leaf_index(app: &AppState) -> Option<u64> {
     let data = IPrivacyPool::getNextLeafIndexCall {}.abi_encode();
-    let raw = match run_eth_call(app, app.privacy_pool_address, data.into()).await {
+    let raw = match common_rpc::run_eth_call(app.rpc_url.clone(), app.privacy_pool_address, data.into()).await {
         Ok(raw) => raw,
         Err(e) => {
             tracing::warn!(err = %e, "getNextLeafIndex eth_call failed");
@@ -134,7 +98,7 @@ pub async fn try_call_next_leaf_index(app: &AppState) -> Option<u64> {
 
 pub async fn try_call_current_root(app: &AppState) -> Option<U256> {
     let data = IPrivacyPool::getCurrentRootCall {}.abi_encode();
-    let raw = match run_eth_call(app, app.privacy_pool_address, data.into()).await {
+    let raw = match common_rpc::run_eth_call(app.rpc_url.clone(), app.privacy_pool_address, data.into()).await {
         Ok(raw) => raw,
         Err(e) => {
             tracing::warn!(err = %e, "getCurrentRoot eth_call failed");
@@ -201,21 +165,4 @@ pub async fn build_offchain_merkle_tree(app: &AppState) -> Result<OffchainMerkle
     }
 
     Ok(tree)
-}
-
-async fn run_eth_call(app: &AppState, to: Address, input: Bytes) -> Result<Bytes, String> {
-    let rpc_url = app.rpc_url.clone();
-
-    Compat::new(async move {
-        let provider = ProviderBuilder::new().connect_http(
-            rpc_url
-                .parse()
-                .map_err(|e| format!("Invalid RPC URL: {e}"))?,
-        );
-        provider
-            .call(TransactionRequest::default().to(to).input(input.into()))
-            .await
-            .map_err(|e| e.to_string())
-    })
-    .await
 }
