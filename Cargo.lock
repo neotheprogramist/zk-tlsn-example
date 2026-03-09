@@ -5955,6 +5955,7 @@ dependencies = [
  "stwo",
  "stwo-constraint-framework",
  "stwo-polynomial",
+ "thiserror 2.0.18",
  "tlsnotary",
  "tokio",
  "tracing",

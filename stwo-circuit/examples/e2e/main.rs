@@ -8,8 +8,7 @@ use stwo_circuit::{
     WithdrawInputs, build_onchain_verification_input,
     offchain_merkle::OffchainMerkleTree,
     poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
-    prove_withdraw, send_withdraw_with_proof_tx, simulate_withdraw_with_proof_call,
-    verify_withdraw,
+    prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw,
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
@@ -22,7 +21,7 @@ pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
 
 #[derive(Debug, Parser)]
 #[command(name = "test_e2e_server_withdraw")]
-pub(crate) struct AppState {
+pub struct AppState {
     #[arg(long, env = "RPC_URL", default_value = "http://127.0.0.1:8545")]
     pub rpc_url: String,
     #[arg(long, env = "VERIFIER_ADDRESS")]
