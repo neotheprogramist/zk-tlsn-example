@@ -15,7 +15,6 @@ use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 mod chain;
 mod tlsn;
 
-pub(crate) const MERKLE_SIBLING_DEPTH: usize = 31;
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
 
 #[derive(Debug, Parser)]
@@ -182,10 +181,6 @@ pub fn run() {
 
         let secret_nullifier_hash = deposit_outputs.secret_nullifier_hash;
         let deposit_amount_u64 = commitment_amount.0 as u64;
-        tracing::info!(
-            merkle_depth = MERKLE_SIBLING_DEPTH,
-            "Built Merkle siblings from off-chain tree"
-        );
 
         chain::send_approve_tx(&app, U256::from(deposit_amount_u64))
             .await

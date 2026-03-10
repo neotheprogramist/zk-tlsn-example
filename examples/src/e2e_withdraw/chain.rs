@@ -9,7 +9,9 @@ use stwo::core::fields::m31::BaseField;
 use stwo_circuit::offchain_merkle::OffchainMerkleTree;
 
 use crate::common_rpc;
-use super::{ANVIL_TOPUP_BALANCE_HEX, AppState, IERC20, IPrivacyPool, MERKLE_SIBLING_DEPTH};
+use super::{ANVIL_TOPUP_BALANCE_HEX, AppState, IERC20, IPrivacyPool};
+
+const MERKLE_SIBLING_DEPTH: usize = 31;
 
 pub async fn send_approve_tx(app: &AppState, amount: U256) -> Result<(), String> {
     let calldata = IERC20::approveCall {
@@ -45,6 +47,7 @@ async fn send_simple_tx(
         app.owner_private_key.clone(),
         app.withdraw_max_fee_per_gas,
         app.withdraw_max_priority_fee_per_gas,
+        app.withdraw_gas_limit,
         to,
         input,
         label,

@@ -5,8 +5,6 @@ use clap::Parser;
 pub struct AppState {
     #[arg(long, env = "RPC_URL", default_value = "http://127.0.0.1:8545")]
     pub rpc_url: String,
-    #[arg(long, env = "VERIFIER_ADDRESS")]
-    pub verifier_address: Address,
     #[arg(long, env = "PRIVACY_POOL_ADDRESS")]
     pub privacy_pool_address: Address,
     #[arg(long, env = "TOKEN_ADDRESS")]
@@ -19,9 +17,9 @@ pub struct AppState {
         default_value = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
     )]
     pub owner_private_key: String,
-    #[arg(long, env = "DEPOSIT_SECRET", default_value_t = 12345u32)]
+    #[arg(long, env = "DEPOSIT_SECRET", default_value_t = 99999u32)]
     pub deposit_secret: u32,
-    #[arg(long, env = "DEPOSIT_NULLIFIER", default_value_t = 67890u32)]
+    #[arg(long, env = "DEPOSIT_NULLIFIER", default_value_t = 88888u32)]
     pub deposit_nullifier: u32,
     #[arg(long, env = "DEPOSIT_AMOUNT", default_value_t = 100u32)]
     pub deposit_amount: u32,

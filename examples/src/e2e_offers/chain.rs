@@ -20,6 +20,28 @@ sol! {
     interface IPrivacyPool {
         function setVerifier(address verifier) external;
         function deposit(uint256 secretNullifierHash, uint256 amount, address token) external;
+        function createOffer(
+            uint256 root,
+            uint256 nullifier,
+            address token,
+            uint256 amount,
+            uint256 refundCommitmentHash,
+            uint256 secretHash,
+            string calldata currency,
+            uint256 fiatAmount,
+            string calldata revTag,
+            bytes calldata verifyCalldata
+        ) external;
+        function cancelOffer(
+            uint256 root,
+            uint256 nullifier,
+            address token,
+            uint256 amount,
+            uint256 refundCommitmentHash,
+            uint256 secretHash,
+            uint256 cancelHash,
+            bytes calldata verifyCalldata
+        ) external;
         function getNextLeafIndex() external view returns (uint64);
         function getCurrentRoot() external view returns (uint256);
     }
@@ -65,6 +87,7 @@ async fn send_simple_tx(
         app.owner_private_key.clone(),
         app.max_fee_per_gas,
         app.max_priority_fee_per_gas,
+        app.gas_limit,
         to,
         input,
         label,
@@ -165,4 +188,60 @@ pub async fn build_offchain_merkle_tree(app: &AppState) -> Result<OffchainMerkle
     }
 
     Ok(tree)
+}
+
+pub async fn send_create_offer_tx(
+    app: &AppState,
+    root: U256,
+    nullifier: U256,
+    token: Address,
+    amount: U256,
+    refund_commitment_hash: U256,
+    secret_hash: U256,
+    currency: String,
+    fiat_amount: U256,
+    rev_tag: String,
+    verify_calldata: Bytes,
+) -> Result<(), String> {
+    let calldata = IPrivacyPool::createOfferCall {
+        root,
+        nullifier,
+        token,
+        amount,
+        refundCommitmentHash: refund_commitment_hash,
+        secretHash: secret_hash,
+        currency,
+        fiatAmount: fiat_amount,
+        revTag: rev_tag,
+        verifyCalldata: verify_calldata,
+    }
+    .abi_encode();
+    
+    send_simple_tx(app, app.privacy_pool_address, calldata.into(), "createOffer").await
+}
+
+pub async fn send_cancel_offer_tx(
+    app: &AppState,
+    root: U256,
+    nullifier: U256,
+    token: Address,
+    amount: U256,
+    refund_commitment_hash: U256,
+    secret_hash: U256,
+    cancel_hash: U256,
+    verify_calldata: Bytes,
+) -> Result<(), String> {
+    let calldata = IPrivacyPool::cancelOfferCall {
+        root,
+        nullifier,
+        token,
+        amount,
+        refundCommitmentHash: refund_commitment_hash,
+        secretHash: secret_hash,
+        cancelHash: cancel_hash,
+        verifyCalldata: verify_calldata,
+    }
+    .abi_encode();
+    
+    send_simple_tx(app, app.privacy_pool_address, calldata.into(), "cancelOffer").await
 }
