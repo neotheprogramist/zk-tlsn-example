@@ -19,6 +19,7 @@ pub async fn send_simple_tx(
     owner_private_key: String,
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
+    gas_limit: u64,
     to: Address,
     input: Bytes,
     label: &str,
@@ -39,7 +40,8 @@ pub async fn send_simple_tx(
             .to(to)
             .input(input.into())
             .max_fee_per_gas(max_fee_per_gas)
-            .max_priority_fee_per_gas(max_priority_fee_per_gas);
+            .max_priority_fee_per_gas(max_priority_fee_per_gas)
+            .gas_limit(gas_limit);
 
         let pending = provider
             .send_transaction(tx)

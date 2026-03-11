@@ -47,7 +47,7 @@ pub struct OfferSpendInputs {
     pub secret: BaseField,
     pub nullifier: BaseField,
     pub commitment_amount: BaseField,
-    pub withdraw_amount: BaseField,
+    pub offer_amount: BaseField,
     pub refund_secret: BaseField,
     pub refund_nullifier: BaseField,
     pub refund_amount: BaseField,
@@ -213,7 +213,7 @@ pub fn prove_offer_withdraw(
             is_first_id: scheduler_is_first_column_id(log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            amount: inputs.withdraw_amount,
+            amount: inputs.offer_amount,
             refund_commitment_hash: refund_leaf,
             claimed_sum: scheduler_claimed_sum,
         },
@@ -233,7 +233,7 @@ pub fn prove_offer_withdraw(
     Ok(OfferSpendProof {
         merkle_root: inputs.merkle_root,
         nullifier: inputs.nullifier,
-        amount: inputs.withdraw_amount,
+        amount: inputs.offer_amount,
         refund_commitment_hash: refund_leaf,
         token_address: inputs.token_address,
         log_size,
@@ -359,7 +359,7 @@ mod tests {
         let log_size = 8;
         let token_address = BaseField::from_u32_unchecked(12345);
         let commitment_amount = BaseField::from_u32_unchecked(100);
-        let withdraw_amount = BaseField::from_u32_unchecked(70);
+        let offer_amount = BaseField::from_u32_unchecked(70);
         let refund_amount = BaseField::from_u32_unchecked(30);
 
         let secret = BaseField::from_u32_unchecked(1111);
@@ -381,7 +381,7 @@ mod tests {
             secret,
             nullifier,
             commitment_amount,
-            withdraw_amount,
+            offer_amount,
             refund_secret,
             refund_nullifier,
             refund_amount,
@@ -400,7 +400,7 @@ mod tests {
         let log_size = 8;
         let token_address = BaseField::from_u32_unchecked(12345);
         let commitment_amount = BaseField::from_u32_unchecked(100);
-        let withdraw_amount = BaseField::from_u32_unchecked(70);
+        let offer_amount = BaseField::from_u32_unchecked(70);
         let refund_amount = BaseField::from_u32_unchecked(30);
 
         let secret = BaseField::from_u32_unchecked(1111);
@@ -419,7 +419,7 @@ mod tests {
             secret,
             nullifier,
             commitment_amount,
-            withdraw_amount,
+            offer_amount,
             refund_secret,
             refund_nullifier,
             refund_amount,

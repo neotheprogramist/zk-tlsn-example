@@ -32,15 +32,14 @@ sol! {
             string calldata revTag,
             bytes calldata verifyCalldata
         ) external;
-        function cancelOffer(
-            uint256 root,
-            uint256 nullifier,
-            address token,
-            uint256 amount,
-            uint256 refundCommitmentHash,
-            uint256 secretHash,
-            uint256 cancelHash,
-            bytes calldata verifyCalldata
+        function cancelIntent(
+            uint256 offerSecret,
+            uint256 cancelHash
+        ) external;
+        function cancelClaim(
+            uint256 offerHash,
+            uint256 cancelSecret,
+            uint256 secretNullifierHash
         ) external;
         function getNextLeafIndex() external view returns (uint64);
         function getCurrentRoot() external view returns (uint256);
@@ -220,28 +219,32 @@ pub async fn send_create_offer_tx(
     send_simple_tx(app, app.privacy_pool_address, calldata.into(), "createOffer").await
 }
 
-pub async fn send_cancel_offer_tx(
+pub async fn send_cancel_intent_tx(
     app: &AppState,
-    root: U256,
-    nullifier: U256,
-    token: Address,
-    amount: U256,
-    refund_commitment_hash: U256,
-    secret_hash: U256,
+    offer_secret: U256,
     cancel_hash: U256,
-    verify_calldata: Bytes,
 ) -> Result<(), String> {
-    let calldata = IPrivacyPool::cancelOfferCall {
-        root,
-        nullifier,
-        token,
-        amount,
-        refundCommitmentHash: refund_commitment_hash,
-        secretHash: secret_hash,
+    let calldata = IPrivacyPool::cancelIntentCall {
+        offerSecret: offer_secret,
         cancelHash: cancel_hash,
-        verifyCalldata: verify_calldata,
     }
     .abi_encode();
     
-    send_simple_tx(app, app.privacy_pool_address, calldata.into(), "cancelOffer").await
+    send_simple_tx(app, app.privacy_pool_address, calldata.into(), "cancelIntent").await
+}
+
+pub async fn send_cancel_claim_tx(
+    app: &AppState,
+    offer_hash: U256,
+    cancel_secret: U256,
+    secret_nullifier_hash: U256,
+) -> Result<(), String> {
+    let calldata = IPrivacyPool::cancelClaimCall {
+        offerHash: offer_hash,
+        cancelSecret: cancel_secret,
+        secretNullifierHash: secret_nullifier_hash,
+    }
+    .abi_encode();
+    
+    send_simple_tx(app, app.privacy_pool_address, calldata.into(), "cancelClaim").await
 }

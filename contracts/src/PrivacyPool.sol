@@ -63,6 +63,8 @@ contract PrivacyPool {
         string revTag
     );
     event OfferCancelled(uint256 indexed secretHash, uint256 cancelHash);
+    event OfferCancelIntent(uint256 indexed secretHash);
+    event OfferCancelClaim(uint256 indexed cancelHash);
     event OfferClaimed(uint256 indexed secretHash, uint256 refundAmount);
 
     // Errors
@@ -77,6 +79,7 @@ contract PrivacyPool {
     error VerifierCallFailed();
     error InvalidVerifierResponse();
     error ProofVerificationFailed();
+    error InvalidCancelSecret();
 
     constructor(
         address _owner,
@@ -252,124 +255,79 @@ contract PrivacyPool {
         );
     }
 
-    /// @notice Cancel an offer with proof verification
-    function cancelOffer(
-        uint256 root,
-        uint256 nullifier,
-        address token,
-        uint256 amount,
-        uint256 refundCommitmentHash,
-        uint256 secretHash,
-        uint256 cancelHash,
-        bytes calldata verifyCalldata
+    /// @notice Cancel intent - reveals offer secret to prove ownership
+    /// @dev Step 1: Mark offer as cancelled by revealing offerSecret
+    function cancelIntent(
+        uint256 offerSecret,
+        uint256 cancelHash
     ) external {
-        // Check if offer exists and is active
-        if (offers[secretHash].timestamp == 0) {
+        uint256 offerSecretHash = _poseidonHash(offerSecret, offerSecret);
+        Offer storage offer = offers[offerSecretHash];
+        
+        if (offer.timestamp == 0) {
             revert OfferNotFound();
         }
-        if (offers[secretHash].status != OfferStatus.CREATED) {
+        if (offer.status != OfferStatus.CREATED) {
             revert OfferNotActive();
         }
 
-        // Validate that token matches offer
-        require(token == offers[secretHash].tokenAddress, "Token mismatch");
-        require(amount == offers[secretHash].cryptoAmount, "Amount mismatch");
-
-        // Check if nullifier already used
-        if (nullifierHashes[nullifier]) {
-            revert NullifierAlreadyUsed();
-        }
-
-        // Check if merkle root is valid
-        if (!tree.isValidRoot(root)) {
-            revert InvalidRoot();
-        }
-
-        if (stwoVerifier == address(0)) revert VerifierNotSet();
-
-        // Verify proof
-        uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
-        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
-        emit VerificationGasUsed(verificationGasUsed, isValid);
-        if (!isValid) revert ProofVerificationFailed();
-
-        // Mark nullifier as used
-        nullifierHashes[nullifier] = true;
-
-        // Add refund commitment to tree
-        tree.addLeaf(refundCommitmentHash);
-
         // Mark offer as cancelled
-        offers[secretHash].status = OfferStatus.CANCELLED;
-        offers[secretHash].cancelHash = cancelHash;
+        offer.status = OfferStatus.CANCELLED;
+        offer.cancelHash = cancelHash;
 
         // Remove from active offers
         for (uint256 i = 0; i < activeOffers.length; i++) {
-            if (activeOffers[i] == secretHash) {
+            if (activeOffers[i] == offerSecretHash) {
                 activeOffers[i] = activeOffers[activeOffers.length - 1];
                 activeOffers.pop();
                 break;
             }
         }
 
-        emit OfferCancelled(secretHash, cancelHash);
+        emit OfferCancelIntent(offerSecretHash);
     }
 
     /// @notice Claim refund from a cancelled offer
+    /// @dev Step 2: Create commitment for offer amount by revealing cancelSecret
     function cancelClaim(
-        uint256 root,
-        uint256 nullifier,
-        address token,
-        uint256 amount,
-        uint256 refundCommitmentHash,
-        uint256 secretHash,
-        bytes calldata verifyCalldata
+        uint256 offerHash,
+        uint256 cancelSecret,
+        uint256 secretNullifierHash
     ) external {
-        // Check if offer exists and is cancelled
-        if (offers[secretHash].timestamp == 0) {
+        uint256 offerCancelHash = _poseidonHash(cancelSecret, cancelSecret);
+        Offer memory offer = offers[offerHash];
+
+        if (offer.timestamp == 0) {
             revert OfferNotFound();
         }
-        if (offers[secretHash].status != OfferStatus.CANCELLED) {
+        if (offer.status != OfferStatus.CANCELLED) {
             revert OfferNotActive();
         }
-
-        // Validate that token matches offer
-        require(token == offers[secretHash].tokenAddress, "Token mismatch");
-        require(amount <= offers[secretHash].cryptoAmount, "Amount exceeds offer");
-
-        // Check if nullifier already used
-        if (nullifierHashes[nullifier]) {
-            revert NullifierAlreadyUsed();
+        if (offer.cancelHash != offerCancelHash) {
+            revert InvalidCancelSecret();
         }
 
-        // Check if merkle root is valid
-        if (!tree.isValidRoot(root)) {
-            revert InvalidRoot();
-        }
+        emit OfferCancelClaim(offerCancelHash);
 
-        if (stwoVerifier == address(0)) revert VerifierNotSet();
+        uint256 cryptoAmountToRefund = offer.cryptoAmount;
 
-        // Verify proof
-        uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
-        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
-        emit VerificationGasUsed(verificationGasUsed, isValid);
-        if (!isValid) revert ProofVerificationFailed();
+        // Create commitment for offer amount
+        uint256 commitment = computeCommitment(
+            secretNullifierHash,
+            cryptoAmountToRefund,
+            offer.tokenAddress
+        );
 
-        // Mark nullifier as used
-        nullifierHashes[nullifier] = true;
-
-        // Add refund commitment to tree
-        tree.addLeaf(refundCommitmentHash);
-
-        emit OfferClaimed(secretHash, amount);
+        // Add to merkle tree
+        tree.addLeaf(commitment);
+        
+        emit Deposit(
+            commitment,
+            cryptoAmountToRefund,
+            offer.tokenAddress,
+            tree.freeLeafIndex - 1,
+            tree.currentRoot
+        );
     }
 
     /// @notice Get current merkle root

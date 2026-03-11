@@ -17,6 +17,7 @@ use crate::{
     blake3::{
         AllElements, BlakeComponentsForIntegration, BlakeStatement0, preprocessed_columns::XorTable,
     },
+    offer_circuit::OfferSpendProof,
     withdraw_circuit::WithdrawProof,
     privacy_pool::{
         merkle_membership::{
@@ -374,4 +375,212 @@ pub fn build_onchain_verification_input(
         digest: FixedBytes::from(digest.0),
         n_draws: proof_data.transcript_n_draws,
     })
+}
+
+/// Build onchain verification input for offer proof (simpler - no BLAKE3 commitment)
+pub fn build_offer_onchain_verification_input(
+    proof_data: &OfferSpendProof<stwo::core::vcs::keccak_merkle::KeccakMerkleHasher>,
+) -> Result<OnchainVerificationInput, String> {
+    let chain_log_sizes = ChainStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let merkle_log_sizes = MerkleStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let scheduler_log_sizes = SchedulerStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+
+    let mut full_log_sizes = chain_log_sizes.clone();
+    full_log_sizes[0].extend(merkle_log_sizes[0].iter().copied());
+    full_log_sizes[0].extend(scheduler_log_sizes[0].iter().copied());
+    full_log_sizes[1].extend(merkle_log_sizes[1].iter().copied());
+    full_log_sizes[1].extend(scheduler_log_sizes[1].iter().copied());
+    full_log_sizes[2].extend(merkle_log_sizes[2].iter().copied());
+    full_log_sizes[2].extend(scheduler_log_sizes[2].iter().copied());
+
+    let n_preprocessed_columns = full_log_sizes[0].len();
+
+    let mut channel = KeccakChannel::default();
+    let mut commitment_scheme =
+        CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
+
+    commitment_scheme.commit(
+        proof_data.proof.commitments[0],
+        &full_log_sizes[0],
+        &mut channel,
+    );
+    commitment_scheme.commit(
+        proof_data.proof.commitments[1],
+        &full_log_sizes[1],
+        &mut channel,
+    );
+
+    let leaf_relation = LeafRelation::draw(&mut channel);
+    let root_relation = RootRelation::draw(&mut channel);
+
+    commitment_scheme.commit(
+        proof_data.proof.commitments[2],
+        &full_log_sizes[2],
+        &mut channel,
+    );
+
+    let mut tree_span_provider = TraceLocationAllocator::default();
+
+    let deposit_component = PoseidonChainComponent::new(
+        &mut tree_span_provider,
+        PoseidonChainEval {
+            log_n_rows: proof_data.log_size,
+            is_active_id: is_active_column_id(proof_data.log_size, "deposit"),
+            is_step_id: is_step_column_id(proof_data.log_size, "deposit"),
+            is_last_id: is_last_column_id(proof_data.log_size, "deposit"),
+            leaf_relation: leaf_relation.clone(),
+            leaf_multiplicity: 2,
+            claimed_sum: proof_data.deposit_claimed_sum,
+        },
+        proof_data.deposit_claimed_sum,
+    );
+
+    let merkle_component = MerkleMembershipComponent::new(
+        &mut tree_span_provider,
+        MerkleMembershipEval {
+            log_n_rows: proof_data.log_size,
+            depth: proof_data.merkle_depth,
+            is_active_id: merkle_is_active_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_step_id: merkle_is_step_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_first_id: merkle_is_first_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_last_id: merkle_is_last_column_id(proof_data.log_size, proof_data.merkle_depth),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            claimed_sum: proof_data.merkle_claimed_sum,
+        },
+        proof_data.merkle_claimed_sum,
+    );
+
+    let scheduler_component = PrivacyPoolSchedulerComponent::new(
+        &mut tree_span_provider,
+        PrivacyPoolSchedulerEval {
+            log_n_rows: proof_data.log_size,
+            is_first_id: scheduler_is_first_column_id(proof_data.log_size),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            amount: proof_data.amount,
+            refund_commitment_hash: proof_data.refund_commitment_hash,
+            claimed_sum: proof_data.scheduler_claimed_sum,
+        },
+        proof_data.scheduler_claimed_sum,
+    );
+
+    let ordered_ids = ordered_offer_preprocessed_ids(proof_data.log_size, proof_data.merkle_depth);
+    let preprocessed_index: HashMap<String, usize> = ordered_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect();
+
+    let mut component_params = Vec::new();
+
+    let deposit_info = component_info(&deposit_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: deposit_component.log_size(),
+        claimedSum: qm31(proof_data.deposit_claimed_sum),
+        info: deposit_info,
+    });
+
+    let merkle_info = component_info(&merkle_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: merkle_component.log_size(),
+        claimedSum: qm31(proof_data.merkle_claimed_sum),
+        info: merkle_info,
+    });
+
+    let scheduler_info = component_info(&scheduler_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: scheduler_component.log_size(),
+        claimedSum: qm31(proof_data.scheduler_claimed_sum),
+        info: scheduler_info,
+    });
+
+    let all_component_provers = vec![
+        &deposit_component as &dyn Component,
+        &merkle_component as &dyn Component,
+        &scheduler_component as &dyn Component,
+    ];
+
+    let components = Components {
+        components: all_component_provers,
+        n_preprocessed_columns,
+    };
+
+    let verification_params = VerificationParams {
+        componentParams: component_params,
+        nPreprocessedColumns: U256::from(n_preprocessed_columns),
+        componentsCompositionLogDegreeBound: components.composition_log_degree_bound(),
+    };
+
+    let tree_roots: Vec<FixedBytes<32>> = proof_data
+        .proof
+        .commitments
+        .iter()
+        .take(full_log_sizes.len())
+        .map(|root| FixedBytes::from(root.0))
+        .collect();
+    
+    let tree_column_log_sizes: Vec<Vec<u32>> = full_log_sizes
+        .iter()
+        .map(|tree_sizes| {
+            tree_sizes
+                .iter()
+                .map(|&log_size| log_size + proof_data.proof.config.fri_config.log_blowup_factor)
+                .collect()
+        })
+        .collect();
+
+    let digest = KeccakHash(proof_data.transcript_digest);
+    let composition_commitment = *proof_data
+        .proof
+        .commitments
+        .last()
+        .ok_or_else(|| "Missing composition commitment".to_string())?;
+    let extracted_oods = extract_composition_oods_eval(&proof_data.proof)
+        .ok_or_else(|| "Unexpected sampled_values structure in proof".to_string())?;
+    let mut oods_channel = KeccakChannel::default();
+    oods_channel.update_digest(digest);
+    for _ in 0..proof_data.transcript_n_draws {
+        let _ = oods_channel.draw_u32s();
+    }
+    let _random_coeff = oods_channel.draw_secure_felt();
+    KeccakMerkleChannel::mix_root(&mut oods_channel, composition_commitment);
+    let oods_point = CirclePoint::<SecureField>::get_random_point(&mut oods_channel);
+    let expected_oods = proof_data.composition_polynomial.eval_at_point(oods_point);
+    if extracted_oods != expected_oods {
+        return Err(format!(
+            "Local OODS mismatch before contract call: extracted={extracted_oods:?}, expected={expected_oods:?}"
+        ));
+    }
+
+    Ok(OnchainVerificationInput {
+        proof: convert_to_solidity_proof(&proof_data.proof, &proof_data.composition_polynomial),
+        params: verification_params,
+        tree_roots,
+        tree_column_log_sizes,
+        digest: FixedBytes::from(digest.0),
+        n_draws: proof_data.transcript_n_draws,
+    })
+}
+
+fn ordered_offer_preprocessed_ids(log_size: u32, merkle_depth: usize) -> Vec<String> {
+    vec![
+        is_active_column_id(log_size, "deposit").id,
+        is_step_column_id(log_size, "deposit").id,
+        is_last_column_id(log_size, "deposit").id,
+        merkle_is_active_column_id(log_size, merkle_depth).id,
+        merkle_is_step_column_id(log_size, merkle_depth).id,
+        merkle_is_first_column_id(log_size, merkle_depth).id,
+        merkle_is_last_column_id(log_size, merkle_depth).id,
+        scheduler_is_first_column_id(log_size).id,
+    ]
 }

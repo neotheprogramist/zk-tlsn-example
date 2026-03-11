@@ -18,8 +18,9 @@ pub use privacy_pool::merkle_membership;
 pub use privacy_pool::{
     onchain,
     onchain::{
-        build_onchain_verification_input, build_verify_calldata, send_withdraw_with_proof_tx,
-        simulate_withdraw_with_proof_call, verify_onchain_call,
+        build_offer_onchain_verification_input, build_onchain_verification_input,
+        build_verify_calldata, send_withdraw_with_proof_tx, simulate_withdraw_with_proof_call,
+        verify_onchain_call,
     },
     poseidon_chain, poseidon_hash, relations, scheduler,
 };
