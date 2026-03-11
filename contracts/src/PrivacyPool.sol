@@ -10,8 +10,30 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
+enum OfferStatus {
+    CREATED,
+    CANCELLED
+}
+
+struct Offer {
+    uint256 secretHash;
+    string offerType;
+    string currency;
+    uint256 cryptoAmount;
+    uint256 fiatAmount; // 0 for dynamic offers
+    address tokenAddress;
+    OfferStatus status;
+    string revTag;
+    uint256 timestamp;
+    uint256 cancelHash;
+}
+
+
 contract PrivacyPool {
     using MerkleTreeLib for MerkleTreeLib.Tree;
+
+    mapping(uint256 => Offer) public offers; // secretHash => Offer
+    uint256[] public activeOffers; // Array of active offer secretHashes for enumeration
 
     // Storage
     MerkleTreeLib.Tree private tree;
@@ -28,42 +50,44 @@ contract PrivacyPool {
         uint256 newRoot
     );
     event Withdraw(uint256 indexed nullifier, address indexed recipient, address token, uint256 amount);
+    event VerificationGasUsed(uint256 gasUsed, bool isValid);
     event VerifierUpdated(address indexed verifier);
     event RootRegisteredForTesting(uint256 indexed root);
+    event OfferCreated(
+        uint256 indexed secretHash,
+        string indexed offerType,
+        uint256 cryptoAmount,
+        uint256 fiatAmount,
+        string currency,
+        address tokenAddress,
+        string revTag
+    );
+    event OfferCancelled(uint256 indexed secretHash, uint256 cancelHash);
+    event OfferCancelIntent(uint256 indexed secretHash);
+    event OfferCancelClaim(uint256 indexed cancelHash);
+    event OfferClaimed(uint256 indexed secretHash, uint256 refundAmount);
 
     // Errors
     error TransferFailed();
     error NullifierAlreadyUsed();
     error InvalidRoot();
-    error NotOwner();
+    error OfferNotFound();
+    error OfferAlreadyExists();
+    error OfferNotActive();
     error VerifierNotSet();
     error InvalidVerifier();
     error VerifierCallFailed();
     error InvalidVerifierResponse();
     error ProofVerificationFailed();
+    error InvalidCancelSecret();
 
-    constructor(address _owner) {
+    constructor(
+        address _owner,
+        address _stwoVerifier
+    ) {
         owner = _owner;
+        stwoVerifier = _stwoVerifier;
         tree.initialize();
-    }
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
-    /// @notice Set STWO verifier contract address
-    function setVerifier(address verifier) external onlyOwner {
-        if (verifier == address(0)) revert InvalidVerifier();
-        stwoVerifier = verifier;
-        emit VerifierUpdated(verifier);
-    }
-
-    /// @notice Testing helper: registers a root as valid in pool state.
-    /// @dev Keep for e2e/dev only; remove in production deployment.
-    function registerRootForTesting(uint256 root) external onlyOwner {
-        tree.registerKnownRoot(root);
-        emit RootRegisteredForTesting(root);
     }
 
     /// @notice Hash two values using Poseidon2
@@ -128,10 +152,13 @@ contract PrivacyPool {
 
         // Verify STWO proof atomically in the same transaction.
         // STWOVerifier.verify() is non-view and updates internal state, so staticcall reverts.
+        uint256 gasBeforeVerification = gasleft();
         (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
         if (!callSuccess) revert VerifierCallFailed();
         if (returndata.length != 32) revert InvalidVerifierResponse();
         bool isValid = abi.decode(returndata, (bool));
+        emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
         // Mark nullifier as used
@@ -148,6 +175,159 @@ contract PrivacyPool {
         if (!success) revert TransferFailed();
 
         emit Withdraw(nullifier, recipient, token, amount);
+    }
+
+    // Paymoney offer Functions
+    function createOffer(
+        uint256 root,
+        uint256 nullifier,
+        address token,
+        uint256 amount,
+        uint256 refundCommitmentHash,
+        uint256 secretHash,
+        string calldata currency,
+        uint256 fiatAmount,
+        string calldata revTag,
+        bytes calldata verifyCalldata
+    ) external {
+        // Check if nullifier already used
+        if (nullifierHashes[nullifier]) {
+            revert NullifierAlreadyUsed();
+        }
+
+        // Check if merkle root is valid
+        if (!tree.isValidRoot(root)) {
+            revert InvalidRoot();
+        }
+
+        if (stwoVerifier == address(0)) revert VerifierNotSet();
+
+        // Verify proof
+        uint256 gasBeforeVerification = gasleft();
+        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
+        if (!callSuccess) revert VerifierCallFailed();
+        if (returndata.length != 32) revert InvalidVerifierResponse();
+        bool isValid = abi.decode(returndata, (bool));
+        emit VerificationGasUsed(verificationGasUsed, isValid);
+        if (!isValid) revert ProofVerificationFailed();
+
+        // Check if offer already exists
+        if (offers[secretHash].timestamp != 0) {
+            revert OfferAlreadyExists();
+        }
+
+        // Mark nullifier as used
+        nullifierHashes[nullifier] = true;
+
+        // Add refund commitment to tree
+        tree.addLeaf(refundCommitmentHash);
+
+        // Determine offer type based on fiatAmount
+        string memory offerType = fiatAmount > 0 ? "static" : "dynamic";
+
+        // Store offer
+        offers[secretHash] = Offer({
+            secretHash: secretHash,
+            offerType: offerType,
+            currency: currency,
+            cryptoAmount: amount,
+            fiatAmount: fiatAmount,
+            tokenAddress: token,
+            status: OfferStatus.CREATED,
+            revTag: revTag,
+            timestamp: block.timestamp,
+            cancelHash: 0
+        });
+
+        // Add to active offers array
+        activeOffers.push(secretHash);
+
+        // Emit event
+        emit OfferCreated(
+            secretHash,
+            offerType,
+            amount,
+            fiatAmount,
+            currency,
+            token,
+            revTag
+        );
+    }
+
+    /// @notice Cancel intent - reveals offer secret to prove ownership
+    /// @dev Step 1: Mark offer as cancelled by revealing offerSecret
+    function cancelIntent(
+        uint256 offerSecret,
+        uint256 cancelHash
+    ) external {
+        uint256 offerSecretHash = _poseidonHash(offerSecret, offerSecret);
+        Offer storage offer = offers[offerSecretHash];
+        
+        if (offer.timestamp == 0) {
+            revert OfferNotFound();
+        }
+        if (offer.status != OfferStatus.CREATED) {
+            revert OfferNotActive();
+        }
+
+        // Mark offer as cancelled
+        offer.status = OfferStatus.CANCELLED;
+        offer.cancelHash = cancelHash;
+
+        // Remove from active offers
+        for (uint256 i = 0; i < activeOffers.length; i++) {
+            if (activeOffers[i] == offerSecretHash) {
+                activeOffers[i] = activeOffers[activeOffers.length - 1];
+                activeOffers.pop();
+                break;
+            }
+        }
+
+        emit OfferCancelIntent(offerSecretHash);
+    }
+
+    /// @notice Claim refund from a cancelled offer
+    /// @dev Step 2: Create commitment for offer amount by revealing cancelSecret
+    function cancelClaim(
+        uint256 offerHash,
+        uint256 cancelSecret,
+        uint256 secretNullifierHash
+    ) external {
+        uint256 offerCancelHash = _poseidonHash(cancelSecret, cancelSecret);
+        Offer memory offer = offers[offerHash];
+
+        if (offer.timestamp == 0) {
+            revert OfferNotFound();
+        }
+        if (offer.status != OfferStatus.CANCELLED) {
+            revert OfferNotActive();
+        }
+        if (offer.cancelHash != offerCancelHash) {
+            revert InvalidCancelSecret();
+        }
+
+        emit OfferCancelClaim(offerCancelHash);
+
+        uint256 cryptoAmountToRefund = offer.cryptoAmount;
+
+        // Create commitment for offer amount
+        uint256 commitment = computeCommitment(
+            secretNullifierHash,
+            cryptoAmountToRefund,
+            offer.tokenAddress
+        );
+
+        // Add to merkle tree
+        tree.addLeaf(commitment);
+        
+        emit Deposit(
+            commitment,
+            cryptoAmountToRefund,
+            offer.tokenAddress,
+            tree.freeLeafIndex - 1,
+            tree.currentRoot
+        );
     }
 
     /// @notice Get current merkle root

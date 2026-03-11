@@ -1,0 +1,30 @@
+[package]
+name = "examples"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alloy.workspace = true
+async-compat.workspace = true
+axum.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+quinn.workspace = true
+shared.workspace = true
+smol.workspace = true
+stwo.workspace = true
+stwo-circuit = { path = "../stwo-circuit" }
+tlsnotary.workspace = true
+tokio = { workspace = true, features = ["io-util", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "e2e-withdraw"
+path = "src/bin/e2e_withdraw.rs"
+
+[[bin]]
+name = "e2e-offers"
+path = "src/bin/e2e_offers.rs"

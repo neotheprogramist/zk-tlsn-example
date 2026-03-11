@@ -8,21 +8,18 @@ use stwo_circuit::{
     WithdrawInputs, build_onchain_verification_input,
     offchain_merkle::OffchainMerkleTree,
     poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
-    prove_withdraw, send_withdraw_with_proof_tx, simulate_withdraw_with_proof_call,
-    verify_withdraw,
+    prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw,
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
 mod chain;
 mod tlsn;
 
-pub(crate) const MERKLE_SIBLING_DEPTH: usize = 31;
-pub(crate) const M31_MODULUS: u32 = 2_147_483_647;
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
 
 #[derive(Debug, Parser)]
 #[command(name = "test_e2e_server_withdraw")]
-pub(crate) struct AppState {
+pub struct AppState {
     #[arg(long, env = "RPC_URL", default_value = "http://127.0.0.1:8545")]
     pub rpc_url: String,
     #[arg(long, env = "VERIFIER_ADDRESS")]
@@ -101,7 +98,7 @@ sol! {
     }
 }
 
-fn main() {
+pub fn run() {
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -143,9 +140,6 @@ fn main() {
         tracing::info!("Step 2: Preparing pool state and performing real deposit");
 
         chain::ensure_owner_has_eth_for_gas(&app).await;
-        chain::send_set_verifier_tx(&app)
-            .await
-            .expect("Failed to send setVerifier tx");
 
         let mut offchain_tree: OffchainMerkleTree = chain::build_offchain_merkle_tree(&app).await;
         let merkle_index = u32::try_from(offchain_tree.leaf_count())
@@ -187,10 +181,6 @@ fn main() {
 
         let secret_nullifier_hash = deposit_outputs.secret_nullifier_hash;
         let deposit_amount_u64 = commitment_amount.0 as u64;
-        tracing::info!(
-            merkle_depth = MERKLE_SIBLING_DEPTH,
-            "Built Merkle siblings from off-chain tree"
-        );
 
         chain::send_approve_tx(&app, U256::from(deposit_amount_u64))
             .await
@@ -248,24 +238,12 @@ fn main() {
             build_onchain_verification_input(&proof).expect("Failed to build onchain input");
 
         tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
-        simulate_withdraw_with_proof_call(
-            &app.rpc_url,
-            app.privacy_pool_address,
-            U256::from(proof.merkle_root.0),
-            U256::from(proof.nullifier.0),
-            app.withdraw_token,
-            U256::from(proof.amount.0),
-            app.withdraw_recipient,
-            U256::from(proof.refund_commitment_hash.0),
-            &verify_input,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("Preflight withdraw simulation failed: {e}"));
 
-        send_withdraw_with_proof_tx(
+        let tx_hash = send_withdraw_with_proof_tx(
             &app.rpc_url,
             &app.owner_private_key,
             app.privacy_pool_address,
+            app.withdraw_gas_limit,
             U256::from(proof.merkle_root.0),
             U256::from(proof.nullifier.0),
             app.withdraw_token,
@@ -276,6 +254,7 @@ fn main() {
         )
         .await
         .expect("Failed to send withdraw transaction");
+        tracing::info!(%tx_hash, "Withdraw tx sent");
 
         tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
     });
