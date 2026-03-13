@@ -30,12 +30,55 @@ impl Proof {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoirProverInputs {
+    pub balance_committed_hash: [u8; 32],
+    pub balance_committed_part: String,
+    pub balance_blinder: [u8; 16],
+}
+
+impl NoirProverInputs {
+    pub fn to_prover_toml(&self) -> String {
+        format!(
+            "balance_blinder = {}\nbalance_committed_hash = {}\nbalance_committed_part = \"{}\"\n",
+            format_decimal_byte_array(&self.balance_blinder),
+            format_decimal_byte_array(&self.balance_committed_hash),
+            escape_toml_string(&self.balance_committed_part),
+        )
+    }
+
+    fn witness_values(&self) -> Vec<String> {
+        self.balance_committed_hash
+            .iter()
+            .chain(self.balance_committed_part.as_bytes().iter())
+            .chain(self.balance_blinder.iter())
+            .map(|byte| byte.to_string())
+            .collect()
+    }
+}
+
 pub fn generate_proof(
     transcript_commitments: &[TranscriptCommitment],
     transcript_secrets: &[TranscriptSecret],
     received_data: &[u8],
     padding_config: PaddingConfig,
 ) -> Result<Proof> {
+    let noir_inputs = derive_noir_prover_inputs(
+        transcript_commitments,
+        transcript_secrets,
+        received_data,
+        padding_config,
+    )?;
+
+    generate_zk_proof(&noir_inputs)
+}
+
+pub fn derive_noir_prover_inputs(
+    transcript_commitments: &[TranscriptCommitment],
+    transcript_secrets: &[TranscriptSecret],
+    received_data: &[u8],
+    padding_config: PaddingConfig,
+) -> Result<NoirProverInputs> {
     let received_commitment = extract_received_commitment(transcript_commitments)?;
     let received_secret = extract_received_secret(transcript_secrets)?;
     let proof_input = prepare_proof_input(
@@ -45,7 +88,7 @@ pub fn generate_proof(
         padding_config,
     )?;
 
-    generate_zk_proof(&proof_input)
+    build_noir_prover_inputs(&proof_input)
 }
 
 fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<PlaintextHash> {
@@ -141,12 +184,9 @@ pub(crate) fn load_circuit_bytecode() -> Result<String> {
         .map(String::from)
 }
 
-fn generate_zk_proof(input: &ProofInput) -> Result<Proof> {
+fn generate_zk_proof(input: &NoirProverInputs) -> Result<Proof> {
     let bytecode = load_circuit_bytecode()?;
-    let inputs: Vec<String> = [&input.committed_hash, &input.committed_data, &input.blinder]
-        .iter()
-        .flat_map(|v| v.iter().map(|b| b.to_string()))
-        .collect();
+    let inputs = input.witness_values();
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
 
     let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
@@ -154,4 +194,80 @@ fn generate_zk_proof(input: &ProofInput) -> Result<Proof> {
     let proof =
         prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
     Ok(Proof::new(vk, proof))
+}
+
+fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
+    let balance_committed_hash =
+        to_fixed_array::<32>(&input.committed_hash, "balance_committed_hash")?;
+    let balance_blinder = to_fixed_array::<16>(&input.blinder, "balance_blinder")?;
+    let balance_committed_part =
+        String::from_utf8(input.committed_data.clone()).map_err(|error| {
+            ZkTlsnError::InvalidInput(format!(
+                "balance committed part must be valid UTF-8: {error}"
+            ))
+        })?;
+
+    Ok(NoirProverInputs {
+        balance_committed_hash,
+        balance_committed_part,
+        balance_blinder,
+    })
+}
+
+fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8; N]> {
+    bytes.try_into().map_err(|_| {
+        ZkTlsnError::InvalidInput(format!(
+            "{field_name} must be {N} bytes, got {}",
+            bytes.len()
+        ))
+    })
+}
+
+fn format_decimal_byte_array(bytes: &[u8]) -> String {
+    let body = bytes
+        .iter()
+        .map(|byte| format!("\"{byte}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{body}]")
+}
+
+fn escape_toml_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0C}' => escaped.push_str("\\f"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04X}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+
+    escaped
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::NoirProverInputs;
+
+    #[test]
+    fn test_noir_prover_inputs_render_prover_toml() {
+        let inputs = NoirProverInputs {
+            balance_committed_hash: [7; 32],
+            balance_committed_part: "100}        ".to_string(),
+            balance_blinder: [9; 16],
+        };
+
+        let toml = inputs.to_prover_toml();
+
+        assert!(toml.contains("balance_blinder = [\"9\", \"9\""));
+        assert!(toml.contains("balance_committed_hash = [\"7\", \"7\""));
+        assert!(toml.contains("balance_committed_part = \"100}        \""));
+    }
 }

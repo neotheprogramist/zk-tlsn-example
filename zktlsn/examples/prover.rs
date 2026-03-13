@@ -1,4 +1,9 @@
-use std::{io::Error as IoError, net::SocketAddr, path::Path};
+use std::{
+    fs,
+    io::Error as IoError,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use async_compat::Compat;
 use futures::AsyncWriteExt;
@@ -18,7 +23,7 @@ use tlsnotary::{
 };
 use tracing::{error, info, instrument};
 use verifier::{ProofMessage, VerificationOutcome};
-use zktlsn::{PaddingConfig, generate_proof};
+use zktlsn::{PaddingConfig, derive_noir_prover_inputs, generate_proof};
 
 /// Maximum sent data size (4 KB)
 const MAX_SENT_DATA: usize = 1 << 12;
@@ -224,6 +229,25 @@ where
         "TLSNotary proving complete"
     );
 
+    let noir_inputs = derive_noir_prover_inputs(
+        &prover_output.transcript_commitments,
+        &prover_output.transcript_secrets,
+        &received_transcript,
+        PaddingConfig::new(12),
+    )?;
+    let prover_toml = noir_inputs.to_prover_toml();
+    let prover_toml_path = circuit_prover_toml_path();
+    fs::write(&prover_toml_path, &prover_toml)?;
+    info!(
+        path = %prover_toml_path.display(),
+        "Wrote Noir inputs for `nargo execute`"
+    );
+    println!(
+        "Generated {} for `cd circuit && nargo execute`:\n{}",
+        prover_toml_path.display(),
+        prover_toml
+    );
+
     let proof = generate_proof(
         &prover_output.transcript_commitments,
         &prover_output.transcript_secrets,
@@ -319,4 +343,10 @@ fn render_full_transcript_view(bytes: &[u8]) -> String {
     }
 
     out
+}
+
+fn circuit_prover_toml_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../circuit/Prover.toml")
+        .to_path_buf()
 }

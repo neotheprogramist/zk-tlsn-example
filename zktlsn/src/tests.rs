@@ -309,14 +309,72 @@ fn verify_username_field(username_field: &parser::redacted::Body, received_data:
 
 #[cfg(test)]
 mod integration {
+    use std::sync::OnceLock;
+
     use futures::join;
     use noir::blackbox_solver::blake3;
     use server::{app::get_app, handle_connection};
     use shared::create_test_tls_config;
-    use tlsnotary::{Prover, Verifier};
+    use tlsnotary::{
+        Direction, HashAlgId, Prover, ProverOutput, TranscriptCommitment, TranscriptSecret,
+        Verifier, verifier::VerifierOutput,
+    };
 
     use super::*;
-    use crate::generate_proof;
+    use crate::{ZkTlsnError, derive_noir_prover_inputs, generate_proof};
+
+    fn setup_srs() {
+        static SRS: OnceLock<()> = OnceLock::new();
+
+        SRS.get_or_init(|| {
+            shared::init_test_logging();
+            crate::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+        });
+    }
+
+    fn run_end_to_end_flow() -> (ProverOutput, VerifierOutput) {
+        setup_srs();
+
+        smol::block_on(async {
+            let test_tls_config = create_test_tls_config().unwrap();
+            let sockets = create_test_sockets();
+
+            let (tls_client_config, tls_commit_config) =
+                create_prover_config(test_tls_config.cert_bytes.clone());
+            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
+
+            let app = get_app(create_test_balances());
+            let server_task =
+                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
+
+            let prover = Prover::builder()
+                .tls_client_config(tls_client_config)
+                .tls_commit_config(tls_commit_config)
+                .request(create_test_request())
+                .request_reveal_config(create_request_reveal_config())
+                .response_reveal_config(create_response_reveal_config())
+                .build()
+                .unwrap();
+
+            let verifier = Verifier::builder()
+                .verifier_config(verifier_config)
+                .build()
+                .unwrap();
+
+            let prover_task =
+                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
+            let verifier_task = verifier.verify(sockets.verifier_socket);
+
+            let (server_result, prover_result, verifier_result) =
+                join!(server_task, prover_task, verifier_task);
+
+            server_result.expect("Server should complete successfully");
+            let prover_output = prover_result.expect("Prover should complete successfully");
+            let verifier_output = verifier_result.expect("Verifier should complete successfully");
+
+            (prover_output, verifier_output)
+        })
+    }
 
     #[test]
     fn test_blake3() {
@@ -329,79 +387,126 @@ mod integration {
 
     #[test]
     fn test_end_to_end_proof_generation_verification_and_zkproof_generation() {
-        shared::init_test_logging();
-        crate::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+        let (prover_output, verifier_output) = run_end_to_end_flow();
 
-        smol::block_on(async {
-            // Setup
-            let test_tls_config = create_test_tls_config().unwrap();
-            let sockets = create_test_sockets();
+        verify_prover_output(&prover_output);
+        verify_verifier_output_basic(&verifier_output);
 
-            let (tls_client_config, tls_commit_config) =
-                create_prover_config(test_tls_config.cert_bytes.clone());
-            let verifier_config = create_verifier_config(test_tls_config.cert_bytes);
+        let sent_data = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
+            .expect("Sent data should be valid UTF-8");
+        let received_data =
+            String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
+                .expect("Received data should be valid UTF-8");
 
-            // Start server
-            let app = get_app(create_test_balances());
-            let server_task =
-                handle_connection(app, test_tls_config.server_config, sockets.server_socket);
+        verify_parsed_request(&verifier_output, &sent_data);
+        verify_parsed_response(&verifier_output, &received_data);
 
-            // Build prover
-            let prover = Prover::builder()
-                .tls_client_config(tls_client_config)
-                .tls_commit_config(tls_commit_config)
-                .request(create_test_request())
-                .request_reveal_config(create_request_reveal_config())
-                .response_reveal_config(create_response_reveal_config())
-                .build()
-                .unwrap();
+        let padding_config = crate::PaddingConfig::new(12);
+        let proof = generate_proof(
+            &prover_output.transcript_commitments,
+            &prover_output.transcript_secrets,
+            &prover_output.received,
+            padding_config,
+        )
+        .expect("Proof generation should succeed");
 
-            // Build verifier
-            let verifier = Verifier::builder()
-                .verifier_config(verifier_config)
-                .build()
-                .unwrap();
+        verify_balance_commitment_and_proof(&verifier_output, &proof)
+            .expect("Balance commitment and proof verification should succeed");
+    }
 
-            // Execute protocol
-            let prover_task =
-                prover.prove(sockets.prover_verifier_socket, sockets.prover_server_socket);
-            let verifier_task = verifier.verify(sockets.verifier_socket);
+    #[test]
+    fn test_derive_noir_prover_inputs_renders_nargo_inputs() {
+        let (prover_output, _) = run_end_to_end_flow();
 
-            let (server_result, prover_result, verifier_result) =
-                join!(server_task, prover_task, verifier_task);
+        let inputs = derive_noir_prover_inputs(
+            &prover_output.transcript_commitments,
+            &prover_output.transcript_secrets,
+            &prover_output.received,
+            crate::PaddingConfig::new(12),
+        )
+        .expect("Noir inputs should be derived");
 
-            // Verify all tasks completed successfully
-            server_result.expect("Server should complete successfully");
-            let prover_output = prover_result.expect("Prover should complete successfully");
-            let verifier_output = verifier_result.expect("Verifier should complete successfully");
+        assert_eq!(inputs.balance_committed_hash.len(), 32);
+        assert_eq!(inputs.balance_blinder.len(), 16);
+        assert_eq!(inputs.balance_committed_part.len(), 12);
 
-            // Verify prover output
-            verify_prover_output(&prover_output);
+        let prover_toml = inputs.to_prover_toml();
+        assert!(prover_toml.contains("balance_blinder = [\""));
+        assert!(prover_toml.contains("balance_committed_hash = [\""));
+        assert!(prover_toml.contains("balance_committed_part = \""));
+    }
 
-            // Verify verifier output
-            verify_verifier_output_basic(&verifier_output);
+    #[test]
+    fn test_derive_noir_prover_inputs_rejects_invalid_inputs() {
+        let (prover_output, _) = run_end_to_end_flow();
+        let padding_config = crate::PaddingConfig::new(12);
 
-            // Verify parsed structures
-            let sent_data = String::from_utf8(verifier_output.transcript.sent_unsafe().to_vec())
-                .expect("Sent data should be valid UTF-8");
-            let received_data =
-                String::from_utf8(verifier_output.transcript.received_unsafe().to_vec())
-                    .expect("Received data should be valid UTF-8");
+        let truncated_err = derive_noir_prover_inputs(
+            &prover_output.transcript_commitments,
+            &prover_output.transcript_secrets,
+            &prover_output.received[..8],
+            padding_config.clone(),
+        )
+        .expect_err("Truncated transcript should be rejected");
+        assert!(matches!(truncated_err, ZkTlsnError::InvalidInput(_)));
 
-            verify_parsed_request(&verifier_output, &sent_data);
-            verify_parsed_response(&verifier_output, &received_data);
-
-            let padding_config = crate::PaddingConfig::new(12);
-            let proof = generate_proof(
-                &prover_output.transcript_commitments,
-                &prover_output.transcript_secrets,
-                &prover_output.received,
-                padding_config,
-            )
-            .expect("Proof generation should succeed");
-
-            verify_balance_commitment_and_proof(&verifier_output, &proof)
-                .expect("Balance commitment and proof verification should succeed");
+        let mut bad_direction_commitments = prover_output.transcript_commitments.clone();
+        mutate_received_hash_commitment(&mut bad_direction_commitments, |hash| {
+            hash.direction = Direction::Sent;
         });
+        let direction_err = derive_noir_prover_inputs(
+            &bad_direction_commitments,
+            &prover_output.transcript_secrets,
+            &prover_output.received,
+            padding_config.clone(),
+        )
+        .expect_err("Sent-direction commitment should be rejected");
+        assert!(matches!(direction_err, ZkTlsnError::NoReceivedCommitments));
+
+        let mut bad_algorithm_secrets = prover_output.transcript_secrets.clone();
+        mutate_received_hash_secret(&mut bad_algorithm_secrets, |hash| {
+            hash.alg = HashAlgId::SHA256;
+        });
+        let algorithm_err = derive_noir_prover_inputs(
+            &prover_output.transcript_commitments,
+            &bad_algorithm_secrets,
+            &prover_output.received,
+            padding_config,
+        )
+        .expect_err("Non-BLAKE3 secret should be rejected");
+        assert!(matches!(
+            algorithm_err,
+            ZkTlsnError::InvalidCommitmentDirection
+        ));
+    }
+
+    fn mutate_received_hash_commitment(
+        commitments: &mut [TranscriptCommitment],
+        mutate: impl FnOnce(&mut tlsnotary::PlaintextHash),
+    ) {
+        let hash = commitments
+            .iter_mut()
+            .find_map(|commitment| match commitment {
+                TranscriptCommitment::Hash(hash) if hash.direction == Direction::Received => {
+                    Some(hash)
+                }
+                _ => None,
+            })
+            .expect("Expected a received hash commitment");
+        mutate(hash);
+    }
+
+    fn mutate_received_hash_secret(
+        secrets: &mut [TranscriptSecret],
+        mutate: impl FnOnce(&mut tlsnotary::PlaintextHashSecret),
+    ) {
+        let hash = secrets
+            .iter_mut()
+            .find_map(|secret| match secret {
+                TranscriptSecret::Hash(hash) if hash.direction == Direction::Received => Some(hash),
+                _ => None,
+            })
+            .expect("Expected a received hash secret");
+        mutate(hash);
     }
 }
