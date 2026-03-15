@@ -32,26 +32,34 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ### Noir
 
-This repo depends on Noir `v1.0.0-beta.8`.
+This repo uses `zkmopro/noir-rs v1.0.0-beta.8`, and that crate pins Noir and `nargo` to
+`noir-lang/noir` commit `b33131574388d836341cea9b6380f3b1a8493eb8`.
+Install that exact commit so the `nargo` CLI stays compatible with the Rust-side `noir-rs`
+dependency. Do not rely only on the `1.0.0-beta.8` version label.
 
 ```bash
 curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
-noirup --version 1.0.0-beta.8
+noirup --commit b33131574388d836341cea9b6380f3b1a8493eb8
+nargo --version
 ```
 
 ### Barretenberg
 
 Barretenberg is required for standalone circuit proving, Solidity verifier generation, and the Rust ZK proving path.
+For this repo, the standalone `bb` CLI must match the Barretenberg version embedded by the pinned
+`noir-rs` crate: `1.0.0-nightly.20250723`. Install that exact version so the `bb` CLI stays
+compatible with the Rust-side `noir-rs` dependency.
 
 ```bash
 curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
-bbup
+bbup -v 1.0.0-nightly.20250723
+bb --version
 ```
 
 ### Important Notes
 
 - `zktlsn::setup_barretenberg_srs()` downloads CRS data from `https://crs.aztec.network` on first use, so the first prover/test run needs internet access.
-- The `noir-rs` crate in this repo is pinned to `nargo v1.0.0-beta.8`. Compiling the circuit with a different `nargo` version can break proving because the Barretenberg backend rejects incompatible bytecode formats.
+- Keep the installed `nargo` and `bb` CLIs aligned with the exact revisions above so they remain compatible with the Rust-side `noir-rs` crate. A matching semver label alone is not enough for `nargo`, and an older `bb` will generate incompatible proof and verifier artifacts.
 
 ## Quick Start
 
