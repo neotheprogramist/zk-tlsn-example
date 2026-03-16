@@ -14,6 +14,7 @@ out/
 # will have compiled files and executables
 debug
 target
+srs_cache/
 circuit/Prover.toml
 evm/src/generated/
 evm/testdata/

@@ -12,7 +12,6 @@ const FIXTURE_AMOUNT: u64 = 25;
 const FIXTURE_BLINDER: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
 fn main() {
-    zktlsn::setup_barretenberg_srs().expect("failed to setup Barretenberg SRS");
     if let Err(error) = run() {
         eprintln!("{error:#}");
         std::process::exit(1);
@@ -20,6 +19,10 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let srs_path = zktlsn::download_barretenberg_srs_to_cache()
+        .context("failed to download cached Barretenberg SRS")?;
+    zktlsn::setup_cached_barretenberg_srs().context("failed to setup cached Barretenberg SRS")?;
+
     let inputs = NoirProverInputs::from_transfer(
         FIXTURE_TX_ID,
         FIXTURE_TO_USER_ID,
@@ -33,7 +36,8 @@ fn run() -> Result<()> {
         .context("failed to prepare deterministic settlement artifacts")?;
 
     println!(
-        "Generated settlement fixtures under `evm/testdata/`, verifier source under `evm/src/generated/`, and embedded deployment artifacts under `zktlsn/examples/support/`."
+        "Downloaded cached Barretenberg SRS to `{}`, generated settlement fixtures under `evm/testdata/`, verifier source under `evm/src/generated/`, and embedded deployment artifacts under `zktlsn/examples/support/`.",
+        srs_path.display()
     );
     Ok(())
 }

@@ -8,8 +8,10 @@ use verifier::serve;
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() {
-    // Setup Barretenberg SRS (required before proof verification)
-    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+    // Use the fixture-managed SRS cache before proof verification.
+    zktlsn::setup_cached_barretenberg_srs().expect(
+        "failed to setup cached Barretenberg SRS; run `cargo run --package zktlsn --release --example fixture` first",
+    );
     init_logging("info");
 
     smol::block_on(async {

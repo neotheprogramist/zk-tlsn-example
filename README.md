@@ -90,7 +90,8 @@ forge soldeer install
 
 ### Notes
 
-- `zktlsn::setup_barretenberg_srs()` downloads CRS data from `https://crs.aztec.network` on first use.
+- `cargo run --package zktlsn --release --example fixture` downloads a circuit-specific SRS into `./srs_cache/circuit.srs`.
+- `prover`, `verifier`, and `settle` reuse that cached SRS instead of downloading from `https://crs.aztec.network` at runtime.
 - Keep `nargo` and `bb` aligned with the exact revisions above.
 - If you only run already-built `server`, `verifier`, `prover`, or `settle`, you do not need `nargo`, `bb`, or `forge` available at runtime.
 
@@ -102,6 +103,7 @@ cd zk-tlsn-example
 
 nargo compile --force
 cargo build --release --all-targets --examples
+cargo run --package zktlsn --release --example fixture
 ```
 
 If you changed the circuit or Solidity contracts, regenerate deterministic artifacts and rebuild `settle`:
@@ -113,6 +115,7 @@ cargo build -p zktlsn --release --example settle
 
 `fixture` refreshes:
 
+- `srs_cache/circuit.srs`
 - [evm/src/generated/HonkVerifier.sol](./evm/src/generated/HonkVerifier.sol)
 - [evm/testdata/fixture.json](./evm/testdata/fixture.json)
 - [evm/testdata/proof.bin](./evm/testdata/proof.bin)

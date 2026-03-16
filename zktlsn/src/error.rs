@@ -35,6 +35,19 @@ pub enum ZkTlsnError {
     #[error("Noir error: {0}")]
     NoirError(String),
 
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(
+        "Cached Barretenberg SRS not found at {path}. Run `cargo run --package zktlsn --release --example fixture` first."
+    )]
+    MissingCachedSrs { path: String },
+
+    #[error(
+        "Cached Barretenberg SRS at {path} is invalid or stale. Rerun `cargo run --package zktlsn --release --example fixture` to refresh it."
+    )]
+    InvalidCachedSrs { path: String },
+
     #[error(
         "Balance too large: balance length {balance_length} + prefix {prefix_length} + suffix {suffix_length} exceeds total length {total_length}"
     )]

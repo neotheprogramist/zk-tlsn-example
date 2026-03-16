@@ -35,7 +35,9 @@ struct Cli {
 }
 
 fn main() {
-    zktlsn::setup_barretenberg_srs().expect("failed to setup Barretenberg SRS");
+    zktlsn::setup_cached_barretenberg_srs().expect(
+        "failed to setup cached Barretenberg SRS; run `cargo run --package zktlsn --release --example fixture` first",
+    );
     init_logging("info");
 
     smol::block_on(async {
