@@ -72,6 +72,7 @@ anvil --version
 
 - `zktlsn::setup_barretenberg_srs()` downloads CRS data from `https://crs.aztec.network` on first use, so the first prover/test run needs internet access.
 - Keep the installed `nargo` and `bb` CLIs aligned with the exact revisions above so they remain compatible with the Rust-side `noir-rs` crate. A matching semver label alone is not enough for `nargo`, and an older `bb` will generate incompatible proof and verifier artifacts.
+- `settle` does not require any CLI tools at runtime. `nargo`, `bb`, and `forge` are only needed when you intentionally regenerate the embedded settlement artifacts with `fixture`.
 
 ## Quick Start
 
@@ -82,7 +83,7 @@ git clone <repo-url> && cd zk-tlsn-example
 # which is embedded by the Rust prover/verifier crates.
 nargo compile
 
-cargo build --release
+cargo build --release --all-features --all-targets --examples
 cargo test --release --all-targets --all
 ```
 
@@ -105,7 +106,7 @@ forge soldeer install
 forge build
 forge lint
 forge test --match-contract ZkTlsnVerifierTest -vv
-anvil --gas-limit 100000000 --disable-code-size-limit
+anvil
 ```
 
 ### Noir
@@ -168,9 +169,10 @@ Full ZK-TLS notarization and verification flow completed successfully
 
 ## Generate Settlement Artifacts
 
-Use the deterministic fixture generator to produce:
+`fixture` is the one dev-time command that regenerates the EVM settlement artifacts:
 
 - `evm/src/generated/HonkVerifier.sol`
+- `zktlsn/examples/support/deployment_artifacts.json`
 - `evm/testdata/proof.bin`
 - `evm/testdata/public_inputs.bin`
 - `evm/testdata/public_inputs.json`
@@ -184,16 +186,18 @@ The fixture generator:
 1. Writes a deterministic [`circuit/Prover.toml`](./circuit/Prover.toml).
 2. Runs the documented `nargo` and `bb` commands.
 3. Generates the Rust-side keccak proof and public inputs.
-4. Normalizes the generated verifier metadata and writes [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol).
+4. Validates the raw generated verifier and copies it unchanged to [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol).
 5. Writes Foundry fixtures under [`evm/testdata`](./evm/testdata).
-6. Runs `forge build` so the deployable artifacts are ready for tests and settlement.
+6. Runs `forge build` and writes the linked deployment payload to [`zktlsn/examples/support/deployment_artifacts.json`](./zktlsn/examples/support/deployment_artifacts.json).
+
+If you change the circuit, the generated verifier, or the wrapper contract, rerun `fixture` and rebuild the `settle` binary so the embedded deployment artifacts stay aligned with the proof system.
 
 ## Test On-Chain Settlement
 
 There are two supported ways to test settlement locally:
 
 1. A deterministic Foundry test path that regenerates fixtures and does not require the TLS server or verifier to be running.
-2. A live end-to-end path that runs the full TLSNotary flow, proves locally in Rust, then settles the proof on Anvil.
+2. A live end-to-end path where `settle` proves locally in Rust and verifies onchain through Alloy without invoking any CLI tools at runtime.
 
 ### Deterministic Settlement Test With Foundry
 
@@ -280,7 +284,7 @@ The raw generated contract is written to `./target/Verifier.sol`.
 
 ### 4. Validate And Copy The Generated Verifier
 
-The supported repo workflow keeps the raw `bb` verifier unchanged. `fixture` and `settle` validate `./target/Verifier.sol` against the expected circuit shape, then copy it to `evm/src/generated/HonkVerifier.sol` for Foundry/Anvil use.
+The supported repo workflow keeps the raw `bb` verifier unchanged. `fixture` validates `./target/Verifier.sol` against the expected circuit shape, copies it to `evm/src/generated/HonkVerifier.sol`, and writes the deployment manifest that `settle` embeds at compile time.
 
 Use the supported repo workflow:
 
@@ -295,7 +299,10 @@ The live settle demo uses:
 
 1. [`zktlsn/examples/settle.rs`](./zktlsn/examples/settle.rs) for TLSN + proof generation + Alloy-based deployment and contract calls
 2. [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol) for the generated verifier
-3. [`evm/src/ZkTlsnVerifier.sol`](./evm/src/ZkTlsnVerifier.sol) as a thin stateful wrapper
+3. [`zktlsn/examples/support/deployment_artifacts.json`](./zktlsn/examples/support/deployment_artifacts.json) for the embedded deploy bytecode and verification key
+4. [`evm/src/ZkTlsnVerifier.sol`](./evm/src/ZkTlsnVerifier.sol) as a thin stateful wrapper
+
+Only `server`, `verifier`, `anvil`, and the `settle` binary are required at runtime. `settle` does not shell out to `nargo`, `bb`, or `forge`, and it does not read `out/` or `target/` when deploying.
 
 Start the services in order:
 
@@ -313,10 +320,8 @@ cargo run --package zktlsn --release --example verifier
 
 ### Terminal 3: Anvil
 
-The generated verifier exceeds the default EIP-170 code size limit, so start Anvil with both a higher block gas limit and code size checks disabled:
-
 ```bash
-anvil --gas-limit 100000000 --disable-code-size-limit
+anvil
 ```
 
 ### Terminal 4: Settle
@@ -335,12 +340,12 @@ The example:
 
 1. Reuses the existing TLSN flow to obtain transcript commitments.
 2. Generates the native proof and completes the off-chain verifier handshake.
-3. Regenerates the keccak verifier and Foundry artifacts for the current run.
+3. Generates the keccak proof and verification key locally with `noir-rs`.
 4. Deploys the linked `HonkVerifier` and `ZkTlsnVerifier` contracts to Anvil through Alloy.
 5. Submits a real transaction to `submitProof`.
 6. Confirms success by reading `verified(address)` and calling `gatedAction()`.
 
-Generated verifier and proof fixtures are ephemeral local artifacts. They are ignored by git and recreated by `fixture` and `settle` as needed.
+If the embedded deployment manifest and the locally generated keccak verification key ever diverge, `settle` fails fast and tells you to rerun `fixture` and rebuild.
 
 The final log line includes the deployed verifier address, wrapper address, and settlement transaction hash. You can confirm the on-chain result manually with `cast` by reusing the wrapper address from that log:
 

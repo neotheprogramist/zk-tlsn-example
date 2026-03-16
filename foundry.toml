@@ -3,6 +3,8 @@ src = "evm/src"
 test = "evm/test"
 out = "out"
 libs = ["dependencies"]
+optimizer = true
+optimizer_runs = 200
 ignored_warnings_from = ["evm/src/generated/HonkVerifier.sol"]
 fs_permissions = [{ access = "read", path = "./evm/testdata" }]
 

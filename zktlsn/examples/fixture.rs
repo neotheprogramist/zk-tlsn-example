@@ -1,3 +1,5 @@
+#[path = "support/deployment_artifacts.rs"]
+mod deployment_artifacts;
 #[path = "support/settlement.rs"]
 mod settlement_support;
 
@@ -24,7 +26,7 @@ fn run() -> Result<()> {
         .context("failed to prepare deterministic settlement artifacts")?;
 
     println!(
-        "Generated settlement fixtures under `evm/testdata/` and verifier source under `evm/src/generated/`."
+        "Generated settlement fixtures under `evm/testdata/`, verifier source under `evm/src/generated/`, and embedded deployment artifacts under `zktlsn/examples/support/`."
     );
     Ok(())
 }

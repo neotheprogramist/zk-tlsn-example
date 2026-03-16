@@ -1,13 +1,7 @@
-#[path = "support/settlement.rs"]
-mod settlement_support;
+#[path = "support/deployment_artifacts.rs"]
+mod deployment_artifacts;
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    future::IntoFuture,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::{future::IntoFuture, net::SocketAddr, path::Path};
 
 use alloy::{
     hex,
@@ -26,7 +20,6 @@ use http_body_util::{BodyExt, Empty};
 use hyper::{StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
 use quinn::Endpoint;
-use serde::Deserialize;
 use shared::{
     TestQuicConfig, TestTlsConfig, get_or_create_test_quic_config, get_or_create_test_tls_config,
     init_logging,
@@ -41,19 +34,13 @@ use tracing::{error, info, instrument};
 use verifier::{ProofMessage, VerificationOutcome};
 use zktlsn::{KeccakProof, PaddingConfig, Proof, SettlementBundle, generate_settlement_bundle};
 
+use crate::deployment_artifacts::{PreparedArtifacts, load_embedded_artifacts};
+
 const MAX_SENT_DATA: usize = 1 << 12;
 const MAX_RECV_DATA: usize = 1 << 14;
 const ANVIL_RPC_URL: &str = "http://127.0.0.1:8545";
 const ANVIL_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const VERIFIER_DEPLOY_GAS: u64 = 100_000_000;
-const WRAPPER_DEPLOY_GAS: u64 = 10_000_000;
-const SUBMIT_PROOF_GAS: u64 = 20_000_000;
-const VERIFIER_ARTIFACT_PATH: &str = "out/HonkVerifier.sol/HonkVerifier.json";
-const VERIFIER_LIBRARY_ARTIFACT_PATH: &str = "out/HonkVerifier.sol/ZKTranscriptLib.json";
-const WRAPPER_ARTIFACT_PATH: &str = "out/ZkTlsnVerifier.sol/ZkTlsnVerifier.json";
-const VERIFIER_LINK_SOURCE: &str = "evm/src/generated/HonkVerifier.sol";
-const VERIFIER_LINK_LIBRARY: &str = "ZKTranscriptLib";
 
 sol! {
     contract ZkTlsnVerifier {
@@ -68,32 +55,6 @@ sol! {
 struct OnchainContracts {
     verifier: Address,
     wrapper: Address,
-}
-
-#[derive(Debug, Clone)]
-struct PreparedArtifacts {
-    verifier_library_bytecode: Vec<u8>,
-    verifier_bytecode_template: String,
-    verifier_link_reference: LinkReference,
-    wrapper_bytecode: Vec<u8>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ForgeArtifact {
-    bytecode: ForgeBytecode,
-}
-
-#[derive(Debug, Deserialize)]
-struct ForgeBytecode {
-    object: String,
-    #[serde(default, rename = "linkReferences")]
-    link_references: BTreeMap<String, BTreeMap<String, Vec<LinkReference>>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LinkReference {
-    start: usize,
-    length: usize,
 }
 
 struct SettleFlowOutcome {
@@ -122,9 +83,8 @@ async fn run() -> Result<()> {
         settle_flow.verification_result.message
     );
 
-    settlement_support::prepare_settlement_artifacts(&settle_flow.bundle)
-        .context("failed to prepare settlement artifacts")?;
-    let artifacts = load_deployment_artifacts().context("failed to load deployment artifacts")?;
+    let artifacts = load_deployment_artifacts(&settle_flow.bundle)
+        .context("failed to load deployment artifacts")?;
     let (provider, deployer) = connect_anvil().context("failed to connect to Anvil")?;
     let contracts = deploy_contracts(&provider, &artifacts)
         .await
@@ -344,27 +304,13 @@ fn connect_anvil() -> Result<(impl Provider, Address)> {
     Ok((provider, deployer))
 }
 
-fn load_deployment_artifacts() -> Result<PreparedArtifacts> {
-    let repo_root = repo_root()?;
-    let verifier_artifact = read_artifact(repo_root.join(VERIFIER_ARTIFACT_PATH))?;
-    let verifier_library_artifact = read_artifact(repo_root.join(VERIFIER_LIBRARY_ARTIFACT_PATH))?;
-    let wrapper_artifact = read_artifact(repo_root.join(WRAPPER_ARTIFACT_PATH))?;
-
+fn load_deployment_artifacts(bundle: &SettlementBundle) -> Result<PreparedArtifacts> {
+    let artifacts = load_embedded_artifacts()?;
     ensure!(
-        wrapper_artifact.bytecode.link_references.is_empty(),
-        "wrapper artifact must not contain link references"
+        artifacts.verification_key == bundle.keccak_proof.verification_key,
+        "embedded deployment artifacts do not match the generated keccak verification key; rerun `cargo run --package zktlsn --release --example fixture` and rebuild the `settle` binary"
     );
-    let verifier_link_reference = extract_verifier_link_reference(&verifier_artifact)?;
-
-    Ok(PreparedArtifacts {
-        verifier_library_bytecode: decode_bytecode(
-            &verifier_library_artifact.bytecode.object,
-            "verifier library",
-        )?,
-        verifier_bytecode_template: verifier_artifact.bytecode.object,
-        verifier_link_reference,
-        wrapper_bytecode: decode_bytecode(&wrapper_artifact.bytecode.object, "wrapper")?,
-    })
+    Ok(artifacts)
 }
 
 async fn deploy_contracts<P>(
@@ -377,7 +323,6 @@ where
     let library = deploy_bytecode(
         provider,
         artifacts.verifier_library_bytecode.clone(),
-        WRAPPER_DEPLOY_GAS,
         "verifier library",
     )
     .await?;
@@ -387,8 +332,7 @@ where
         library,
     )
     .context("failed to link verifier bytecode")?;
-    let verifier =
-        deploy_bytecode(provider, verifier_bytecode, VERIFIER_DEPLOY_GAS, "verifier").await?;
+    let verifier = deploy_bytecode(provider, verifier_bytecode, "verifier").await?;
 
     let constructor = ZkTlsnVerifier::constructorCall {
         verifier_: verifier,
@@ -401,7 +345,6 @@ where
             .copied()
             .chain(constructor.abi_encode().into_iter())
             .collect(),
-        WRAPPER_DEPLOY_GAS,
         "wrapper",
     )
     .await?;
@@ -409,21 +352,12 @@ where
     Ok(OnchainContracts { verifier, wrapper })
 }
 
-async fn deploy_bytecode<P>(
-    provider: &P,
-    bytecode: Vec<u8>,
-    gas: u64,
-    label: &str,
-) -> Result<Address>
+async fn deploy_bytecode<P>(provider: &P, bytecode: Vec<u8>, label: &str) -> Result<Address>
 where
     P: Provider,
 {
     let pending = provider
-        .send_transaction(
-            TransactionRequest::default()
-                .with_deploy_code(bytecode)
-                .with_gas_limit(gas),
-        )
+        .send_transaction(TransactionRequest::default().with_deploy_code(bytecode))
         .compat()
         .await
         .with_context(|| format!("failed to submit {label} deployment"))?;
@@ -433,10 +367,7 @@ where
         .await
         .with_context(|| format!("failed to fetch {label} deployment receipt"))?;
 
-    ensure!(
-        receipt.status(),
-        "{label} deployment failed. Start Anvil with `anvil --gas-limit 100000000 --disable-code-size-limit`."
-    );
+    ensure!(receipt.status(), "{label} deployment failed");
     receipt.contract_address().context(format!(
         "{label} deployment receipt did not include a contract address"
     ))
@@ -466,8 +397,7 @@ where
             TransactionRequest::default()
                 .with_from(deployer)
                 .with_to(wrapper)
-                .with_input(call.abi_encode())
-                .with_gas_limit(SUBMIT_PROOF_GAS),
+                .with_input(call.abi_encode()),
         )
         .compat()
         .await
@@ -525,58 +455,9 @@ where
     response.context("failed to decode gatedAction() response")
 }
 
-fn repo_root() -> Result<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .canonicalize()
-        .context("failed to resolve repo root")
-}
-
-fn read_artifact(path: PathBuf) -> Result<ForgeArtifact> {
-    serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to decode {}", path.display()))
-}
-
-fn extract_verifier_link_reference(artifact: &ForgeArtifact) -> Result<LinkReference> {
-    let source_links = artifact
-        .bytecode
-        .link_references
-        .get(VERIFIER_LINK_SOURCE)
-        .context("verifier artifact is missing expected link source")?;
-    ensure!(
-        source_links.len() == 1 && source_links.contains_key(VERIFIER_LINK_LIBRARY),
-        "verifier artifact must contain exactly one `{VERIFIER_LINK_LIBRARY}` link reference"
-    );
-
-    let reference = source_links
-        .get(VERIFIER_LINK_LIBRARY)
-        .context("verifier artifact is missing library link references")?
-        .first()
-        .cloned()
-        .context("verifier artifact is missing the library link placeholder")?;
-    ensure!(
-        reference.length == Address::len_bytes(),
-        "verifier link reference must be {} bytes, got {}",
-        Address::len_bytes(),
-        reference.length
-    );
-    Ok(reference)
-}
-
-fn decode_bytecode(bytecode: &str, label: &str) -> Result<Vec<u8>> {
-    hex::decode(
-        bytecode
-            .strip_prefix("0x")
-            .with_context(|| format!("{label} bytecode must be 0x-prefixed"))?,
-    )
-    .with_context(|| format!("failed to decode {label} bytecode"))
-}
-
 fn link_verifier_bytecode(
     bytecode_template: &str,
-    link_reference: &LinkReference,
+    link_reference: &deployment_artifacts::LinkReference,
     library_address: Address,
 ) -> Result<Vec<u8>> {
     let mut bytecode = bytecode_template
@@ -588,7 +469,10 @@ fn link_verifier_bytecode(
     hex::decode(bytecode).context("failed to decode linked verifier bytecode")
 }
 
-fn link_range(bytecode_len: usize, reference: &LinkReference) -> Result<std::ops::Range<usize>> {
+fn link_range(
+    bytecode_len: usize,
+    reference: &deployment_artifacts::LinkReference,
+) -> Result<std::ops::Range<usize>> {
     let start = reference
         .start
         .checked_mul(2)
