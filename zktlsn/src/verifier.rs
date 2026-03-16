@@ -15,7 +15,21 @@ struct GeneratedSolidityVerifierShape {
 }
 
 pub fn validate_generated_solidity_verifier(source: &str, num_public_inputs: usize) -> Result<()> {
-    let expected = expected_generated_solidity_verifier_shape(num_public_inputs)?;
+    let bytecode = load_circuit_bytecode()?;
+    validate_generated_solidity_verifier_for_bytecode(source, &bytecode, num_public_inputs, false)
+}
+
+pub fn validate_generated_solidity_verifier_for_bytecode(
+    source: &str,
+    bytecode: &str,
+    num_public_inputs: usize,
+    recursive: bool,
+) -> Result<()> {
+    let expected = expected_generated_solidity_verifier_shape_for_bytecode(
+        bytecode,
+        num_public_inputs,
+        recursive,
+    )?;
     [
         (
             format!("uint256 constant N = {};", expected.subgroup_size),
@@ -56,11 +70,20 @@ pub fn validate_generated_solidity_verifier(source: &str, num_public_inputs: usi
     .try_for_each(|(snippet, label)| ensure_contains(source, &snippet, label))
 }
 
+#[cfg(test)]
 fn expected_generated_solidity_verifier_shape(
     num_public_inputs: usize,
 ) -> Result<GeneratedSolidityVerifierShape> {
     let bytecode = load_circuit_bytecode()?;
-    let subgroup_size = get_subgroup_size(&bytecode, false);
+    expected_generated_solidity_verifier_shape_for_bytecode(&bytecode, num_public_inputs, false)
+}
+
+fn expected_generated_solidity_verifier_shape_for_bytecode(
+    bytecode: &str,
+    num_public_inputs: usize,
+    recursive: bool,
+) -> Result<GeneratedSolidityVerifierShape> {
+    let subgroup_size = get_subgroup_size(bytecode, recursive);
     if subgroup_size == 0 || !subgroup_size.is_power_of_two() {
         return Err(ZkTlsnError::InvalidInput(format!(
             "unexpected subgroup size for Solidity verifier: {subgroup_size}"

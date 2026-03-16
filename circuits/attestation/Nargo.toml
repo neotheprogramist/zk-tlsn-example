@@ -1,5 +1,5 @@
 [package]
-name = "circuit"
+name = "attestation"
 type = "bin"
 authors = [""]
 

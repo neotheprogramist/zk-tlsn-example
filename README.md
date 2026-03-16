@@ -1,6 +1,6 @@
 # zk-tlsn-example
 
-Stablecoin demo built on TLSNotary + Noir + Barretenberg. A user makes a TLS-backed fiat transfer into a special account, proves that transfer attestation in zero knowledge, and mints the same amount of ERC-20 tokens onchain.
+Stablecoin demo built on TLSNotary + Noir + Barretenberg. A user makes one or more TLS-backed fiat transfers into a special account, proves those transfer attestations in zero knowledge, and mints the same amount of ERC-20 tokens onchain through either a single-transfer path or a recursively aggregated batch path.
 
 ## Overview
 
@@ -10,7 +10,7 @@ The server keeps an in-memory fiat ledger. Every transfer produces a fixed-width
 {tx_id:010}{to_user_id:010}{amount:012}
 ```
 
-The Noir circuit in [circuit/src/main.nr](./circuit/src/main.nr) proves:
+The Noir attestation circuit in [circuits/attestation/src/main.nr](./circuits/attestation/src/main.nr) proves:
 
 ```text
 BLAKE3(attestation || blinder) == committed_hash
@@ -26,17 +26,23 @@ The onchain mint flow only succeeds when the attested `to_user_id` matches the s
 - [zktlsn/examples/verifier.rs](./zktlsn/examples/verifier.rs): TLSNotary verifier/notary service
 - [zktlsn/examples/prover.rs](./zktlsn/examples/prover.rs): live off-chain proof flow
 - [zktlsn/examples/settle.rs](./zktlsn/examples/settle.rs): live proof + onchain mint flow
+- [zktlsn/examples/settle_batch.rs](./zktlsn/examples/settle_batch.rs): live recursive batch proof + onchain mint flow
 - [zktlsn/examples/fixture.rs](./zktlsn/examples/fixture.rs): deterministic verifier and fixture generator
 - [evm/src/StableToken.sol](./evm/src/StableToken.sol): mintable demo ERC-20
 - [evm/src/StableMintGate.sol](./evm/src/StableMintGate.sol): replay-protected mint gate around the generated verifier
+- [evm/src/BatchMintGate.sol](./evm/src/BatchMintGate.sol): recursive batch mint gate keyed by the aggregated transfers root
 - [evm/src/generated/HonkVerifier.sol](./evm/src/generated/HonkVerifier.sol): generated Barretenberg Solidity verifier
+- [evm/src/generated/RecursiveHonkVerifier.sol](./evm/src/generated/RecursiveHonkVerifier.sol): generated recursive Barretenberg Solidity verifier
+- [circuits/attestation/src/main.nr](./circuits/attestation/src/main.nr): attestation circuit for single-settlement proofs
+- [circuits/null/src/main.nr](./circuits/null/src/main.nr): recursive zero-state bootstrap circuit
+- [circuits/recursive/src/main.nr](./circuits/recursive/src/main.nr): recursive aggregation circuit
 
 ## Runtime Model
 
 There are two separate modes:
 
 1. Dev-time artifact generation with `fixture`
-2. Runtime proving/settlement with `prover` and `settle`
+2. Runtime proving/settlement with `prover`, `settle`, and `settle_batch`
 
 `fixture` uses CLI tools:
 
@@ -44,7 +50,7 @@ There are two separate modes:
 - `bb`
 - `forge`
 
-`prover` and `settle` do not shell out at runtime. They use:
+`prover`, `settle`, and `settle_batch` do not shell out at runtime. They use:
 
 - `noir-rs` for proof generation
 - Alloy for chain deployment and calls
@@ -90,10 +96,11 @@ forge soldeer install
 
 ### Notes
 
-- `cargo run --package zktlsn --release --example fixture` downloads a circuit-specific SRS into `./srs_cache/circuit.srs`.
+- `cargo run --package zktlsn --release --example fixture` downloads and refreshes the cached SRS files under `./srs_cache/` for the attestation, null, and recursive circuits.
 - `prover`, `verifier`, and `settle` reuse that cached SRS instead of downloading from `https://crs.aztec.network` at runtime.
+- `settle_batch` reuses the same cached SRS set and embedded deployment artifacts.
 - Keep `nargo` and `bb` aligned with the exact revisions above.
-- If you only run already-built `server`, `verifier`, `prover`, or `settle`, you do not need `nargo`, `bb`, or `forge` available at runtime.
+- If you only run already-built `server`, `verifier`, `prover`, `settle`, or `settle_batch`, you do not need `nargo`, `bb`, or `forge` available at runtime.
 
 ## One-Time Setup
 
@@ -106,20 +113,27 @@ cargo build --release --all-targets --examples
 cargo run --package zktlsn --release --example fixture
 ```
 
-If you changed the circuit or Solidity contracts, regenerate deterministic artifacts and rebuild `settle`:
+If you changed the circuit or Solidity contracts, regenerate deterministic artifacts and rebuild the runtime binaries:
 
 ```bash
 cargo run --package zktlsn --release --example fixture
 cargo build -p zktlsn --release --example settle
+cargo build -p zktlsn --release --example settle_batch
 ```
 
 `fixture` refreshes:
 
-- `srs_cache/circuit.srs`
+- `srs_cache/attestation.srs`
+- `srs_cache/null.srs`
+- `srs_cache/recursive.srs`
 - [evm/src/generated/HonkVerifier.sol](./evm/src/generated/HonkVerifier.sol)
+- [evm/src/generated/RecursiveHonkVerifier.sol](./evm/src/generated/RecursiveHonkVerifier.sol)
 - [evm/testdata/fixture.json](./evm/testdata/fixture.json)
 - [evm/testdata/proof.bin](./evm/testdata/proof.bin)
 - [evm/testdata/public_inputs.bin](./evm/testdata/public_inputs.bin)
+- [evm/testdata/batch_fixture.json](./evm/testdata/batch_fixture.json)
+- [evm/testdata/batch_proof.bin](./evm/testdata/batch_proof.bin)
+- [evm/testdata/batch_public_inputs.bin](./evm/testdata/batch_public_inputs.bin)
 - [zktlsn/examples/support/deployment_artifacts.json](./zktlsn/examples/support/deployment_artifacts.json)
 
 ## Default Demo State
@@ -143,9 +157,10 @@ cargo test -p parser --release --lib
 cargo test -p server --release --lib
 cargo test -p tlsnotary --release --lib
 cargo test -p zktlsn --release --lib
-cargo build -p zktlsn --release --examples
+cargo check -p zktlsn --examples
 cargo run --package zktlsn --release --example fixture
 forge lint
+forge test --match-contract BatchMintGateTest -vv
 forge test --match-contract StableMintGateTest -vv
 forge test --match-contract ZkTlsnVerifierTest -vv
 ```
@@ -155,6 +170,15 @@ forge test --match-contract ZkTlsnVerifierTest -vv
 - valid mint from the deterministic fixture proof
 - replay rejection by `tx_id`
 - rejection when `to_user_id` does not match the special user
+- tampered proof rejection
+- tampered public input rejection
+
+`BatchMintGateTest` covers the recursive batch path:
+
+- valid mint from the deterministic batch fixture proof
+- replay rejection by `transfers_root`
+- rejection when the aggregated `to_user_id` does not match the special user
+- rejection when the recursive verifier key hashes do not match the expected batch circuits
 - tampered proof rejection
 - tampered public input rejection
 
@@ -246,6 +270,49 @@ Stablecoin settlement completed successfully ... verifier=<address> token=<addre
 - it uses the deployment manifest embedded at compile time
 - it fails fast if the embedded verification key does not match the locally generated keccak verification key
 
+## Live Recursive Batch Settlement Flow
+
+This is the aggregated deposit-to-mint path:
+
+1. create N server transfers
+2. fetch each attestation over TLS and prove it through TLSNotary
+3. generate N inner proofs plus a recursive chain locally
+4. derive one final keccak proof for the aggregated batch
+5. deploy `RecursiveHonkVerifier`, `StableToken`, and `BatchMintGate` with Alloy
+6. call `batchMint`
+7. verify `claimedRoot(transfers_root)` and the minted token balance
+
+Run:
+
+```bash
+cargo run --package zktlsn --release --example settle_batch
+```
+
+Default flow:
+
+- from users: `alice,bob,alice`
+- to users: `treasury,treasury,treasury`
+- amounts: `25,10,15`
+- batch size: `3`
+- mint recipient: Anvil account `0`
+
+Expected result:
+
+```text
+Batch settlement completed successfully ... verifier=<address> token=<address> gate=<address> recipient=<address> tx_hash=<hash>
+```
+
+Custom batch example:
+
+```bash
+cargo run --package zktlsn --release --example settle_batch -- \
+  --from-users alice,bob \
+  --to-users treasury,treasury \
+  --amounts 12,8
+```
+
+Current replay semantics for the batch demo are keyed by `transfers_root`. That is intentionally weaker than single-settlement replay protection by `tx_id`, and should be treated as demo-only behavior for now.
+
 ## Negative Scenarios
 
 Transfer to a non-special user. This should fail before any onchain work:
@@ -298,6 +365,24 @@ Expected results:
 - `claimedTxId(tx_id) == true`
 - `balanceOf(recipient) == amount * 1e18`
 
+After a successful `settle_batch` run, use the printed `token`, `gate`, `recipient`, and the `transfers_root` from the logs or [evm/testdata/batch_fixture.json](./evm/testdata/batch_fixture.json):
+
+```bash
+export RPC_URL=http://127.0.0.1:8545
+export TOKEN=<token address>
+export GATE=<gate address>
+export RECIPIENT=<recipient address>
+export TRANSFERS_ROOT=<transfers root>
+
+cast call $GATE "claimedRoot(bytes32)(bool)" $TRANSFERS_ROOT --rpc-url $RPC_URL
+cast call $TOKEN "balanceOf(address)(uint256)" $RECIPIENT --rpc-url $RPC_URL
+```
+
+Expected results:
+
+- `claimedRoot(transfers_root) == true`
+- `balanceOf(recipient) == sum(amounts) * 1e18`
+
 ## Useful Runtime Flags
 
 `server`:
@@ -317,6 +402,15 @@ Expected results:
 
 `settle` only:
 
+- `--anvil-rpc-url`
+- `--anvil-private-key`
+- `--mint-recipient`
+
+`settle_batch` only:
+
+- `--from-users alice,bob,...`
+- `--to-users treasury,treasury,...`
+- `--amounts 25,10,...`
 - `--anvil-rpc-url`
 - `--anvil-private-key`
 - `--mint-recipient`
@@ -351,4 +445,15 @@ zktlsn/examples/settle
   -> native proof to off-chain verifier
   -> keccak proof to onchain HonkVerifier
   -> StableMintGate verifies proof, prevents replay, mints StableToken
+```
+
+```text
+zktlsn/examples/settle_batch
+  -> POST /api/transfers for each batch item
+  -> GET /api/attestations/{tx_id} over TLS + TLSNotary for each transfer
+  -> derive Noir inputs for each committed attestation
+  -> native proof to off-chain verifier for each transfer
+  -> recursive aggregation chain over inner proofs
+  -> final keccak proof to onchain RecursiveHonkVerifier
+  -> BatchMintGate verifies proof, prevents replay by transfers root, mints StableToken
 ```

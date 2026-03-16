@@ -147,7 +147,7 @@ impl NoirProverInputs {
             .collect()
     }
 
-    fn witness_values(&self) -> Vec<String> {
+    pub fn witness_values(&self) -> Vec<String> {
         self.attestation_committed_hash
             .iter()
             .map(|byte| byte.to_string())
@@ -342,7 +342,7 @@ fn prepare_proof_input(
 }
 
 pub(crate) fn load_circuit_bytecode() -> Result<String> {
-    const PROGRAM_JSON: &str = include_str!("../../target/circuit.json");
+    const PROGRAM_JSON: &str = include_str!("../../target/attestation.json");
     let json: Value = serde_json::from_str(PROGRAM_JSON)?;
     json["bytecode"]
         .as_str()

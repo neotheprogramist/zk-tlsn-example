@@ -9,8 +9,6 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
 use zktlsn::{SettlementBundle, validate_generated_solidity_verifier};
 
-use crate::deployment_artifacts;
-
 const GENERATED_VERIFIER_PATH: &str = "evm/src/generated/HonkVerifier.sol";
 const FIXTURE_DIR: &str = "evm/testdata";
 
@@ -19,14 +17,18 @@ pub fn prepare_settlement_artifacts(bundle: &SettlementBundle) -> Result<()> {
 
     write_prover_toml(&repo_root, bundle)?;
     run_command(&repo_root, "nargo", &["compile", "--force"])?;
-    run_command(&repo_root.join("circuit"), "nargo", &["execute", "witness"])?;
+    run_command(
+        &repo_root.join("circuits/attestation"),
+        "nargo",
+        &["execute", "witness"],
+    )?;
     run_command(
         &repo_root,
         "bb",
         &[
             "write_vk",
             "-b",
-            "./target/circuit.json",
+            "./target/attestation.json",
             "-o",
             "./target",
             "--oracle_hash",
@@ -39,7 +41,7 @@ pub fn prepare_settlement_artifacts(bundle: &SettlementBundle) -> Result<()> {
         &[
             "prove",
             "-b",
-            "./target/circuit.json",
+            "./target/attestation.json",
             "-w",
             "./target/witness.gz",
             "-o",
@@ -62,10 +64,7 @@ pub fn prepare_settlement_artifacts(bundle: &SettlementBundle) -> Result<()> {
 
     verify_cli_artifacts(&repo_root, bundle)?;
     write_fixture_files(&repo_root, bundle)?;
-    write_generated_verifier(&repo_root, bundle)?;
-    run_command(&repo_root, "forge", &["build"])?;
-    deployment_artifacts::write_embedded_artifacts(&repo_root)
-        .context("failed to write embedded deployment artifacts")
+    write_generated_verifier(&repo_root, bundle)
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -76,7 +75,7 @@ fn repo_root() -> Result<PathBuf> {
 }
 
 fn write_prover_toml(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
-    let path = repo_root.join("circuit/Prover.toml");
+    let path = repo_root.join("circuits/attestation/Prover.toml");
     fs::write(path, bundle.noir_inputs.to_prover_toml()).context("failed to write Prover.toml")
 }
 

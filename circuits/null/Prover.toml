@@ -1,0 +1,3 @@
+to_user_id = "3"
+allowed_null_vk_hash = "0x0e34e3f4ae6347b598007ba4915207a2a22952f9945d83b43c84c50203eb8407"
+allowed_recursive_vk_hash = "0x1cde8f0c66c3f625ecfd3ae331ebd4b4c4de69abe7009ce3ddfc84e00d54999c"

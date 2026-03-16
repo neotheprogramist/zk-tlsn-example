@@ -1,0 +1,3 @@
+pub global HONK_PROOF_FIELDS: u32 = 457;
+pub global HONK_VK_FIELDS: u32 = 115;
+pub global EXPECTED_INNER_VK_HASH: Field = 0x2edcfcb10f4386a3e4b0f3c683e853ec75bd06f735bcf1ab31cd024533e84769;
