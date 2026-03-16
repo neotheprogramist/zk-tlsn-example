@@ -1,12 +1,16 @@
+#[path = "support/attestation_proof.rs"]
+mod attestation_proof;
 #[path = "support/deployment_artifacts.rs"]
 mod deployment_artifacts;
+#[path = "support/live_demo.rs"]
+mod live_demo;
 
-use std::{future::IntoFuture, net::SocketAddr, path::Path};
+use std::{future::IntoFuture, net::SocketAddr};
 
 use alloy::{
     hex,
     network::{EthereumWallet, ReceiptResponse, TransactionBuilder},
-    primitives::{Address, FixedBytes, TxHash},
+    primitives::{Address, FixedBytes, TxHash, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
@@ -14,252 +18,187 @@ use alloy::{
 };
 use alloy_sol_types::{SolCall, SolConstructor};
 use anyhow::{Context, Result, ensure};
-use async_compat::{Compat, CompatExt};
-use futures::AsyncWriteExt;
-use http_body_util::{BodyExt, Empty};
-use hyper::{StatusCode, body::Bytes};
-use hyper_util::rt::TokioIo;
+use clap::Parser;
 use quinn::Endpoint;
-use shared::{
-    TestQuicConfig, TestTlsConfig, get_or_create_test_quic_config, get_or_create_test_tls_config,
-    init_logging,
-};
-use smol::net::TcpStream;
-use tlsnotary::{
-    CertificateDer, HashAlgId, MpcTlsConfig, ProveConfig, ProverConfig, RootCertStore, ServerName,
-    Session, TlsClientConfig, TlsCommitConfig, TranscriptCommitConfig, TranscriptCommitmentKind,
-    prover::{RevealConfig, reveal_request, reveal_response},
-};
+use server::app::TransferRequest;
+use shared::{TestQuicConfig, init_logging};
 use tracing::{error, info, instrument};
-use verifier::{ProofMessage, VerificationOutcome};
-use zktlsn::{KeccakProof, PaddingConfig, Proof, SettlementBundle, generate_settlement_bundle};
 
-use crate::deployment_artifacts::{PreparedArtifacts, load_embedded_artifacts};
+use crate::{
+    attestation_proof::{AttestationProofFlow, run_attestation_proof_flow},
+    deployment_artifacts::{PreparedArtifacts, load_embedded_artifacts},
+    live_demo::{DemoConnectionConfig, create_transfer, fetch_server_config},
+};
 
-const MAX_SENT_DATA: usize = 1 << 12;
-const MAX_RECV_DATA: usize = 1 << 14;
-const ANVIL_RPC_URL: &str = "http://127.0.0.1:8545";
-const ANVIL_PRIVATE_KEY: &str =
+const DEFAULT_ANVIL_RPC_URL: &str = "http://127.0.0.1:8545";
+const DEFAULT_ANVIL_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 sol! {
-    contract ZkTlsnVerifier {
-        constructor(address verifier_);
-        function submitProof(bytes calldata proof, bytes32[] calldata publicInputs) external;
-        function verified(address account) external view returns (bool isVerified);
-        function gatedAction() external view returns (bool allowed);
+    contract StableToken {
+        constructor(address initialOwner);
+        function transferOwnership(address newOwner) external;
+        function owner() external view returns (address owner);
+        function balanceOf(address account) external view returns (uint256 balance);
     }
+
+    contract StableMintGate {
+        constructor(address verifier_, address token_, uint256 expectedToUserId_);
+        function proveAndMint(bytes calldata proof, bytes32[] calldata publicInputs, address recipient) external;
+        function claimedTxId(uint256 txId) external view returns (bool claimed);
+        function expectedToUserId() external view returns (uint256 expected);
+    }
+}
+
+#[derive(Debug, Clone, Parser)]
+struct Cli {
+    #[arg(long, env = "ZKTLSN_SERVER_ADDR", default_value = "127.0.0.1:8443")]
+    server_addr: SocketAddr,
+    #[arg(long, env = "ZKTLSN_SERVER_NAME", default_value = "localhost")]
+    server_name: String,
+    #[arg(long, env = "ZKTLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
+    verifier_addr: SocketAddr,
+    #[arg(long, env = "ZKTLSN_FROM_USER", default_value = "alice")]
+    from_user: String,
+    #[arg(long, env = "ZKTLSN_TO_USER", default_value = "treasury")]
+    to_user: String,
+    #[arg(long, env = "ZKTLSN_TRANSFER_AMOUNT", default_value_t = 25)]
+    amount: u64,
+    #[arg(long, env = "ZKTLSN_ANVIL_RPC_URL", default_value = DEFAULT_ANVIL_RPC_URL)]
+    anvil_rpc_url: String,
+    #[arg(
+        long,
+        env = "ZKTLSN_ANVIL_PRIVATE_KEY",
+        default_value = DEFAULT_ANVIL_PRIVATE_KEY
+    )]
+    anvil_private_key: String,
+    #[arg(long, env = "ZKTLSN_MINT_RECIPIENT")]
+    mint_recipient: Option<Address>,
 }
 
 #[derive(Clone, Copy)]
 struct OnchainContracts {
     verifier: Address,
-    wrapper: Address,
+    token: Address,
+    gate: Address,
 }
 
-struct SettleFlowOutcome {
-    verification_result: VerificationOutcome,
-    bundle: SettlementBundle,
-}
-
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     zktlsn::setup_barretenberg_srs().expect("failed to setup Barretenberg SRS");
     init_logging("info");
 
-    smol::block_on(async {
-        if let Err(error) = run().await {
-            error!(error = %error, "settle flow failed");
-            std::process::exit(1);
-        }
-    });
+    if let Err(error) = run(Cli::parse()).await {
+        error!(error = %format!("{error:#}"), "settle flow failed");
+        std::process::exit(1);
+    }
 }
 
-#[instrument]
-async fn run() -> Result<()> {
-    let settle_flow = connect_and_settle().await?;
+#[instrument(skip(cli))]
+async fn run(cli: Cli) -> Result<()> {
+    let demo = DemoConnectionConfig {
+        server_addr: cli.server_addr,
+        server_name: cli.server_name.clone(),
+    };
+    let server_config = fetch_server_config(&demo)
+        .await
+        .context("failed to fetch server configuration")?;
+    let transfer = create_transfer(
+        &demo,
+        &TransferRequest {
+            from_username: cli.from_user.clone(),
+            to_username: cli.to_user.clone(),
+            amount: cli.amount,
+        },
+    )
+    .await
+    .context("failed to create transfer attestation")?;
     ensure!(
-        settle_flow.verification_result.success,
+        transfer.eligible_for_mint,
+        "transfer tx {} is not eligible for minting: destination user '{}' (id {}) does not match configured special user '{}' (id {})",
+        transfer.tx_id,
+        transfer.to_username,
+        transfer.to_user_id,
+        server_config.special_username,
+        server_config.special_user_id
+    );
+    let proof_flow = connect_and_prove(&cli, transfer.tx_id)
+        .await
+        .context("failed to complete attestation proof flow")?;
+
+    ensure!(
+        proof_flow.verification.success,
         "verification failed: {}",
-        settle_flow.verification_result.message
+        proof_flow.verification.message
     );
 
-    let artifacts = load_deployment_artifacts(&settle_flow.bundle)
-        .context("failed to load deployment artifacts")?;
-    let (provider, deployer) = connect_anvil().context("failed to connect to Anvil")?;
-    let contracts = deploy_contracts(&provider, &artifacts)
-        .await
-        .context("failed to deploy settlement contracts")?;
+    let artifacts =
+        load_deployment_artifacts(&proof_flow).context("failed to load deployment artifacts")?;
+    let (provider, deployer) = connect_anvil(&cli.anvil_rpc_url, &cli.anvil_private_key)
+        .context("failed to connect to Anvil")?;
+    let recipient = cli.mint_recipient.unwrap_or(deployer);
+    let contracts = deploy_contracts(
+        &provider,
+        deployer,
+        &artifacts,
+        server_config.special_user_id,
+    )
+    .await
+    .context("failed to deploy settlement contracts")?;
     let tx_hash = submit_proof_onchain(
         &provider,
         deployer,
-        contracts.wrapper,
-        &settle_flow.bundle.keccak_proof,
+        contracts.gate,
+        &proof_flow.bundle.keccak_proof,
+        recipient,
     )
     .await
-    .context("failed to submit settlement proof")?;
+    .context("failed to submit settlement transaction")?;
 
     ensure!(
-        read_verified(&provider, contracts.wrapper, deployer)
+        read_claimed_tx_id(&provider, contracts.gate, transfer.tx_id)
             .await
-            .context("failed to read verified(account)")?,
-        "wrapper contract did not record the deployer as verified"
+            .context("failed to read claimedTxId(txId)")?,
+        "gate did not mark tx_id {} as claimed",
+        transfer.tx_id
     );
+    let minted_balance = read_token_balance(&provider, contracts.token, recipient)
+        .await
+        .context("failed to read recipient token balance")?;
+    let expected_balance = mint_amount(transfer.amount);
     ensure!(
-        call_gated_action(&provider, contracts.wrapper, deployer)
-            .await
-            .context("failed to call gatedAction()")?,
-        "gatedAction() returned false"
+        minted_balance == expected_balance,
+        "unexpected token balance: expected {expected_balance}, got {minted_balance}"
     );
 
     info!(
-        server_name = %settle_flow.verification_result.server_name,
-        verified_fields = ?settle_flow.verification_result.verified_fields,
+        tx_id = transfer.tx_id,
+        to_user_id = transfer.to_user_id,
+        eligible_for_mint = transfer.eligible_for_mint,
+        special_user_id = server_config.special_user_id,
         verifier = %contracts.verifier,
-        wrapper = %contracts.wrapper,
+        token = %contracts.token,
+        gate = %contracts.gate,
+        recipient = %recipient,
         tx_hash = %tx_hash,
-        "Full ZK-TLS settle flow completed successfully"
+        "Stablecoin settlement completed successfully"
     );
     Ok(())
 }
 
-#[instrument(skip(stream), fields(phase = "notarize+prove+settle"))]
-async fn run_single_stream_settle_flow<IO>(stream: IO) -> Result<SettleFlowOutcome>
-where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
-    let session = Session::new(Compat::new(stream));
-    let (driver, mut handle) = session.split();
-    let driver_task = smol::spawn(driver);
-
-    let TestTlsConfig { cert_bytes, .. } =
-        get_or_create_test_tls_config(Path::new("test_cert.pem"), Path::new("test_key.pem"))
-            .context("failed to load TLS test configuration")?;
-    let (tls_client_config, tls_commit_config) =
-        create_prover_config(cert_bytes).context("failed to create prover TLS configuration")?;
-
-    let prover = handle
-        .new_prover(
-            ProverConfig::builder()
-                .build()
-                .map_err(tlsnotary::Error::from)
-                .context("failed to build prover config")?,
-        )?
-        .commit(tls_commit_config)
-        .await
-        .context("failed to commit prover configuration")?;
-
-    let prover_server_socket = TcpStream::connect("localhost:8443")
-        .await
-        .context("failed to connect to backend TLS server")?;
-    let (tls_connection, prover_fut) = prover
-        .connect(tls_client_config, prover_server_socket)
-        .await
-        .context("failed to establish MPC-TLS connection")?;
-    let tls_connection = TokioIo::new(Compat::new(tls_connection));
-
-    let (mut request_sender, connection) = hyper::client::conn::http1::handshake(tls_connection)
-        .await
-        .context("failed to create HTTP/1 client over MPC-TLS")?;
-
-    let request_task = async move {
-        let response = request_sender
-            .send_request(create_test_request().context("failed to build test request")?)
-            .await
-            .context("failed to send backend request")?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "unexpected backend status: {}",
-            response.status()
-        );
-
-        response
-            .collect()
-            .await
-            .context("failed to collect backend response body")
-            .map(|collected| collected.to_bytes())
-    };
-
-    let (prover_result, connection_result, response_result) =
-        futures::join!(prover_fut, connection, request_task);
-    let mut prover = prover_result.context("TLSNotary prover future failed")?;
-    connection_result.context("HTTP connection task failed")?;
-    let _response_body = response_result?;
-
-    let transcript = prover.transcript().clone();
-    let received_transcript = transcript.received().to_vec();
-    let mut prove_config_builder = ProveConfig::builder(&transcript);
-    prove_config_builder.server_identity();
-
-    let mut transcript_commit_builder = TranscriptCommitConfig::builder(&transcript);
-    transcript_commit_builder.default_kind(TranscriptCommitmentKind::Hash {
-        alg: HashAlgId::BLAKE3,
-    });
-
-    reveal_request(
-        transcript.sent(),
-        &mut prove_config_builder,
-        &mut transcript_commit_builder,
-        &create_request_reveal_config(),
+async fn connect_and_prove(cli: &Cli, tx_id: u64) -> Result<AttestationProofFlow> {
+    let TestQuicConfig { client_config, .. } = shared::get_or_create_test_quic_config(
+        std::path::Path::new("cert.pem"),
+        std::path::Path::new("key.pem"),
     )
-    .context("failed to configure request transcript reveal")?;
-    reveal_response(
-        transcript.received(),
-        &mut prove_config_builder,
-        &mut transcript_commit_builder,
-        &create_response_reveal_config(),
-    )
-    .context("failed to configure response transcript reveal")?;
-
-    prove_config_builder.transcript_commit(
-        transcript_commit_builder
-            .build()
-            .map_err(tlsnotary::Error::from)
-            .context("failed to build transcript commit config")?,
-    );
-    let prove_config = prove_config_builder
-        .build()
-        .map_err(tlsnotary::Error::from)
-        .context("failed to build proof config")?;
-
-    let prover_output = prover
-        .prove(&prove_config)
-        .await
-        .context("failed to generate TLSNotary proof")?;
-    prover.close().await.context("failed to close prover")?;
-    handle.close();
-    let mut stream = driver_task.await.context("TLSNotary driver failed")?;
-
-    let bundle = generate_settlement_bundle(
-        &prover_output.transcript_commitments,
-        &prover_output.transcript_secrets,
-        &received_transcript,
-        PaddingConfig::new(12),
-    )
-    .context("failed to build settlement bundle")?;
-    let verification_result = submit_native_proof(&mut stream, bundle.native_proof.clone())
-        .await
-        .context("failed to submit native proof to verifier")?;
-
-    Ok(SettleFlowOutcome {
-        verification_result,
-        bundle,
-    })
-}
-
-#[instrument]
-async fn connect_and_settle() -> Result<SettleFlowOutcome> {
-    let TestQuicConfig { client_config, .. } =
-        get_or_create_test_quic_config(Path::new("cert.pem"), Path::new("key.pem"))
-            .await
-            .context("failed to load QUIC test configuration")?;
-    let client_addr: SocketAddr = "[::]:0".parse().context("invalid client socket address")?;
-    let verifier_addr: SocketAddr = "[::1]:5000".parse().context("invalid verifier address")?;
-
-    let mut endpoint = Endpoint::client(client_addr).context("failed to create QUIC endpoint")?;
+    .await
+    .context("failed to load QUIC test configuration")?;
+    let mut endpoint = Endpoint::client("[::]:0".parse().context("invalid client bind address")?)
+        .context("failed to create QUIC endpoint")?;
     endpoint.set_default_client_config(client_config);
 
     let connection = endpoint
-        .connect(verifier_addr, "localhost")
+        .connect(cli.verifier_addr, "localhost")
         .context("failed to start QUIC connection")?
         .await
         .context("failed to connect to verifier")?;
@@ -268,46 +207,31 @@ async fn connect_and_settle() -> Result<SettleFlowOutcome> {
         .await
         .context("failed to open QUIC bidirectional stream")?;
 
-    run_single_stream_settle_flow(tokio::io::join(recv, send)).await
+    run_attestation_proof_flow(
+        tokio::io::join(recv, send),
+        cli.server_addr,
+        &cli.server_name,
+        tx_id,
+    )
+    .await
 }
 
-async fn submit_native_proof<IO>(stream: &mut IO, proof: Proof) -> Result<VerificationOutcome>
-where
-    IO: futures::AsyncRead + futures::AsyncWrite + Send + Unpin + 'static,
-{
-    ProofMessage::new(proof)
-        .write_to(stream)
-        .await
-        .context("failed to write proof message to verifier")?;
-    let verification_result = VerificationOutcome::read_from(stream)
-        .await
-        .context("failed to read verification result")?;
-    stream
-        .close()
-        .await
-        .context("failed to close verifier stream")?;
-    Ok(verification_result)
-}
-
-fn connect_anvil() -> Result<(impl Provider, Address)> {
-    let signer: PrivateKeySigner = ANVIL_PRIVATE_KEY
+fn connect_anvil(rpc_url: &str, private_key: &str) -> Result<(impl Provider, Address)> {
+    let signer: PrivateKeySigner = private_key
         .parse()
-        .context("failed to parse Anvil private key")?;
+        .context("failed to parse deployer private key")?;
     let deployer = signer.address();
     let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(
-        ANVIL_RPC_URL
-            .parse()
-            .context("failed to parse Anvil RPC URL")?,
-    );
-
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(rpc_url.parse().context("failed to parse Anvil RPC URL")?);
     Ok((provider, deployer))
 }
 
-fn load_deployment_artifacts(bundle: &SettlementBundle) -> Result<PreparedArtifacts> {
+fn load_deployment_artifacts(flow: &AttestationProofFlow) -> Result<PreparedArtifacts> {
     let artifacts = load_embedded_artifacts()?;
     ensure!(
-        artifacts.verification_key == bundle.keccak_proof.verification_key,
+        artifacts.verification_key == flow.bundle.keccak_proof.verification_key,
         "embedded deployment artifacts do not match the generated keccak verification key; rerun `cargo run --package zktlsn --release --example fixture` and rebuild the `settle` binary"
     );
     Ok(artifacts)
@@ -315,7 +239,9 @@ fn load_deployment_artifacts(bundle: &SettlementBundle) -> Result<PreparedArtifa
 
 async fn deploy_contracts<P>(
     provider: &P,
+    deployer: Address,
     artifacts: &PreparedArtifacts,
+    special_user_id: u64,
 ) -> Result<OnchainContracts>
 where
     P: Provider,
@@ -334,22 +260,50 @@ where
     .context("failed to link verifier bytecode")?;
     let verifier = deploy_bytecode(provider, verifier_bytecode, "verifier").await?;
 
-    let constructor = ZkTlsnVerifier::constructorCall {
-        verifier_: verifier,
+    let token_constructor = StableToken::constructorCall {
+        initialOwner: deployer,
     };
-    let wrapper = deploy_bytecode(
+    let token = deploy_bytecode(
         provider,
-        artifacts
-            .wrapper_bytecode
-            .iter()
-            .copied()
-            .chain(constructor.abi_encode().into_iter())
-            .collect(),
-        "wrapper",
+        append_constructor_args(
+            &artifacts.stable_token_bytecode,
+            token_constructor.abi_encode(),
+        ),
+        "stable token",
     )
     .await?;
 
-    Ok(OnchainContracts { verifier, wrapper })
+    let gate_constructor = StableMintGate::constructorCall {
+        verifier_: verifier,
+        token_: token,
+        expectedToUserId_: U256::from(special_user_id),
+    };
+    let gate = deploy_bytecode(
+        provider,
+        append_constructor_args(
+            &artifacts.stable_mint_gate_bytecode,
+            gate_constructor.abi_encode(),
+        ),
+        "stable mint gate",
+    )
+    .await?;
+
+    transfer_token_ownership(provider, deployer, token, gate)
+        .await
+        .context("failed to transfer token ownership to gate")?;
+    ensure!(
+        read_token_owner(provider, token)
+            .await
+            .context("failed to read token owner")?
+            == gate,
+        "stable token owner was not updated to the gate contract"
+    );
+
+    Ok(OnchainContracts {
+        verifier,
+        token,
+        gate,
+    })
 }
 
 async fn deploy_bytecode<P>(provider: &P, bytecode: Vec<u8>, label: &str) -> Result<Address>
@@ -358,12 +312,10 @@ where
 {
     let pending = provider
         .send_transaction(TransactionRequest::default().with_deploy_code(bytecode))
-        .compat()
         .await
         .with_context(|| format!("failed to submit {label} deployment"))?;
     let receipt = pending
         .get_receipt()
-        .compat()
         .await
         .with_context(|| format!("failed to fetch {label} deployment receipt"))?;
 
@@ -373,11 +325,41 @@ where
     ))
 }
 
+async fn transfer_token_ownership<P>(
+    provider: &P,
+    deployer: Address,
+    token: Address,
+    new_owner: Address,
+) -> Result<()>
+where
+    P: Provider,
+{
+    let call = StableToken::transferOwnershipCall {
+        newOwner: new_owner,
+    };
+    let pending = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .with_from(deployer)
+                .with_to(token)
+                .with_input(call.abi_encode()),
+        )
+        .await
+        .context("failed to submit transferOwnership transaction")?;
+    let receipt = pending
+        .get_receipt()
+        .await
+        .context("failed to fetch transferOwnership receipt")?;
+    ensure!(receipt.status(), "transferOwnership transaction failed");
+    Ok(())
+}
+
 async fn submit_proof_onchain<P>(
     provider: &P,
     deployer: Address,
-    wrapper: Address,
-    proof: &KeccakProof,
+    gate: Address,
+    proof: &zktlsn::KeccakProof,
+    recipient: Address,
 ) -> Result<TxHash>
 where
     P: Provider,
@@ -388,71 +370,92 @@ where
         .copied()
         .map(FixedBytes::<32>::from)
         .collect::<Vec<_>>();
-    let call = ZkTlsnVerifier::submitProofCall {
+    let call = StableMintGate::proveAndMintCall {
         proof: proof.solidity_proof.clone().into(),
         publicInputs: public_inputs,
+        recipient,
     };
     let pending = provider
         .send_transaction(
             TransactionRequest::default()
                 .with_from(deployer)
-                .with_to(wrapper)
+                .with_to(gate)
                 .with_input(call.abi_encode()),
         )
-        .compat()
         .await
-        .context("failed to submit settlement transaction")?;
+        .context("failed to submit proveAndMint transaction")?;
     let tx_hash = *pending.tx_hash();
     let receipt = pending
         .get_receipt()
-        .compat()
         .await
-        .context("failed to fetch settlement receipt")?;
+        .context("failed to fetch proveAndMint receipt")?;
     ensure!(
         receipt.status(),
-        "submitProof transaction failed: {tx_hash}"
+        "proveAndMint transaction reverted: {tx_hash}"
     );
     Ok(tx_hash)
 }
 
-async fn read_verified<P>(provider: &P, wrapper: Address, deployer: Address) -> Result<bool>
+async fn read_claimed_tx_id<P>(provider: &P, gate: Address, tx_id: u64) -> Result<bool>
 where
     P: Provider,
 {
-    let call = ZkTlsnVerifier::verifiedCall { account: deployer };
     let response = provider
         .call(
-            TransactionRequest::default()
-                .with_from(deployer)
-                .with_to(wrapper)
-                .with_input(call.abi_encode()),
+            TransactionRequest::default().with_to(gate).with_input(
+                StableMintGate::claimedTxIdCall {
+                    txId: U256::from(tx_id),
+                }
+                .abi_encode(),
+            ),
         )
-        .decode_resp::<ZkTlsnVerifier::verifiedCall>()
+        .decode_resp::<StableMintGate::claimedTxIdCall>()
         .into_future()
-        .compat()
         .await
-        .context("verified(address) call failed")?;
-    response.context("failed to decode verified(address) response")
+        .context("claimedTxId call failed")?;
+    response.context("failed to decode claimedTxId response")
 }
 
-async fn call_gated_action<P>(provider: &P, wrapper: Address, deployer: Address) -> Result<bool>
+async fn read_token_balance<P>(provider: &P, token: Address, account: Address) -> Result<U256>
 where
     P: Provider,
 {
-    let call = ZkTlsnVerifier::gatedActionCall {};
     let response = provider
         .call(
             TransactionRequest::default()
-                .with_from(deployer)
-                .with_to(wrapper)
-                .with_input(call.abi_encode()),
+                .with_to(token)
+                .with_input(StableToken::balanceOfCall { account }.abi_encode()),
         )
-        .decode_resp::<ZkTlsnVerifier::gatedActionCall>()
+        .decode_resp::<StableToken::balanceOfCall>()
         .into_future()
-        .compat()
         .await
-        .context("gatedAction() call failed")?;
-    response.context("failed to decode gatedAction() response")
+        .context("balanceOf call failed")?;
+    response.context("failed to decode balanceOf response")
+}
+
+async fn read_token_owner<P>(provider: &P, token: Address) -> Result<Address>
+where
+    P: Provider,
+{
+    let response = provider
+        .call(
+            TransactionRequest::default()
+                .with_to(token)
+                .with_input(StableToken::ownerCall {}.abi_encode()),
+        )
+        .decode_resp::<StableToken::ownerCall>()
+        .into_future()
+        .await
+        .context("owner call failed")?;
+    response.context("failed to decode owner response")
+}
+
+fn mint_amount(amount: u64) -> U256 {
+    U256::from(amount) * U256::from(1_000_000_000_000_000_000_u128)
+}
+
+fn append_constructor_args(bytecode: &[u8], constructor_args: Vec<u8>) -> Vec<u8> {
+    bytecode.iter().copied().chain(constructor_args).collect()
 }
 
 fn link_verifier_bytecode(
@@ -490,62 +493,4 @@ fn link_range(
         bytecode_len / 2
     );
     Ok(start..end)
-}
-
-fn create_prover_config(
-    cert_bytes: Vec<u8>,
-) -> tlsnotary::Result<(TlsClientConfig, TlsCommitConfig)> {
-    let server_name = ServerName::Dns("localhost".to_string().try_into().map_err(|error| {
-        tlsnotary::Error::InvalidInput(format!("invalid DNS server name 'localhost': {error}"))
-    })?);
-
-    let tls_client_config = TlsClientConfig::builder()
-        .server_name(server_name)
-        .root_store(RootCertStore {
-            roots: vec![CertificateDer(cert_bytes)],
-        })
-        .build()?;
-
-    let tls_commit_config = TlsCommitConfig::builder()
-        .protocol(
-            MpcTlsConfig::builder()
-                .max_sent_data(MAX_SENT_DATA)
-                .max_recv_data(MAX_RECV_DATA)
-                .build()?,
-        )
-        .build()?;
-
-    Ok((tls_client_config, tls_commit_config))
-}
-
-fn create_test_request() -> Result<hyper::Request<Empty<Bytes>>> {
-    hyper::Request::builder()
-        .method("GET")
-        .uri("/api/balance/alice")
-        .header("content-type", "application/json")
-        .header("Connection", "close")
-        .body(Empty::<Bytes>::new())
-        .map_err(Into::into)
-}
-
-fn create_request_reveal_config() -> RevealConfig {
-    RevealConfig {
-        reveal_headers: vec!["content-type".into()],
-        commit_headers: vec!["connection".into()],
-        reveal_body_fields: vec![],
-        commit_body_fields: vec![],
-        reveal_keys_commit_values: vec![],
-    }
-}
-
-fn create_response_reveal_config() -> RevealConfig {
-    use tlsnotary::{BodyFieldConfig, KeyValueCommitConfig};
-
-    RevealConfig {
-        reveal_headers: vec![],
-        commit_headers: vec![],
-        reveal_body_fields: vec![BodyFieldConfig::Quoted(".username".into())],
-        commit_body_fields: vec![],
-        reveal_keys_commit_values: vec![KeyValueCommitConfig::with_padding(".balance".into(), 12)],
-    }
 }

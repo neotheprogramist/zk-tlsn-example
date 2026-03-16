@@ -1,347 +1,113 @@
-use std::{
-    fs,
-    io::Error as IoError,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+#[path = "support/attestation_proof.rs"]
+mod attestation_proof;
+#[path = "support/live_demo.rs"]
+mod live_demo;
 
-use async_compat::Compat;
-use futures::AsyncWriteExt;
-use http_body_util::{BodyExt, Empty};
-use hyper::{StatusCode, body::Bytes};
-use hyper_util::rt::TokioIo;
+use std::net::SocketAddr;
+
+use anyhow::{Context, Result, ensure};
+use clap::Parser;
 use quinn::Endpoint;
-use shared::{
-    TestQuicConfig, TestTlsConfig, get_or_create_test_quic_config, get_or_create_test_tls_config,
-    init_logging,
-};
-use smol::net::TcpStream;
-use tlsnotary::{
-    CertificateDer, HashAlgId, MpcTlsConfig, ProveConfig, ProverConfig, RootCertStore, ServerName,
-    Session, TlsClientConfig, TlsCommitConfig, TranscriptCommitConfig, TranscriptCommitmentKind,
-    prover::{RevealConfig, reveal_request, reveal_response},
-};
+use server::app::TransferRequest;
+use shared::{TestQuicConfig, init_logging};
 use tracing::{error, info, instrument};
-use verifier::{ProofMessage, VerificationOutcome};
-use zktlsn::{PaddingConfig, generate_settlement_bundle};
+use verifier::VerificationOutcome;
 
-/// Maximum sent data size (4 KB)
-const MAX_SENT_DATA: usize = 1 << 12;
-/// Maximum received data size (16 KB)
-const MAX_RECV_DATA: usize = 1 << 14;
+use crate::{
+    attestation_proof::run_attestation_proof_flow,
+    live_demo::{DemoConnectionConfig, create_transfer},
+};
 
-type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-struct StepProgress {
-    current: usize,
-    total: usize,
-}
-
-impl StepProgress {
-    fn new(total: usize) -> Self {
-        Self { current: 0, total }
-    }
-
-    fn tick(&mut self, stage: &str) {
-        self.current = (self.current + 1).min(self.total);
-        let width = 24usize;
-        let filled = (self.current * width) / self.total.max(1);
-        let bar = format!(
-            "{}{}",
-            "█".repeat(filled),
-            "░".repeat(width.saturating_sub(filled))
-        );
-        let percent = (self.current * 100) / self.total.max(1);
-        info!(
-            stage = %stage,
-            step = self.current,
-            total_steps = self.total,
-            percent,
-            progress_bar = %bar,
-            "Prover progress"
-        );
-    }
+#[derive(Debug, Clone, Parser)]
+struct Cli {
+    #[arg(long, env = "ZKTLSN_SERVER_ADDR", default_value = "127.0.0.1:8443")]
+    server_addr: SocketAddr,
+    #[arg(long, env = "ZKTLSN_SERVER_NAME", default_value = "localhost")]
+    server_name: String,
+    #[arg(long, env = "ZKTLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
+    verifier_addr: SocketAddr,
+    #[arg(long, env = "ZKTLSN_FROM_USER", default_value = "alice")]
+    from_user: String,
+    #[arg(long, env = "ZKTLSN_TO_USER", default_value = "treasury")]
+    to_user: String,
+    #[arg(long, env = "ZKTLSN_TRANSFER_AMOUNT", default_value_t = 25)]
+    amount: u64,
 }
 
 fn main() {
-    zktlsn::setup_barretenberg_srs().expect("Failed to setup Barretenberg SRS");
+    zktlsn::setup_barretenberg_srs().expect("failed to setup Barretenberg SRS");
     init_logging("info");
 
     smol::block_on(async {
-        if let Err(err) = run().await {
-            error!(error = %err, "Prover flow failed");
+        if let Err(err) = run(Cli::parse()).await {
+            error!(error = %format!("{err:#}"), "prover flow failed");
             std::process::exit(1);
         }
     });
 }
 
-#[instrument]
-async fn run() -> ExampleResult<()> {
-    let mut progress = StepProgress::new(5);
-    progress.tick("prepare QUIC client configuration");
-    let TestQuicConfig { client_config, .. } =
-        get_or_create_test_quic_config(Path::new("cert.pem"), Path::new("key.pem")).await?;
-    let client_addr: SocketAddr = "[::]:0".parse()?;
+#[instrument(skip(cli))]
+async fn run(cli: Cli) -> Result<()> {
+    let demo = DemoConnectionConfig {
+        server_addr: cli.server_addr,
+        server_name: cli.server_name.clone(),
+    };
+    let transfer = create_transfer(
+        &demo,
+        &TransferRequest {
+            from_username: cli.from_user.clone(),
+            to_username: cli.to_user.clone(),
+            amount: cli.amount,
+        },
+    )
+    .await
+    .context("failed to create transfer attestation")?;
+    let verification = connect_and_prove(&cli, transfer.tx_id)
+        .await
+        .context("failed to complete TLSN proof flow")?;
 
-    let mut endpoint = Endpoint::client(client_addr)?;
-    endpoint.set_default_client_config(client_config);
-
-    let verifier_addr: SocketAddr = "[::1]:5000".parse()?;
-    let connection = endpoint.connect(verifier_addr, "localhost")?.await?;
-    info!(%verifier_addr, "Connected to verifier");
-    progress.tick("connected to verifier");
-
-    let (send, recv) = connection.open_bi().await?;
-    let stream = tokio::io::join(recv, send);
-    progress.tick("opened QUIC bidirectional stream");
-    let verification_result = run_single_stream_prover_flow(stream).await?;
-    progress.tick("received verification result");
-
-    if !verification_result.success {
-        return Err(IoError::other(format!(
-            "verification failed: {}",
-            verification_result.message
-        ))
-        .into());
-    }
-
-    info!(
-        server_name = %verification_result.server_name,
-        verified_fields = ?verification_result.verified_fields,
-        "Full ZK-TLS notarization and verification flow completed successfully"
+    ensure!(
+        verification.success,
+        "verification failed: {}",
+        verification.message
     );
-    progress.tick("flow complete");
+    info!(
+        tx_id = transfer.tx_id,
+        to_user_id = transfer.to_user_id,
+        eligible_for_mint = transfer.eligible_for_mint,
+        verified_fields = ?verification.verified_fields,
+        "Native transfer proof verified successfully"
+    );
     Ok(())
 }
 
-#[instrument(skip(stream), fields(phase = "notarize+prove+verify"))]
-async fn run_single_stream_prover_flow<IO>(stream: IO) -> ExampleResult<VerificationOutcome>
-where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
-    let mut progress = StepProgress::new(8);
-    let session = Session::new(Compat::new(stream));
-    let (driver, mut handle) = session.split();
-    let driver_task = smol::spawn(driver);
-    progress.tick("created TLSN session");
+async fn connect_and_prove(cli: &Cli, tx_id: u64) -> Result<VerificationOutcome> {
+    let TestQuicConfig { client_config, .. } = shared::get_or_create_test_quic_config(
+        std::path::Path::new("cert.pem"),
+        std::path::Path::new("key.pem"),
+    )
+    .await
+    .context("failed to load QUIC test configuration")?;
+    let mut endpoint = Endpoint::client("[::]:0".parse().context("invalid client bind address")?)
+        .context("failed to create QUIC endpoint")?;
+    endpoint.set_default_client_config(client_config);
 
-    let TestTlsConfig { cert_bytes, .. } =
-        get_or_create_test_tls_config(Path::new("test_cert.pem"), Path::new("test_key.pem"))?;
-    let (tls_client_config, tls_commit_config) = create_prover_config(cert_bytes)?;
-    progress.tick("prepared TLS client/commit configuration");
+    let connection = endpoint
+        .connect(cli.verifier_addr, "localhost")
+        .context("failed to start QUIC connection")?
+        .await
+        .context("failed to connect to verifier")?;
+    let (send, recv) = connection
+        .open_bi()
+        .await
+        .context("failed to open QUIC bidirectional stream")?;
 
-    let prover = handle
-        .new_prover(
-            ProverConfig::builder()
-                .build()
-                .map_err(tlsnotary::Error::from)?,
-        )?
-        .commit(tls_commit_config)
-        .await?;
-    progress.tick("committed TLSN prover configuration");
-
-    let prover_server_socket = TcpStream::connect("localhost:8443").await?;
-    info!("Connected to TLS server at localhost:8443");
-    progress.tick("connected to backend TLS server");
-
-    let (tls_connection, prover_fut) = prover
-        .connect(tls_client_config, prover_server_socket)
-        .await?;
-    let tls_connection = TokioIo::new(Compat::new(tls_connection));
-
-    let (mut request_sender, connection) =
-        hyper::client::conn::http1::handshake(tls_connection).await?;
-
-    let request_task = async move {
-        let response = request_sender.send_request(create_test_request()?).await?;
-        if response.status() != StatusCode::OK {
-            return Err(IoError::other(format!(
-                "unexpected backend status: {}",
-                response.status()
-            ))
-            .into());
-        }
-
-        let response_body = response.collect().await?.to_bytes().to_vec();
-        Ok::<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>(response_body)
-    };
-
-    let (prover_result, connection_result, response_result) =
-        futures::join!(prover_fut, connection, request_task);
-    let mut prover = prover_result?;
-    connection_result?;
-    response_result?;
-    progress.tick("completed backend HTTP exchange");
-
-    let transcript = prover.transcript().clone();
-    let received_transcript = transcript.received().to_vec();
-    info!(
-        "Prover full request view (fully revealed baseline):\n{}",
-        render_full_transcript_view(transcript.sent())
-    );
-    info!(
-        "Prover full response view (fully revealed baseline):\n{}",
-        render_full_transcript_view(transcript.received())
-    );
-
-    let mut prove_config_builder = ProveConfig::builder(&transcript);
-    prove_config_builder.server_identity();
-
-    let mut transcript_commit_builder = TranscriptCommitConfig::builder(&transcript);
-    transcript_commit_builder.default_kind(TranscriptCommitmentKind::Hash {
-        alg: HashAlgId::BLAKE3,
-    });
-
-    let request_reveal = create_request_reveal_config();
-    let response_reveal = create_response_reveal_config();
-
-    reveal_request(
-        transcript.sent(),
-        &mut prove_config_builder,
-        &mut transcript_commit_builder,
-        &request_reveal,
-    )?;
-    reveal_response(
-        transcript.received(),
-        &mut prove_config_builder,
-        &mut transcript_commit_builder,
-        &response_reveal,
-    )?;
-
-    prove_config_builder.transcript_commit(
-        transcript_commit_builder
-            .build()
-            .map_err(tlsnotary::Error::from)?,
-    );
-    let prove_config = prove_config_builder
-        .build()
-        .map_err(tlsnotary::Error::from)?;
-
-    let prover_output = prover.prove(&prove_config).await?;
-    prover.close().await?;
-    handle.close();
-    let mut stream = driver_task.await?;
-    progress.tick("generated TLSN commitments and secrets");
-
-    info!(
-        commitments = prover_output.transcript_commitments.len(),
-        secrets = prover_output.transcript_secrets.len(),
-        "TLSNotary proving complete"
-    );
-
-    let bundle = generate_settlement_bundle(
-        &prover_output.transcript_commitments,
-        &prover_output.transcript_secrets,
-        &received_transcript,
-        PaddingConfig::new(12),
-    )?;
-    let prover_toml = bundle.noir_inputs.to_prover_toml();
-    let prover_toml_path = circuit_prover_toml_path();
-    fs::write(&prover_toml_path, &prover_toml)?;
-    info!(
-        path = %prover_toml_path.display(),
-        "Wrote Noir inputs for `nargo execute`"
-    );
-    println!(
-        "Generated {} for `cd circuit && nargo execute`:\n{}",
-        prover_toml_path.display(),
-        prover_toml
-    );
-
-    let proof = bundle.native_proof;
-    info!(
-        proof_len = proof.proof.len(),
-        vk_len = proof.verification_key.len(),
-        "Generated ZK proof"
-    );
-    progress.tick("generated ZK proof");
-
-    ProofMessage::new(proof).write_to(&mut stream).await?;
-    let verification_result = VerificationOutcome::read_from(&mut stream).await?;
-    stream.close().await?;
-    progress.tick("submitted proof and read verifier response");
-
-    Ok(verification_result)
-}
-
-fn create_prover_config(
-    cert_bytes: Vec<u8>,
-) -> tlsnotary::Result<(TlsClientConfig, TlsCommitConfig)> {
-    let server_name = ServerName::Dns("localhost".to_string().try_into().map_err(|error| {
-        tlsnotary::Error::InvalidInput(format!("invalid DNS server name 'localhost': {error}"))
-    })?);
-
-    let tls_client_config = TlsClientConfig::builder()
-        .server_name(server_name)
-        .root_store(RootCertStore {
-            roots: vec![CertificateDer(cert_bytes)],
-        })
-        .build()?;
-
-    let tls_commit_config = TlsCommitConfig::builder()
-        .protocol(
-            MpcTlsConfig::builder()
-                .max_sent_data(MAX_SENT_DATA)
-                .max_recv_data(MAX_RECV_DATA)
-                .build()?,
-        )
-        .build()?;
-
-    Ok((tls_client_config, tls_commit_config))
-}
-
-fn create_test_request() -> Result<hyper::Request<Empty<Bytes>>, hyper::http::Error> {
-    hyper::Request::builder()
-        .method("GET")
-        .uri("/api/balance/alice")
-        .header("content-type", "application/json")
-        .header("Connection", "close")
-        .body(Empty::<Bytes>::new())
-}
-
-fn create_request_reveal_config() -> RevealConfig {
-    RevealConfig {
-        reveal_headers: vec!["content-type".into()],
-        commit_headers: vec!["connection".into()],
-        reveal_body_fields: vec![],
-        commit_body_fields: vec![],
-        reveal_keys_commit_values: vec![],
-    }
-}
-
-fn create_response_reveal_config() -> RevealConfig {
-    use tlsnotary::{BodyFieldConfig, KeyValueCommitConfig};
-
-    RevealConfig {
-        reveal_headers: vec![],
-        commit_headers: vec![],
-        reveal_body_fields: vec![BodyFieldConfig::Quoted(".username".into())],
-        commit_body_fields: vec![],
-        reveal_keys_commit_values: vec![KeyValueCommitConfig::with_padding(".balance".into(), 12)],
-    }
-}
-
-fn render_full_transcript_view(bytes: &[u8]) -> String {
-    let mut out = String::new();
-
-    for byte in bytes {
-        match *byte {
-            b'\r' | b'\n' => {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-            }
-            b'\t' => out.push('\t'),
-            0x20..=0x7e => out.push(*byte as char),
-            _ => out.push_str(&format!("\\x{byte:02X}")),
-        }
-    }
-
-    out
-}
-
-fn circuit_prover_toml_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../circuit/Prover.toml")
-        .to_path_buf()
+    run_attestation_proof_flow(
+        tokio::io::join(recv, send),
+        cli.server_addr,
+        &cli.server_name,
+        tx_id,
+    )
+    .await
+    .map(|flow| flow.verification)
 }

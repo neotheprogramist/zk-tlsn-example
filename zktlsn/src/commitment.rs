@@ -4,6 +4,8 @@ use tlsnotary::{Direction, PlaintextHash, TranscriptCommitment};
 
 use crate::{Result, ZkTlsnError};
 
+const MAX_KEY_TO_COMMITMENT_GAP: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct BoundCommitment {
     pub key_range: std::ops::Range<usize>,
@@ -59,7 +61,7 @@ fn find_nearest_commitment<'a>(
 ) -> Option<&'a PlaintextHash> {
     commitments_by_position
         .range(key_end..)
-        .take_while(|(start, _)| (*start).saturating_sub(key_end) <= 2)
+        .take_while(|(start, _)| (*start).saturating_sub(key_end) <= MAX_KEY_TO_COMMITMENT_GAP)
         .map(|(_, hash)| *hash)
         .next()
 }

@@ -10,6 +10,9 @@ pub enum SharedError {
 
     #[error("QUIC configuration error: {0}")]
     QuicConfig(#[from] QuicConfigError),
+
+    #[error("invalid attestation: {0}")]
+    InvalidAttestation(String),
 }
 
 #[derive(Error, Debug)]

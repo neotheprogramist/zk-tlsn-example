@@ -13,6 +13,7 @@ alloy-primitives = "1.5.7"
 alloy-sol-types = "1.5.7"
 async-compat = "0.2.5"
 axum = "0.8.8"
+clap = { version = "4.5.59", features = ["derive", "env"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 futures = "0.3.32"
 futures-rustls = "0.26.0"

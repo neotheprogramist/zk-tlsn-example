@@ -8,6 +8,10 @@ use noir::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use shared::{
+    ATTESTATION_LEN, FiatTransferAttestation, encode_transfer_attestation,
+    parse_transfer_attestation,
+};
 use tlsnotary::{
     Direction, HashAlgId, PlaintextHash, PlaintextHashSecret, TranscriptCommitment,
     TranscriptSecret,
@@ -18,7 +22,6 @@ use crate::{
     padding::PaddingConfig,
 };
 
-const COMMITTED_PART_LEN: usize = 12;
 const HONK_FIELD_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,67 +65,104 @@ pub struct SettlementBundle {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoirProverInputs {
-    pub balance_committed_hash: [u8; 32],
-    pub balance_committed_part: String,
-    pub balance_blinder: [u8; 16],
+    pub attestation_committed_hash: [u8; 32],
+    pub tx_id: u64,
+    pub to_user_id: u64,
+    pub amount: u64,
+    pub attestation: String,
+    pub attestation_blinder: [u8; 16],
 }
 
 impl NoirProverInputs {
-    pub fn from_committed_part(
-        balance_committed_part: impl Into<String>,
-        balance_blinder: [u8; 16],
+    pub fn from_transfer(
+        tx_id: u64,
+        to_user_id: u64,
+        amount: u64,
+        attestation_blinder: [u8; 16],
     ) -> Result<Self> {
-        let balance_committed_part = balance_committed_part.into();
-        let balance_bytes = balance_committed_part.as_bytes();
-        if balance_bytes.len() != COMMITTED_PART_LEN {
+        let attestation =
+            encode_transfer_attestation(FiatTransferAttestation::new(tx_id, to_user_id, amount))
+                .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
+
+        Self::from_attestation(attestation, attestation_blinder)
+    }
+
+    pub fn from_attestation(
+        attestation: impl Into<String>,
+        attestation_blinder: [u8; 16],
+    ) -> Result<Self> {
+        let attestation = attestation.into();
+        let parsed = parse_transfer_attestation(&attestation)
+            .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
+        let attestation_bytes = attestation.as_bytes();
+        if attestation_bytes.len() != ATTESTATION_LEN {
             return Err(ZkTlsnError::InvalidInput(format!(
-                "balance committed part must be {COMMITTED_PART_LEN} bytes, got {}",
-                balance_bytes.len()
+                "attestation must be {ATTESTATION_LEN} bytes, got {}",
+                attestation_bytes.len()
             )));
         }
 
-        let mut hash_input = Vec::with_capacity(COMMITTED_PART_LEN + balance_blinder.len());
-        hash_input.extend_from_slice(balance_bytes);
-        hash_input.extend_from_slice(&balance_blinder);
+        let hash_input = [attestation_bytes, &attestation_blinder].concat();
         let committed_hash =
             blake3(&hash_input).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
 
         Ok(Self {
-            balance_committed_hash: to_fixed_array::<32>(
+            attestation_committed_hash: to_fixed_array::<32>(
                 &committed_hash,
-                "balance_committed_hash",
+                "attestation_committed_hash",
             )?,
-            balance_committed_part,
-            balance_blinder,
+            tx_id: parsed.tx_id,
+            to_user_id: parsed.to_user_id,
+            amount: parsed.amount,
+            attestation,
+            attestation_blinder,
         })
     }
 
     pub fn to_prover_toml(&self) -> String {
         format!(
-            "balance_blinder = {}\nbalance_committed_hash = {}\nbalance_committed_part = \"{}\"\n",
-            format_decimal_byte_array(&self.balance_blinder),
-            format_decimal_byte_array(&self.balance_committed_hash),
-            escape_toml_string(&self.balance_committed_part),
+            "attestation_blinder = {}\nattestation_committed_hash = {}\ntx_id = \"{}\"\nto_user_id = \"{}\"\namount = \"{}\"\nattestation = \"{}\"\n",
+            format_decimal_byte_array(&self.attestation_blinder),
+            format_decimal_byte_array(&self.attestation_committed_hash),
+            self.tx_id,
+            self.to_user_id,
+            self.amount,
+            escape_toml_string(&self.attestation),
         )
     }
 
     pub fn to_solidity_public_inputs(&self) -> Vec<[u8; HONK_FIELD_BYTES]> {
-        self.balance_committed_hash
+        self.attestation_committed_hash
             .iter()
             .map(|byte| {
                 let mut word = [0u8; HONK_FIELD_BYTES];
                 word[HONK_FIELD_BYTES - 1] = *byte;
                 word
             })
+            .chain(
+                [self.tx_id, self.to_user_id, self.amount]
+                    .into_iter()
+                    .map(u64_to_field_word),
+            )
             .collect()
     }
 
     fn witness_values(&self) -> Vec<String> {
-        self.balance_committed_hash
+        self.attestation_committed_hash
             .iter()
-            .chain(self.balance_committed_part.as_bytes().iter())
-            .chain(self.balance_blinder.iter())
             .map(|byte| byte.to_string())
+            .chain(
+                [self.tx_id, self.to_user_id, self.amount]
+                    .into_iter()
+                    .map(|value| value.to_string()),
+            )
+            .chain(
+                self.attestation
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| byte.to_string()),
+            )
+            .chain(self.attestation_blinder.iter().map(|byte| byte.to_string()))
             .collect()
     }
 }
@@ -177,7 +217,7 @@ fn generate_keccak_proof_from_inputs(input: &NoirProverInputs) -> Result<KeccakP
     }
     let parsed_public_inputs = combined_proof[..public_inputs_size]
         .chunks_exact(HONK_FIELD_BYTES)
-        .map(|input| to_fixed_array::<HONK_FIELD_BYTES>(input, "solidity_public_input"))
+        .map(|value| to_fixed_array::<HONK_FIELD_BYTES>(value, "solidity_public_input"))
         .collect::<Result<Vec<_>>>()?;
 
     if parsed_public_inputs != expected_public_inputs {
@@ -216,8 +256,10 @@ pub fn derive_noir_prover_inputs(
 fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<PlaintextHash> {
     commitments
         .iter()
-        .find_map(|c| match c {
-            TranscriptCommitment::Hash(h) if h.direction == Direction::Received => Some(h.clone()),
+        .find_map(|commitment| match commitment {
+            TranscriptCommitment::Hash(hash) if hash.direction == Direction::Received => {
+                Some(hash.clone())
+            }
             _ => None,
         })
         .ok_or(ZkTlsnError::NoReceivedCommitments)
@@ -226,8 +268,10 @@ fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<P
 fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHashSecret> {
     secrets
         .iter()
-        .find_map(|s| match s {
-            TranscriptSecret::Hash(h) if h.direction == Direction::Received => Some(h.clone()),
+        .find_map(|secret| match secret {
+            TranscriptSecret::Hash(hash) if hash.direction == Direction::Received => {
+                Some(hash.clone())
+            }
             _ => None,
         })
         .ok_or(ZkTlsnError::NoReceivedSecrets)
@@ -310,29 +354,31 @@ fn generate_native_proof_from_inputs(input: &NoirProverInputs) -> Result<Proof> 
     let bytecode = load_circuit_bytecode()?;
     let inputs = input.witness_values();
     let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-
     let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
     let vk = get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
     let proof =
         prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
+
     Ok(Proof::new(vk, proof))
 }
 
 fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
-    let balance_committed_hash =
-        to_fixed_array::<32>(&input.committed_hash, "balance_committed_hash")?;
-    let balance_blinder = to_fixed_array::<16>(&input.blinder, "balance_blinder")?;
-    let balance_committed_part =
-        String::from_utf8(input.committed_data.clone()).map_err(|error| {
-            ZkTlsnError::InvalidInput(format!(
-                "balance committed part must be valid UTF-8: {error}"
-            ))
-        })?;
+    let attestation_committed_hash =
+        to_fixed_array::<32>(&input.committed_hash, "attestation_committed_hash")?;
+    let attestation_blinder = to_fixed_array::<16>(&input.blinder, "attestation_blinder")?;
+    let attestation = String::from_utf8(input.committed_data.clone()).map_err(|error| {
+        ZkTlsnError::InvalidInput(format!("attestation must be valid UTF-8: {error}"))
+    })?;
+    let parsed = parse_transfer_attestation(&attestation)
+        .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
 
     Ok(NoirProverInputs {
-        balance_committed_hash,
-        balance_committed_part,
-        balance_blinder,
+        attestation_committed_hash,
+        tx_id: parsed.tx_id,
+        to_user_id: parsed.to_user_id,
+        amount: parsed.amount,
+        attestation,
+        attestation_blinder,
     })
 }
 
@@ -356,7 +402,6 @@ fn format_decimal_byte_array(bytes: &[u8]) -> String {
 
 fn escape_toml_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
-
     for ch in value.chars() {
         match ch {
             '\\' => escaped.push_str("\\\\"),
@@ -370,7 +415,6 @@ fn escape_toml_string(value: &str) -> String {
             ch => escaped.push(ch),
         }
     }
-
     escaped
 }
 
@@ -382,61 +426,78 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+fn u64_to_field_word(value: u64) -> [u8; HONK_FIELD_BYTES] {
+    let mut word = [0u8; HONK_FIELD_BYTES];
+    word[HONK_FIELD_BYTES - 8..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
 #[cfg(test)]
 mod unit_tests {
-    use super::{COMMITTED_PART_LEN, NoirProverInputs};
+    use shared::ATTESTATION_LEN;
+
+    use super::{NoirProverInputs, u64_to_field_word};
 
     #[test]
     fn test_noir_prover_inputs_render_prover_toml() {
-        let inputs = NoirProverInputs {
-            balance_committed_hash: [7; 32],
-            balance_committed_part: "100}        ".to_string(),
-            balance_blinder: [9; 16],
-        };
+        let inputs = NoirProverInputs::from_transfer(
+            1,
+            3,
+            25,
+            [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+        )
+        .expect("inputs");
 
         let toml = inputs.to_prover_toml();
 
-        assert!(toml.contains("balance_blinder = [\"9\", \"9\""));
-        assert!(toml.contains("balance_committed_hash = [\"7\", \"7\""));
-        assert!(toml.contains("balance_committed_part = \"100}        \""));
+        assert!(toml.contains("attestation_blinder = [\"9\", \"9\""));
+        assert!(toml.contains("attestation_committed_hash = [\""));
+        assert!(toml.contains("tx_id = \"1\""));
+        assert!(toml.contains("to_user_id = \"3\""));
+        assert!(toml.contains("amount = \"25\""));
     }
 
     #[test]
-    fn test_noir_prover_inputs_from_committed_part() {
-        let inputs = NoirProverInputs::from_committed_part(
-            "100}        ",
+    fn test_noir_prover_inputs_from_transfer() {
+        let inputs = NoirProverInputs::from_transfer(
+            1,
+            3,
+            25,
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         .expect("inputs");
 
-        assert_eq!(inputs.balance_committed_part.len(), COMMITTED_PART_LEN);
-        assert_eq!(
-            inputs.balance_committed_hash,
-            [
-                102, 226, 151, 18, 13, 110, 208, 205, 251, 132, 197, 47, 232, 53, 55, 231, 32, 250,
-                42, 41, 183, 33, 127, 251, 95, 162, 46, 153, 230, 88, 152, 135,
-            ]
-        );
+        assert_eq!(inputs.attestation.len(), ATTESTATION_LEN);
+        assert_eq!(inputs.tx_id, 1);
+        assert_eq!(inputs.to_user_id, 3);
+        assert_eq!(inputs.amount, 25);
     }
 
     #[test]
     fn test_noir_prover_inputs_expand_to_solidity_public_inputs() {
-        let inputs = NoirProverInputs {
-            balance_committed_hash: [7; 32],
-            balance_committed_part: "100}        ".to_string(),
-            balance_blinder: [9; 16],
-        };
+        let inputs = NoirProverInputs::from_transfer(
+            1,
+            3,
+            25,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        )
+        .expect("inputs");
 
         let public_inputs = inputs.to_solidity_public_inputs();
-        assert_eq!(public_inputs.len(), 32);
-        assert_eq!(public_inputs[0][31], 7);
-        assert_eq!(public_inputs[31][31], 7);
+        assert_eq!(public_inputs.len(), 35);
+        assert_eq!(public_inputs[0][31], inputs.attestation_committed_hash[0]);
+        assert_eq!(public_inputs[31][31], inputs.attestation_committed_hash[31]);
+        assert_eq!(public_inputs[32], u64_to_field_word(1));
+        assert_eq!(public_inputs[33], u64_to_field_word(3));
+        assert_eq!(public_inputs[34], u64_to_field_word(25));
     }
 
     #[test]
     fn test_expected_keccak_split_layout_is_prefix_based() {
-        let inputs = NoirProverInputs::from_committed_part(
-            "100}        ",
+        let inputs = NoirProverInputs::from_transfer(
+            1,
+            3,
+            25,
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
         )
         .expect("inputs");
@@ -449,10 +510,13 @@ mod unit_tests {
         combined.extend_from_slice(&[0xabu8; 64]);
 
         let split_at = public_inputs.len() * 32;
-        assert_eq!(split_at, 1024);
-        assert_eq!(combined[..split_at].len(), 1024);
+        assert_eq!(split_at, 1120);
+        assert_eq!(combined[..split_at].len(), 1120);
         assert_eq!(combined[split_at..].len(), 64);
-        assert_eq!(combined[31], inputs.balance_committed_hash[0]);
-        assert_eq!(combined[1023], inputs.balance_committed_hash[31]);
+        assert_eq!(combined[31], inputs.attestation_committed_hash[0]);
+        assert_eq!(combined[1023], inputs.attestation_committed_hash[31]);
+        assert_eq!(combined[1055], 1);
+        assert_eq!(combined[1087], 3);
+        assert_eq!(combined[1119], 25);
     }
 }

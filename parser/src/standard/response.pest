@@ -36,7 +36,7 @@ array  = {
 }
 
 quoted_key = _{ "\"" ~ key ~ "\"" }
-key        =  { ASCII_ALPHANUMERIC+ }
+key        =  { (ASCII_ALPHANUMERIC | "_")+ }
 value      = _{ object | array | quoted_string | number | boolean | null }
 boolean    =  { "true" | "false" }
 null       =  { "null" }

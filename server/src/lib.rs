@@ -8,23 +8,69 @@ pub use shared::SmolExecutor;
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, str::FromStr};
+    use std::str::FromStr;
 
+    use axum::{body::Body, http::Request as AxumRequest};
+    use http_body_util::BodyExt;
     use hyper::Uri;
     use parser::{JsonFieldRangeExt, standard::Response};
     use shared::create_test_tls_config;
     use smol::net::unix::UnixStream;
+    use tower::ServiceExt;
 
-    use crate::{app::get_app, handle_connection, send_request};
+    use crate::{
+        app::{AppConfig, InitialUser, TransferRequest, TransferResponse, get_app},
+        handle_connection, send_request,
+    };
+
+    fn test_app() -> axum::Router {
+        get_app(AppConfig {
+            users: vec![
+                InitialUser::new("alice", 100),
+                InitialUser::new("bob", 40),
+                InitialUser::new("treasury", 0),
+            ],
+            special_username: String::from("treasury"),
+        })
+        .expect("app should build")
+    }
+
+    async fn seed_transfer(app: &axum::Router, to_username: &str) -> TransferResponse {
+        let request = TransferRequest {
+            from_username: String::from("alice"),
+            to_username: String::from(to_username),
+            amount: 25,
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                AxumRequest::builder()
+                    .method("POST")
+                    .uri("/api/transfers")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&request).expect("transfer request json"),
+                    ))
+                    .expect("transfer request"),
+            )
+            .await
+            .expect("transfer response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("transfer body")
+            .to_bytes();
+        serde_json::from_slice(&body).expect("transfer json")
+    }
 
     #[test]
-    fn test_https_get_balance_existing_user() {
+    fn test_https_get_attestation_existing_transfer() {
         shared::init_test_logging();
 
         smol::block_on(async {
-            let mut balances = HashMap::new();
-            balances.insert("alice".to_string(), 100);
-            let app = get_app(balances);
+            let app = test_app();
+            let transfer = seed_transfer(&app, "treasury").await;
 
             let test_tls_config = create_test_tls_config().unwrap();
             let (client_cnx, server_cnx) = UnixStream::pair().unwrap();
@@ -32,7 +78,8 @@ mod tests {
             let server_task = handle_connection(app, test_tls_config.server_config, server_cnx);
 
             let client_task = send_request(
-                Uri::from_static("/api/balance/alice"),
+                Uri::from_str(&format!("/api/attestations/{}", transfer.tx_id))
+                    .expect("attestation uri"),
                 test_tls_config.client_config,
                 client_cnx,
             );
@@ -59,31 +106,34 @@ mod tests {
             );
             assert_eq!(&raw_response_str[parsed_response.status.clone()], "OK");
 
-            let username_field = parsed_response
+            let attestation_field = parsed_response
                 .body
-                .get(".username")
-                .expect("Should find username field");
-            let balance_field = parsed_response
+                .get(".attestation")
+                .expect("Should find attestation field");
+            let amount_field = parsed_response
                 .body
-                .get(".balance")
-                .expect("Should find balance field");
+                .get(".amount")
+                .expect("Should find amount field");
 
-            if let parser::standard::Body::KeyValue { key, value } = username_field {
-                let username_key_range = key.with_quotes_and_colon();
-                let username_val_range = value.with_quotes();
-                let username_str =
-                    &raw_response_str[username_key_range.start..username_val_range.end];
-                assert_eq!(username_str, "\"username\":\"alice\"");
+            if let parser::standard::Body::KeyValue { key, value } = attestation_field {
+                let attestation_key_range = key.with_quotes_and_colon();
+                let attestation_val_range = value.with_quotes();
+                let attestation_str =
+                    &raw_response_str[attestation_key_range.start..attestation_val_range.end];
+                assert_eq!(
+                    attestation_str,
+                    format!("\"attestation\":\"{}\"", transfer.attestation)
+                );
             } else {
-                panic!("username should be a KeyValue");
+                panic!("attestation should be a KeyValue");
             }
 
-            if let parser::standard::Body::KeyValue { key, value } = balance_field {
-                let balance_key_range = key.with_quotes_and_colon();
-                let balance_str = &raw_response_str[balance_key_range.start..value.end];
-                assert_eq!(balance_str, "\"balance\":100");
+            if let parser::standard::Body::KeyValue { key, value } = amount_field {
+                let amount_key_range = key.with_quotes_and_colon();
+                let amount_str = &raw_response_str[amount_key_range.start..value.end];
+                assert_eq!(amount_str, "\"amount\":25");
             } else {
-                panic!("balance should be a KeyValue");
+                panic!("amount should be a KeyValue");
             }
         });
     }
@@ -93,9 +143,8 @@ mod tests {
         shared::init_test_logging();
 
         smol::block_on(async {
-            let mut balances = HashMap::new();
-            balances.insert("alice".to_string(), 100);
-            let app = get_app(balances);
+            let app = test_app();
+            let transfer = seed_transfer(&app, "bob").await;
 
             let test_tls_config = create_test_tls_config().unwrap();
             let (client_cnx, server_cnx) = UnixStream::pair().unwrap();
@@ -103,7 +152,8 @@ mod tests {
             let server_task = handle_connection(app, test_tls_config.server_config, server_cnx);
 
             let client_task = send_request(
-                Uri::from_static("/api/balance/alice"),
+                Uri::from_str(&format!("/api/attestations/{}", transfer.tx_id))
+                    .expect("attestation uri"),
                 test_tls_config.client_config,
                 client_cnx,
             );
@@ -122,7 +172,7 @@ mod tests {
             assert_eq!(&raw_request_str[parsed_request.method.clone()], "GET");
             assert_eq!(
                 &raw_request_str[parsed_request.url.clone()],
-                "/api/balance/alice"
+                format!("/api/attestations/{}", transfer.tx_id)
             );
             assert_eq!(
                 &raw_request_str[parsed_request.protocol_version.clone()],
@@ -181,31 +231,34 @@ mod tests {
                 .header_full_range(&content_type_header.value.with_newline())];
             assert_eq!(header_full_str, "content-type: application/json\r\n");
 
-            let username_field = parsed_response
+            let tx_id_field = parsed_response
                 .body
-                .get(".username")
-                .expect("Should find username field");
-            let balance_field = parsed_response
+                .get(".txId")
+                .expect("Should find txId field");
+            let attestation_field = parsed_response
                 .body
-                .get(".balance")
-                .expect("Should find balance field");
+                .get(".attestation")
+                .expect("Should find attestation field");
 
-            if let parser::standard::Body::KeyValue { key, value } = username_field {
-                let username_key_range = key.with_quotes_and_colon();
-                let username_val_range = value.with_quotes();
-                let username_str =
-                    &raw_response_str[username_key_range.start..username_val_range.end];
-                assert_eq!(username_str, "\"username\":\"alice\"");
+            if let parser::standard::Body::KeyValue { key, value } = tx_id_field {
+                let tx_id_key_range = key.with_quotes_and_colon();
+                let tx_id_str = &raw_response_str[tx_id_key_range.start..value.end];
+                assert_eq!(tx_id_str, "\"txId\":1");
             } else {
-                panic!("username should be a KeyValue");
+                panic!("txId should be a KeyValue");
             }
 
-            if let parser::standard::Body::KeyValue { key, value } = balance_field {
-                let balance_key_range = key.with_quotes_and_colon();
-                let balance_str = &raw_response_str[balance_key_range.start..value.end];
-                assert_eq!(balance_str, "\"balance\":100");
+            if let parser::standard::Body::KeyValue { key, value } = attestation_field {
+                let attestation_key_range = key.with_quotes_and_colon();
+                let attestation_val_range = value.with_quotes();
+                let attestation_str =
+                    &raw_response_str[attestation_key_range.start..attestation_val_range.end];
+                assert_eq!(
+                    attestation_str,
+                    format!("\"attestation\":\"{}\"", transfer.attestation)
+                );
             } else {
-                panic!("balance should be a KeyValue");
+                panic!("attestation should be a KeyValue");
             }
         });
     }

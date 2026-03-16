@@ -15,6 +15,8 @@ const EMBEDDED_DEPLOYMENT_ARTIFACTS_PATH: &str =
 const VERIFIER_ARTIFACT_PATH: &str = "out/HonkVerifier.sol/HonkVerifier.json";
 const VERIFIER_LIBRARY_ARTIFACT_PATH: &str = "out/HonkVerifier.sol/ZKTranscriptLib.json";
 const WRAPPER_ARTIFACT_PATH: &str = "out/ZkTlsnVerifier.sol/ZkTlsnVerifier.json";
+const STABLE_TOKEN_ARTIFACT_PATH: &str = "out/StableToken.sol/StableToken.json";
+const STABLE_MINT_GATE_ARTIFACT_PATH: &str = "out/StableMintGate.sol/StableMintGate.json";
 const VERIFIER_LINK_SOURCE: &str = "evm/src/generated/HonkVerifier.sol";
 const VERIFIER_LINK_LIBRARY: &str = "ZKTranscriptLib";
 
@@ -24,6 +26,8 @@ pub struct PreparedArtifacts {
     pub verifier_library_bytecode: Vec<u8>,
     pub verifier_bytecode_template: String,
     pub verifier_link_reference: LinkReference,
+    pub stable_token_bytecode: Vec<u8>,
+    pub stable_mint_gate_bytecode: Vec<u8>,
     pub wrapper_bytecode: Vec<u8>,
 }
 
@@ -52,6 +56,8 @@ struct DeploymentArtifactsFile {
     verifier_library_bytecode: String,
     verifier_bytecode_template: String,
     verifier_link_reference: LinkReference,
+    stable_token_bytecode: String,
+    stable_mint_gate_bytecode: String,
     wrapper_bytecode: String,
 }
 
@@ -74,11 +80,24 @@ fn build_artifacts_file(repo_root: &Path) -> Result<DeploymentArtifactsFile> {
     let verifier_artifact = read_artifact(repo_root.join(VERIFIER_ARTIFACT_PATH))?;
     let verifier_library_artifact = read_artifact(repo_root.join(VERIFIER_LIBRARY_ARTIFACT_PATH))?;
     let wrapper_artifact = read_artifact(repo_root.join(WRAPPER_ARTIFACT_PATH))?;
+    let stable_token_artifact = read_artifact(repo_root.join(STABLE_TOKEN_ARTIFACT_PATH))?;
+    let stable_mint_gate_artifact = read_artifact(repo_root.join(STABLE_MINT_GATE_ARTIFACT_PATH))?;
     let verifier_link_reference = extract_verifier_link_reference(&verifier_artifact)?;
 
     ensure!(
         wrapper_artifact.bytecode.link_references.is_empty(),
         "wrapper artifact must not contain link references"
+    );
+    ensure!(
+        stable_token_artifact.bytecode.link_references.is_empty(),
+        "stable token artifact must not contain link references"
+    );
+    ensure!(
+        stable_mint_gate_artifact
+            .bytecode
+            .link_references
+            .is_empty(),
+        "stable mint gate artifact must not contain link references"
     );
 
     Ok(DeploymentArtifactsFile {
@@ -92,6 +111,8 @@ fn build_artifacts_file(repo_root: &Path) -> Result<DeploymentArtifactsFile> {
         verifier_library_bytecode: verifier_library_artifact.bytecode.object,
         verifier_bytecode_template: verifier_artifact.bytecode.object,
         verifier_link_reference,
+        stable_token_bytecode: stable_token_artifact.bytecode.object,
+        stable_mint_gate_bytecode: stable_mint_gate_artifact.bytecode.object,
         wrapper_bytecode: wrapper_artifact.bytecode.object,
     })
 }
@@ -141,6 +162,14 @@ impl TryFrom<DeploymentArtifactsFile> for PreparedArtifacts {
             )?,
             verifier_bytecode_template: file.verifier_bytecode_template,
             verifier_link_reference: file.verifier_link_reference,
+            stable_token_bytecode: decode_hex(
+                &file.stable_token_bytecode,
+                "embedded stable token bytecode",
+            )?,
+            stable_mint_gate_bytecode: decode_hex(
+                &file.stable_mint_gate_bytecode,
+                "embedded stable mint gate bytecode",
+            )?,
             wrapper_bytecode: decode_hex(&file.wrapper_bytecode, "embedded wrapper bytecode")?,
         })
     }

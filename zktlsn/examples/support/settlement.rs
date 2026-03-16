@@ -128,9 +128,16 @@ fn write_fixture_files(repo_root: &Path, bundle: &SettlementBundle) -> Result<()
     let proof_hex = format!("0x{}", hex::encode(&keccak.solidity_proof));
     let public_inputs_hex = keccak.public_inputs_hex();
     let fixture = json!({
-        "balance_committed_part": bundle.noir_inputs.balance_committed_part,
-        "balance_blinder": bundle.noir_inputs.balance_blinder,
-        "balance_committed_hash": bundle.noir_inputs.balance_committed_hash,
+        "attestation": bundle.noir_inputs.attestation,
+        "attestation_blinder": bundle.noir_inputs.attestation_blinder,
+        "attestation_committed_hash": bundle.noir_inputs.attestation_committed_hash,
+        "tx_id": bundle.noir_inputs.tx_id,
+        "to_user_id": bundle.noir_inputs.to_user_id,
+        "amount": bundle.noir_inputs.amount,
+        "mint_amount_wei": u128::from(bundle.noir_inputs.amount)
+            .checked_mul(1_000_000_000_000_000_000_u128)
+            .context("mint amount overflow")?
+            .to_string(),
         "proof_hex": proof_hex,
         "public_inputs": public_inputs_hex,
     });
