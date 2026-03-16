@@ -56,6 +56,18 @@ bbup -v 1.0.0-nightly.20250723
 bb --version
 ```
 
+### Foundry
+
+Foundry provides the local EVM toolchain used in this repo for `forge`, `cast`, and `anvil`.
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+forge --version
+cast --version
+anvil --version
+```
+
 ### Important Notes
 
 - `zktlsn::setup_barretenberg_srs()` downloads CRS data from `https://crs.aztec.network` on first use, so the first prover/test run needs internet access.
@@ -71,7 +83,7 @@ git clone <repo-url> && cd zk-tlsn-example
 nargo compile
 
 cargo build --release
-cargo test --release
+cargo test --release --all-targets --all
 ```
 
 ## Common Commands
@@ -84,6 +96,15 @@ cargo test --package tlsnotary --release
 cargo test --package zktlsn --release
 cargo clippy
 cargo fmt -- --check
+```
+
+### Foundry
+
+```bash
+forge soldeer install
+forge build
+forge test --match-contract ZkTlsnVerifierTest -vv
+anvil --gas-limit 100000000 --disable-code-size-limit
 ```
 
 ### Noir
@@ -144,6 +165,52 @@ Successful completion ends with a log like:
 Full ZK-TLS notarization and verification flow completed successfully
 ```
 
+## Generate Settlement Artifacts
+
+Use the deterministic fixture generator to produce:
+
+- `evm/src/generated/HonkVerifier.sol`
+- `evm/testdata/proof.bin`
+- `evm/testdata/public_inputs.bin`
+- `evm/testdata/public_inputs.json`
+
+```bash
+cargo run --package zktlsn --release --example fixture
+```
+
+The fixture generator:
+
+1. Writes a deterministic [`circuit/Prover.toml`](./circuit/Prover.toml).
+2. Runs the documented `nargo` and `bb` commands.
+3. Generates the Rust-side keccak proof and public inputs.
+4. Normalizes the generated verifier metadata and writes [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol).
+5. Writes Foundry fixtures under [`evm/testdata`](./evm/testdata).
+6. Runs `forge build` so the deployable artifacts are ready for tests and settlement.
+
+## Test On-Chain Settlement
+
+There are two supported ways to test settlement locally:
+
+1. A deterministic Foundry test path that regenerates fixtures and does not require the TLS server or verifier to be running.
+2. A live end-to-end path that runs the full TLSNotary flow, proves locally in Rust, then settles the proof on Anvil.
+
+### Deterministic Settlement Test With Foundry
+
+This path regenerates the verifier and fixtures, then runs the Solidity tests against Anvil-compatible proof artifacts:
+
+```bash
+cargo run --package zktlsn --release --example fixture
+forge test --match-contract ZkTlsnVerifierTest -vv
+```
+
+The Foundry suite checks that:
+
+1. `submitProof` accepts the committed fixture proof.
+2. `gatedAction()` reverts before settlement.
+3. `gatedAction()` succeeds after settlement.
+4. Tampered proof bytes are rejected.
+5. Tampered public inputs are rejected.
+
 ## Reuse The Generated `Prover.toml` With Noir
 
 After running the prover example, you can reuse the generated [`circuit/Prover.toml`](./circuit/Prover.toml) for standalone Noir and Barretenberg commands.
@@ -155,7 +222,7 @@ cd circuit
 nargo execute witness
 ```
 
-That writes the witness to `./target/witness.gz`.
+That writes the witness to `../target/witness.gz`.
 
 ### Generate And Verify A Native Barretenberg Proof
 
@@ -175,26 +242,22 @@ This flow follows the official Barretenberg guide and adapts it to this repo’s
 
 - Official guide: https://barretenberg.aztec.network/docs/how_to_guides/how-to-solidity-verifier
 
-### 1. Generate A Witness
-
-Use the transcript-derived [`Prover.toml`](./circuit/Prover.toml) produced by the prover example, then generate a witness:
-
-```bash
-cd circuit
-nargo execute witness
-```
-
-### 2. Generate A Keccak Verification Key
+### 1. Generate A Keccak Verification Key
 
 For Solidity verification, Barretenberg expects the key and proof flow to use `keccak` as the oracle hash:
 
 ```bash
+cd /path/to/zk-tlsn-example
+nargo compile --force
+cd circuit
+nargo execute witness
+cd ..
 bb write_vk -b ./target/circuit.json -o ./target --oracle_hash keccak
 ```
 
 This writes the verification key to `./target/vk`.
 
-### 3. Generate A Proof Compatible With The Solidity Verifier
+### 2. Generate A Proof Compatible With The Solidity Verifier
 
 ```bash
 bb prove -b ./target/circuit.json -w ./target/witness.gz -o ./target/solidity --oracle_hash keccak
@@ -207,36 +270,99 @@ This produces:
 
 Use those generated artifacts as-is when verifying on-chain. Do not manually reorder or repack the public inputs.
 
-### 4. Generate The Solidity Contract
+### 3. Generate The Solidity Contract
 
 ```bash
 bb write_solidity_verifier -k ./target/vk -o ./target/Verifier.sol
 ```
 
-The generated contract is written to `./target/Verifier.sol`.
+The raw generated contract is written to `./target/Verifier.sol`.
 
-### 5. Compile And Deploy
+### 4. Normalize The Verifier For Foundry
 
-One simple workflow is:
+The current `bb` output needs a small metadata normalization step for this circuit before it is usable from Foundry/Anvil. The supported repo workflow is:
 
-1. Open [Remix](https://remix.ethereum.org/).
-2. Paste in `./target/Verifier.sol`.
-3. Compile with optimization enabled.
-4. Deploy the `Verifier` contract to an EVM chain that supports the required precompiles.
+```bash
+cargo run --package zktlsn --release --example fixture
+forge test --match-contract ZkTlsnVerifierTest -vv
+```
 
-### 6. Verify On-Chain
+### 5. Run Live Settlement On Anvil
 
-Call the generated `verify(bytes proof, bytes32[] publicInputs)` entrypoint using:
+The live settle demo uses:
 
-- the bytes from `./target/solidity/proof`
-- the public inputs from `./target/solidity/public_inputs`
+1. [`zktlsn/examples/settle.rs`](./zktlsn/examples/settle.rs) for TLSN + proof generation + Alloy-based deployment and contract calls
+2. [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol) for the generated verifier
+3. [`evm/src/ZkTlsnVerifier.sol`](./evm/src/ZkTlsnVerifier.sol) as a thin stateful wrapper
+
+Start the services in order:
+
+### Terminal 1: Backend Server
+
+```bash
+cargo run --package zktlsn --release --example server
+```
+
+### Terminal 2: Verifier / Notary
+
+```bash
+cargo run --package zktlsn --release --example verifier
+```
+
+### Terminal 3: Anvil
+
+The generated verifier exceeds the default EIP-170 code size limit, so start Anvil with both a higher block gas limit and code size checks disabled:
+
+```bash
+anvil --gas-limit 100000000 --disable-code-size-limit
+```
+
+### Terminal 4: Settle
+
+```bash
+cargo run --package zktlsn --release --example settle
+```
+
+Successful completion ends with a log like:
+
+```text
+Full ZK-TLS settle flow completed successfully
+```
+
+The example:
+
+1. Reuses the existing TLSN flow to obtain transcript commitments.
+2. Generates the native proof and completes the off-chain verifier handshake.
+3. Regenerates the keccak verifier and Foundry artifacts for the current run.
+4. Deploys the linked `HonkVerifier` and `ZkTlsnVerifier` contracts to Anvil through Alloy.
+5. Submits a real transaction to `submitProof`.
+6. Confirms success by reading `verified(address)` and calling `gatedAction()`.
+
+Generated verifier and proof fixtures are ephemeral local artifacts. They are ignored by git and recreated by `fixture` and `settle` as needed.
+
+The final log line includes the deployed verifier address, wrapper address, and settlement transaction hash. You can confirm the on-chain result manually with `cast` by reusing the wrapper address from that log:
+
+```bash
+export RPC_URL=http://127.0.0.1:8545
+export DEPLOYER=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+export WRAPPER=<wrapper address from the settle log>
+
+cast call $WRAPPER "verified(address)(bool)" $DEPLOYER --rpc-url $RPC_URL
+cast call $WRAPPER "gatedAction()(bool)" --from $DEPLOYER --rpc-url $RPC_URL
+```
+
+Both calls should return `true`. If you also want the transaction receipt, use the `tx_hash` printed by `settle`:
+
+```bash
+cast receipt <tx_hash> --rpc-url $RPC_URL
+```
 
 The Barretenberg guide also notes that chain support depends on the usual elliptic-curve and modular-exponentiation precompiles. If deployment fails on a specific chain, check the current support notes in the official guide.
 
 ## Architecture
 
 ```text
-zktlsn (examples: prover, server, verifier)
+zktlsn (examples: prover, settle, server, verifier)
   ├── tlsnotary   - TLS notarization protocol wrapper
   ├── parser      - HTTP request/response parsing
   ├── server      - Backend HTTP server
@@ -256,7 +382,12 @@ zktlsn (examples: prover, server, verifier)
 ## Project Layout
 
 - [`zktlsn/examples/prover.rs`](./zktlsn/examples/prover.rs): full end-to-end prover example
+- [`zktlsn/examples/settle.rs`](./zktlsn/examples/settle.rs): end-to-end settle example that proves locally and verifies the keccak proof on Anvil
+- [`zktlsn/examples/fixture.rs`](./zktlsn/examples/fixture.rs): deterministic fixture and verifier generator for Foundry
 - [`zktlsn/examples/verifier.rs`](./zktlsn/examples/verifier.rs): verifier/notary example
 - [`zktlsn/examples/server.rs`](./zktlsn/examples/server.rs): test backend server
 - [`zktlsn/src/prover.rs`](./zktlsn/src/prover.rs): Rust-side proof generation and Noir input export
+- [`evm/src/ZkTlsnVerifier.sol`](./evm/src/ZkTlsnVerifier.sol): stateful wrapper around the generated verifier
+- [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol): committed Barretenberg-generated Solidity verifier
+- [`evm/test/ZkTlsnVerifier.t.sol`](./evm/test/ZkTlsnVerifier.t.sol): Foundry tests for the on-chain settlement path
 - [`circuit/src/main.nr`](./circuit/src/main.nr): Noir circuit

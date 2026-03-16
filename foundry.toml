@@ -2,6 +2,7 @@
 src = "evm"
 out = "out"
 libs = ["dependencies"]
+fs_permissions = [{ access = "read", path = "./evm/testdata" }]
 
 [dependencies]
 forge-std = "1.15.0"

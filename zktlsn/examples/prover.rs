@@ -23,7 +23,7 @@ use tlsnotary::{
 };
 use tracing::{error, info, instrument};
 use verifier::{ProofMessage, VerificationOutcome};
-use zktlsn::{PaddingConfig, derive_noir_prover_inputs, generate_proof};
+use zktlsn::{PaddingConfig, generate_settlement_bundle};
 
 /// Maximum sent data size (4 KB)
 const MAX_SENT_DATA: usize = 1 << 12;
@@ -229,13 +229,13 @@ where
         "TLSNotary proving complete"
     );
 
-    let noir_inputs = derive_noir_prover_inputs(
+    let bundle = generate_settlement_bundle(
         &prover_output.transcript_commitments,
         &prover_output.transcript_secrets,
         &received_transcript,
         PaddingConfig::new(12),
     )?;
-    let prover_toml = noir_inputs.to_prover_toml();
+    let prover_toml = bundle.noir_inputs.to_prover_toml();
     let prover_toml_path = circuit_prover_toml_path();
     fs::write(&prover_toml_path, &prover_toml)?;
     info!(
@@ -248,12 +248,7 @@ where
         prover_toml
     );
 
-    let proof = generate_proof(
-        &prover_output.transcript_commitments,
-        &prover_output.transcript_secrets,
-        &received_transcript,
-        PaddingConfig::new(12),
-    )?;
+    let proof = bundle.native_proof;
     info!(
         proof_len = proof.proof.len(),
         vk_len = proof.verification_key.len(),

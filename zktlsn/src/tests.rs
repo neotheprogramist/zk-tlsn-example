@@ -321,7 +321,7 @@ mod integration {
     };
 
     use super::*;
-    use crate::{ZkTlsnError, derive_noir_prover_inputs, generate_proof};
+    use crate::{ZkTlsnError, derive_noir_prover_inputs, generate_settlement_bundle};
 
     fn setup_srs() {
         static SRS: OnceLock<()> = OnceLock::new();
@@ -402,15 +402,15 @@ mod integration {
         verify_parsed_response(&verifier_output, &received_data);
 
         let padding_config = crate::PaddingConfig::new(12);
-        let proof = generate_proof(
+        let bundle = generate_settlement_bundle(
             &prover_output.transcript_commitments,
             &prover_output.transcript_secrets,
             &prover_output.received,
             padding_config,
         )
-        .expect("Proof generation should succeed");
+        .expect("Settlement bundle generation should succeed");
 
-        verify_balance_commitment_and_proof(&verifier_output, &proof)
+        verify_balance_commitment_and_proof(&verifier_output, &bundle.native_proof)
             .expect("Balance commitment and proof verification should succeed");
     }
 
