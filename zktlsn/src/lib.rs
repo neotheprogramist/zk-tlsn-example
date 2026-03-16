@@ -17,10 +17,7 @@ pub use prover::{
     KeccakProof, NoirProverInputs, Proof, SettlementBundle, derive_noir_prover_inputs,
     generate_settlement_bundle, generate_settlement_bundle_from_inputs,
 };
-pub use verifier::{
-    SolidityVerifierConfig, expected_solidity_verifier_config,
-    normalize_generated_solidity_verifier,
-};
+pub use verifier::validate_generated_solidity_verifier;
 
 pub fn setup_barretenberg_srs() -> Result<()> {
     let bytecode = prover::load_circuit_bytecode()?;

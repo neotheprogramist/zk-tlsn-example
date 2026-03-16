@@ -103,6 +103,7 @@ cargo fmt -- --check
 ```bash
 forge soldeer install
 forge build
+forge lint
 forge test --match-contract ZkTlsnVerifierTest -vv
 anvil --gas-limit 100000000 --disable-code-size-limit
 ```
@@ -218,7 +219,6 @@ After running the prover example, you can reuse the generated [`circuit/Prover.t
 Run the following from the `circuit` directory:
 
 ```bash
-cd circuit
 nargo execute witness
 ```
 
@@ -278,9 +278,11 @@ bb write_solidity_verifier -k ./target/vk -o ./target/Verifier.sol
 
 The raw generated contract is written to `./target/Verifier.sol`.
 
-### 4. Normalize The Verifier For Foundry
+### 4. Validate And Copy The Generated Verifier
 
-The current `bb` output needs a small metadata normalization step for this circuit before it is usable from Foundry/Anvil. The supported repo workflow is:
+The supported repo workflow keeps the raw `bb` verifier unchanged. `fixture` and `settle` validate `./target/Verifier.sol` against the expected circuit shape, then copy it to `evm/src/generated/HonkVerifier.sol` for Foundry/Anvil use.
+
+Use the supported repo workflow:
 
 ```bash
 cargo run --package zktlsn --release --example fixture
@@ -388,6 +390,6 @@ zktlsn (examples: prover, settle, server, verifier)
 - [`zktlsn/examples/server.rs`](./zktlsn/examples/server.rs): test backend server
 - [`zktlsn/src/prover.rs`](./zktlsn/src/prover.rs): Rust-side proof generation and Noir input export
 - [`evm/src/ZkTlsnVerifier.sol`](./evm/src/ZkTlsnVerifier.sol): stateful wrapper around the generated verifier
-- [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol): committed Barretenberg-generated Solidity verifier
+- [`evm/src/generated/HonkVerifier.sol`](./evm/src/generated/HonkVerifier.sol): raw Barretenberg-generated Solidity verifier copied from `./target/Verifier.sol`
 - [`evm/test/ZkTlsnVerifier.t.sol`](./evm/test/ZkTlsnVerifier.t.sol): Foundry tests for the on-chain settlement path
 - [`circuit/src/main.nr`](./circuit/src/main.nr): Noir circuit

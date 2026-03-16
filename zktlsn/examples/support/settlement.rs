@@ -7,9 +7,7 @@ use std::{
 use alloy::hex;
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
-use zktlsn::{
-    SettlementBundle, expected_solidity_verifier_config, normalize_generated_solidity_verifier,
-};
+use zktlsn::{SettlementBundle, validate_generated_solidity_verifier};
 
 const GENERATED_VERIFIER_PATH: &str = "evm/src/generated/HonkVerifier.sol";
 const FIXTURE_DIR: &str = "evm/testdata";
@@ -62,7 +60,7 @@ pub fn prepare_settlement_artifacts(bundle: &SettlementBundle) -> Result<()> {
 
     verify_cli_artifacts(&repo_root, bundle)?;
     write_fixture_files(&repo_root, bundle)?;
-    write_normalized_verifier(&repo_root, bundle)?;
+    write_generated_verifier(&repo_root, bundle)?;
     run_command(&repo_root, "forge", &["build"])
 }
 
@@ -157,19 +155,17 @@ fn write_fixture_files(repo_root: &Path, bundle: &SettlementBundle) -> Result<()
     })
 }
 
-fn write_normalized_verifier(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
+fn write_generated_verifier(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
     let verifier_source = fs::read_to_string(repo_root.join("target/Verifier.sol"))
         .context("failed to read generated verifier")?;
-    let normalized = normalize_generated_solidity_verifier(
-        &verifier_source,
-        expected_solidity_verifier_config(bundle.keccak_proof.public_inputs.len())?,
-    )?;
+    validate_generated_solidity_verifier(&verifier_source, bundle.keccak_proof.public_inputs.len())
+        .context("generated verifier does not match the expected circuit shape")?;
     let verifier_path = repo_root.join(GENERATED_VERIFIER_PATH);
     let parent = verifier_path
         .parent()
         .ok_or_else(|| anyhow!("generated verifier path is missing parent"))?;
     fs::create_dir_all(parent).context("failed to create generated verifier directory")?;
-    fs::write(&verifier_path, normalized)
+    fs::write(&verifier_path, verifier_source)
         .with_context(|| format!("failed to write {}", verifier_path.display()))
 }
 
