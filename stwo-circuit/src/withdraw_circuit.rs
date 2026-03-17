@@ -2,7 +2,7 @@ use itertools::{chain, multiunzip};
 use num_traits::Zero;
 use stwo::{
     core::{
-        channel::KeccakChannel,
+        channel::{Channel, KeccakChannel},
         fields::{m31::BaseField, qm31::SecureField},
         pcs::{CommitmentSchemeVerifier, PcsConfig},
         poly::circle::CanonicCoset,
@@ -52,6 +52,25 @@ use crate::{
     },
 };
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WithdrawPublicInputs {
+    pub merkle_root: BaseField,
+    pub nullifier: BaseField,
+    pub amount: BaseField,
+    pub refund_commitment_hash: BaseField,
+    pub token_address: BaseField,
+}
+
+impl WithdrawPublicInputs {
+    pub fn mix_into(&self, channel: &mut impl Channel) {
+        channel.mix_u64(self.merkle_root.0 as u64);
+        channel.mix_u64(self.nullifier.0 as u64);
+        channel.mix_u64(self.amount.0 as u64);
+        channel.mix_u64(self.refund_commitment_hash.0 as u64);
+        channel.mix_u64(self.token_address.0 as u64);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WithdrawInputs {
     pub balance_fragment: Vec<u8>,
@@ -74,11 +93,7 @@ pub struct WithdrawInputs {
 pub struct WithdrawProof<H: MerkleHasher> {
     pub commitment_stmt0: CommitmentStatement0,
     pub blake_stmt1: BlakeStatement1,
-    pub merkle_root: BaseField,
-    pub nullifier: BaseField,
-    pub amount: BaseField,
-    pub refund_commitment_hash: BaseField,
-    pub token_address: BaseField,
+    pub public_inputs: WithdrawPublicInputs,
     pub log_size: u32,
     pub merkle_depth: usize,
     pub deposit_claimed_sum: SecureField,
@@ -289,6 +304,15 @@ pub fn prove_withdraw(
     tracing::info!("Preprocessed trace committed");
 
     commitment_stmt0.mix_into(prover_channel);
+
+    let public_inputs = WithdrawPublicInputs {
+        merkle_root: inputs.merkle_root,
+        nullifier: inputs.nullifier,
+        amount: inputs.withdraw_amount,
+        refund_commitment_hash: refund_leaf,
+        token_address: inputs.token_address,
+    };
+    public_inputs.mix_into(prover_channel);
 
     tracing::info!("Step 7: Committing base traces");
 
@@ -504,11 +528,7 @@ pub fn prove_withdraw(
     Ok(WithdrawProof {
         commitment_stmt0,
         blake_stmt1,
-        merkle_root: inputs.merkle_root,
-        nullifier: inputs.nullifier,
-        amount: inputs.withdraw_amount,
-        refund_commitment_hash: refund_leaf,
-        token_address: inputs.token_address,
+        public_inputs,
         log_size,
         merkle_depth,
         deposit_claimed_sum,
@@ -559,6 +579,7 @@ pub fn verify_withdraw(proof_data: WithdrawProof<KeccakMerkleHasher>) -> Result<
 
     commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     proof_data.commitment_stmt0.mix_into(channel);
+    proof_data.public_inputs.mix_into(channel);
 
     commitment_scheme.commit(proof_data.proof.commitments[1], &full_log_sizes[1], channel);
 
@@ -631,8 +652,8 @@ pub fn verify_withdraw(proof_data: WithdrawProof<KeccakMerkleHasher>) -> Result<
             is_first_id: scheduler_is_first_column_id(proof_data.log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            amount: proof_data.amount,
-            refund_commitment_hash: proof_data.refund_commitment_hash,
+            amount: proof_data.public_inputs.amount,
+            refund_commitment_hash: proof_data.public_inputs.refund_commitment_hash,
             claimed_sum: proof_data.scheduler_claimed_sum,
         },
         proof_data.scheduler_claimed_sum,

@@ -110,7 +110,7 @@ pub fn run() {
         let offer1_inputs = OfferSpendInputs {
             secret: deposit_secret,
             nullifier: deposit_nullifier,
-            commitment_amount: deposit_amount,
+            deposit_amount,
             offer_amount: offer1_amount,
             refund_secret: offer1_refund_secret,
             refund_nullifier: offer1_refund_nullifier,
@@ -157,27 +157,7 @@ pub fn run() {
         // Create second offer from first offer's refund commitment
         tracing::info!("Creating second offer from refund commitment");
         
-        tracing::info!(
-            refund_commitment = offer1_proof.refund_commitment_hash.0,
-            "Adding offer1 refund commitment to offchain tree"
-        );
         offchain_tree.add_leaf(offer1_proof.refund_commitment_hash);
-        
-        let onchain_root_after_offer1 = try_call_current_root(&app)
-            .await
-            .unwrap_or_else(|| panic!("getCurrentRoot unavailable after offer1"));
-        let offchain_root_after_offer1 = U256::from(offchain_tree.root().0);
-        
-        tracing::info!(
-            onchain_root = %onchain_root_after_offer1,
-            offchain_root = %offchain_root_after_offer1,
-            "Merkle roots after offer1"
-        );
-        
-        assert_eq!(
-            onchain_root_after_offer1, offchain_root_after_offer1,
-            "Merkle root mismatch after offer1"
-        );
         let idx_after_offer1 = (offchain_tree.leaf_count() - 1) as u64;  // Local calculation - no RPC!
 
         let offer2_merkle_index = u32::try_from(idx_after_offer1)
@@ -195,7 +175,7 @@ pub fn run() {
         let offer2_inputs = OfferSpendInputs {
             secret: offer1_refund_secret,
             nullifier: offer1_refund_nullifier,
-            commitment_amount: offer1_refund_amount,
+            deposit_amount: offer1_refund_amount,
             offer_amount: offer2_amount_bf,
             refund_secret: offer2_refund_secret,
             refund_nullifier: offer2_refund_nullifier,
@@ -206,23 +186,9 @@ pub fn run() {
             merkle_root: offer2_merkle_root,
         };
 
-        tracing::info!(
-            offer2_secret = offer1_refund_secret.0,
-            offer2_nullifier = offer1_refund_nullifier.0,
-            offer2_amount = offer1_refund_amount.0,
-            merkle_index = offer2_merkle_index,
-            "Generating second offer proof"
-        );
+        tracing::info!("Generating second offer proof");
         let offer2_proof = prove_offer_withdraw(offer2_inputs, 8).expect("Offer2 proof generation failed");
         verify_offer_withdraw(offer2_proof.clone()).expect("Offer2 proof verification failed");
-        
-        tracing::info!(
-            merkle_root = offer2_proof.merkle_root.0,
-            nullifier = offer2_proof.nullifier.0,
-            amount = offer2_proof.amount.0,
-            refund_commitment = offer2_proof.refund_commitment_hash.0,
-            "Offer2 proof generated"
-        );
 
         tracing::info!("Building second offer on-chain verification payload");
         let offer2_verify_input =

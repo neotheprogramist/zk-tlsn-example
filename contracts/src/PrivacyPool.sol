@@ -36,7 +36,8 @@ contract PrivacyPool {
     uint256[] public activeOffers; // Array of active offer secretHashes for enumeration
 
     // Storage
-    MerkleTreeLib.Tree private tree;
+    MerkleTreeLib.Tree private tree;       // Deposits and refunds
+    MerkleTreeLib.Tree private offersTree; // Offer commitments
     mapping(uint256 => bool) public nullifierHashes;
     address public owner;
     address public stwoVerifier;
@@ -56,6 +57,8 @@ contract PrivacyPool {
     event OfferCreated(
         uint256 indexed secretHash,
         string indexed offerType,
+        uint256 offerCommitment,
+        uint256 refundCommitment,
         uint256 cryptoAmount,
         uint256 fiatAmount,
         string currency,
@@ -88,6 +91,7 @@ contract PrivacyPool {
         owner = _owner;
         stwoVerifier = _stwoVerifier;
         tree.initialize();
+        offersTree.initialize();
     }
 
     /// @notice Hash two values using Poseidon2
@@ -183,6 +187,7 @@ contract PrivacyPool {
         uint256 nullifier,
         address token,
         uint256 amount,
+        uint256 offerCommitment,
         uint256 refundCommitmentHash,
         uint256 secretHash,
         string calldata currency,
@@ -220,7 +225,10 @@ contract PrivacyPool {
         // Mark nullifier as used
         nullifierHashes[nullifier] = true;
 
-        // Add refund commitment to tree
+        // Add offer commitment to offers tree
+        offersTree.addLeaf(offerCommitment);
+
+        // Add refund commitment to deposits tree
         tree.addLeaf(refundCommitmentHash);
 
         // Determine offer type based on fiatAmount
@@ -247,6 +255,8 @@ contract PrivacyPool {
         emit OfferCreated(
             secretHash,
             offerType,
+            offerCommitment,
+            refundCommitmentHash,
             amount,
             fiatAmount,
             currency,
@@ -338,6 +348,16 @@ contract PrivacyPool {
     /// @notice Check if a root is valid
     function isValidRoot(uint256 root) external view returns (bool) {
         return tree.isValidRoot(root);
+    }
+
+    /// @notice Get current root of offers tree
+    function getOffersTreeRoot() external view returns (uint256) {
+        return offersTree.currentRoot;
+    }
+
+    /// @notice Check if an offers tree root is valid
+    function isValidOffersTreeRoot(uint256 root) external view returns (bool) {
+        return offersTree.isValidRoot(root);
     }
 
     /// @notice Check if nullifier was used

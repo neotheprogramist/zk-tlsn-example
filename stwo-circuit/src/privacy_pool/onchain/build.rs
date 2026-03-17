@@ -143,6 +143,7 @@ pub fn build_onchain_verification_input(
         &mut channel,
     );
     proof_data.commitment_stmt0.mix_into(&mut channel);
+    proof_data.public_inputs.mix_into(&mut channel);
     commitment_scheme.commit(
         proof_data.proof.commitments[1],
         &full_log_sizes[1],
@@ -211,8 +212,8 @@ pub fn build_onchain_verification_input(
             is_first_id: scheduler_is_first_column_id(proof_data.log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            amount: proof_data.amount,
-            refund_commitment_hash: proof_data.refund_commitment_hash,
+            amount: proof_data.public_inputs.amount,
+            refund_commitment_hash: proof_data.public_inputs.refund_commitment_hash,
             claimed_sum: proof_data.scheduler_claimed_sum,
         },
         proof_data.scheduler_claimed_sum,

@@ -26,7 +26,7 @@ pub struct AppState {
     pub verifier_address: Address,
     #[arg(long, env = "PRIVACY_POOL_ADDRESS")]
     pub privacy_pool_address: Address,
-    #[arg(long, env = "WITHDRAW_TOKEN")]
+    #[arg(long, env = "TOKEN_ADDRESS")]
     pub withdraw_token: Address,
     #[arg(long, env = "TLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
     pub tlsn_verifier_addr: String,
@@ -244,12 +244,12 @@ pub fn run() {
             &app.owner_private_key,
             app.privacy_pool_address,
             app.withdraw_gas_limit,
-            U256::from(proof.merkle_root.0),
-            U256::from(proof.nullifier.0),
+            U256::from(proof.public_inputs.merkle_root.0),
+            U256::from(proof.public_inputs.nullifier.0),
             app.withdraw_token,
-            U256::from(proof.amount.0),
+            U256::from(proof.public_inputs.amount.0),
             app.withdraw_recipient,
-            U256::from(proof.refund_commitment_hash.0),
+            U256::from(proof.public_inputs.refund_commitment_hash.0),
             &verify_input,
         )
         .await
