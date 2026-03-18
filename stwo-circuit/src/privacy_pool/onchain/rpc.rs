@@ -19,10 +19,8 @@ pub async fn verify_onchain_call(
     let call_data = IStwoVerifier::verifyCall {
         proof: input.proof.clone(),
         params: input.params.clone(),
-        treeRoots: input.tree_roots.clone(),
         treeColumnLogSizes: input.tree_column_log_sizes.clone(),
-        digest: input.digest,
-        nDraws: input.n_draws,
+        publicInputs: input.public_inputs.clone(),
     };
     Compat::new(async move {
         let provider = ProviderBuilder::new().connect_http(
@@ -52,10 +50,8 @@ pub fn build_verify_calldata(input: &OnchainVerificationInput) -> Bytes {
     IStwoVerifier::verifyCall {
         proof: input.proof.clone(),
         params: input.params.clone(),
-        treeRoots: input.tree_roots.clone(),
         treeColumnLogSizes: input.tree_column_log_sizes.clone(),
-        digest: input.digest,
-        nDraws: input.n_draws,
+        publicInputs: input.public_inputs.clone(),
     }
     .abi_encode()
     .into()

@@ -12,6 +12,7 @@ dotenvy.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 quinn.workspace = true
+serde_json.workspace = true
 shared.workspace = true
 smol.workspace = true
 stwo.workspace = true
@@ -28,3 +29,7 @@ path = "src/bin/e2e_withdraw.rs"
 [[bin]]
 name = "e2e-offers"
 path = "src/bin/e2e_offers.rs"
+
+[[bin]]
+name = "e2e-withdraw-edge-cases"
+path = "src/bin/e2e_withdraw_edge_cases.rs"

@@ -170,7 +170,9 @@ contract PrivacyPool {
 
         // For partial withdrawals, insert the change/refund commitment as a new leaf.
         if (refundCommitmentHash != 0) {
-            tree.addLeaf(refundCommitmentHash);
+            uint64 refundLeafIndex = tree.freeLeafIndex;
+            uint256 newRoot = tree.addLeaf(refundCommitmentHash);
+            emit Deposit(refundCommitmentHash, 0, token, refundLeafIndex, newRoot);
         }
 
         // Transfer tokens to recipient
@@ -229,7 +231,11 @@ contract PrivacyPool {
         offersTree.addLeaf(offerCommitment);
 
         // Add refund commitment to deposits tree
-        tree.addLeaf(refundCommitmentHash);
+        {
+            uint64 refundLeafIndex = tree.freeLeafIndex;
+            uint256 newRoot = tree.addLeaf(refundCommitmentHash);
+            emit Deposit(refundCommitmentHash, 0, token, refundLeafIndex, newRoot);
+        }
 
         // Determine offer type based on fiatAmount
         string memory offerType = fiatAmount > 0 ? "static" : "dynamic";

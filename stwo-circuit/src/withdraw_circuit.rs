@@ -300,9 +300,6 @@ pub fn prove_withdraw(
         scheduler_is_first.clone(),
     ]);
 
-    tree_builder.commit(prover_channel);
-    tracing::info!("Preprocessed trace committed");
-
     commitment_stmt0.mix_into(prover_channel);
 
     let public_inputs = WithdrawPublicInputs {
@@ -313,6 +310,9 @@ pub fn prove_withdraw(
         token_address: inputs.token_address,
     };
     public_inputs.mix_into(prover_channel);
+
+    tree_builder.commit(prover_channel);
+    tracing::info!("Preprocessed trace committed");
 
     tracing::info!("Step 7: Committing base traces");
 
@@ -577,10 +577,10 @@ pub fn verify_withdraw(proof_data: WithdrawProof<KeccakMerkleHasher>) -> Result<
     let commitment_scheme =
         &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
-    commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     proof_data.commitment_stmt0.mix_into(channel);
     proof_data.public_inputs.mix_into(channel);
 
+    commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     commitment_scheme.commit(proof_data.proof.commitments[1], &full_log_sizes[1], channel);
 
     let all_elements = AllElements::draw(channel);

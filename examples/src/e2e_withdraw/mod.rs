@@ -5,14 +5,11 @@ use alloy::{
 use clap::Parser;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, build_onchain_verification_input,
-    offchain_merkle::OffchainMerkleTree,
-    poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
-    prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw,
+    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, verify_onchain_call, verify_withdraw
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
-mod chain;
+pub(crate) mod chain;
 mod tlsn;
 
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
@@ -232,6 +229,17 @@ pub fn run() {
         tracing::info!("Step 3: Generating combined proof");
         let proof = prove_withdraw(inputs, 8).expect("Proof generation failed");
         verify_withdraw(proof.clone()).expect("Off-chain verification failed");
+
+        let proof_json =
+            serde_json::to_string_pretty(&proof.proof).expect("Failed to serialize proof to JSON");
+        let proof_line_count = proof_json.lines().count();
+        std::fs::write("withdraw_proof.json", &proof_json)
+            .expect("Failed to write proof JSON to file");
+        tracing::info!(
+            lines = proof_line_count,
+            bytes = proof_json.len(),
+            "Proof saved to withdraw_proof.json"
+        );
 
         tracing::info!("Step 4: Building on-chain verification payload");
         let verify_input =

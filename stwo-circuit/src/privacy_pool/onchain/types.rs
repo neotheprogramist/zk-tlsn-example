@@ -1,4 +1,4 @@
-use alloy::{primitives::FixedBytes, sol};
+use alloy::sol;
 
 sol! {
     struct QM31 {
@@ -74,16 +74,16 @@ sol! {
         ComponentParams[] componentParams;
         uint256 nPreprocessedColumns;
         uint32 componentsCompositionLogDegreeBound;
+        uint32 nInteractionDraws;
+        QM31[] interactionMixFelts;
     }
 
     interface IStwoVerifier {
         function verify(
             Proof calldata proof,
             VerificationParams calldata params,
-            bytes32[] memory treeRoots,
             uint32[][] memory treeColumnLogSizes,
-            bytes32 digest,
-            uint32 nDraws
+            uint64[] calldata publicInputs
         ) external view returns (bool);
     }
 
@@ -103,8 +103,6 @@ sol! {
 pub struct OnchainVerificationInput {
     pub proof: Proof,
     pub params: VerificationParams,
-    pub tree_roots: Vec<FixedBytes<32>>,
     pub tree_column_log_sizes: Vec<Vec<u32>>,
-    pub digest: FixedBytes<32>,
-    pub n_draws: u32,
+    pub public_inputs: Vec<u64>,
 }
