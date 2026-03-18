@@ -151,7 +151,10 @@ where
         "Notarization complete"
     );
 
-    let proof_message = ProofMessage::read_from(&mut io).await?;
+    let proof_message = ProofMessage::read_from(&mut io).await.map_err(|e| {
+        warn!(error = %e, "Failed during proof reception phase");
+        e
+    })?;
     progress.tick("received proof payload");
     info!(
         proof_len = proof_message.proof.proof.len(),
@@ -219,13 +222,13 @@ where
     let verifier = verifier.commit().await.map_err(tlsnotary::Error::from)?;
     info!("Verifier committed protocol proposal");
 
-    if let Some(reason) = protocol_rejection_reason(verifier.request().protocol()) {
+    if let Err(error) = validate_protocol_config(verifier.request().protocol()) {
         verifier
-            .reject(Some(reason.as_str()))
+            .reject(Some(&error.to_string()))
             .await
             .map_err(tlsnotary::Error::from)?;
-        warn!(reason = %reason, "Rejected prover protocol configuration");
-        return Err(ProtocolError::InvalidConfig(reason));
+        warn!(reason = %error, "Rejected prover protocol configuration");
+        return Err(error);
     }
     info!("Accepted prover protocol configuration");
 
@@ -240,17 +243,17 @@ where
     let verifier = verifier.verify().await.map_err(tlsnotary::Error::from)?;
     info!("Started verification phase");
 
-    if let Some(reason) = proving_request_rejection_reason(
+    if let Err(error) = validate_proving_request(
         verifier.request().server_identity(),
         verifier.request().reveal().is_some(),
     ) {
         let verifier = verifier
-            .reject(Some(reason.as_str()))
+            .reject(Some(&error.to_string()))
             .await
             .map_err(tlsnotary::Error::from)?;
         verifier.close().await.map_err(tlsnotary::Error::from)?;
-        warn!(reason = %reason, "Rejected proving request");
-        return Err(ProtocolError::InvalidProvingRequest(reason));
+        warn!(reason = %error, "Rejected proving request");
+        return Err(error);
     }
 
     let (output, verifier) = verifier.accept().await.map_err(tlsnotary::Error::from)?;
@@ -357,7 +360,9 @@ where
 {
     let mut len_buf = [0u8; 4];
     io.read_exact(&mut len_buf).await?;
-    let frame_len = u32::from_be_bytes(len_buf) as usize;
+    let raw_len = u32::from_be_bytes(len_buf);
+    let frame_len =
+        usize::try_from(raw_len).map_err(|_| ProtocolError::FrameTooLarge(raw_len as usize))?;
     if frame_len > MAX_FRAME_BYTES {
         return Err(ProtocolError::FrameTooLarge(frame_len));
     }
@@ -377,7 +382,9 @@ where
         return Err(ProtocolError::FrameTooLarge(payload.len()));
     }
 
-    io.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    let len_u32 =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::FrameTooLarge(payload.len()))?;
+    io.write_all(&len_u32.to_be_bytes()).await?;
     io.write_all(&payload).await?;
     io.flush().await?;
     Ok(())
@@ -390,85 +397,83 @@ async fn send_verification_outcome_and_close<IO>(
 where
     IO: AsyncWrite + Unpin + Send,
 {
-    outcome.write_to(io).await?;
+    info!(success = outcome.success, "Sending verification outcome");
+    outcome.write_to(io).await.map_err(|e| {
+        warn!(error = %e, "Failed sending verification outcome");
+        e
+    })?;
     io.close().await?;
     Ok(())
 }
 
-fn protocol_rejection_reason(protocol: &TlsCommitProtocolConfig) -> Option<String> {
+fn validate_protocol_config(protocol: &TlsCommitProtocolConfig) -> Result<(), ProtocolError> {
     match protocol {
         TlsCommitProtocolConfig::Mpc(mpc_tls_config) => {
             if mpc_tls_config.max_sent_data() > MAX_SENT_DATA {
-                return Some(format!(
+                return Err(ProtocolError::InvalidConfig(format!(
                     "max_sent_data too large: {} > {}",
                     mpc_tls_config.max_sent_data(),
                     MAX_SENT_DATA
-                ));
+                )));
             }
 
             if mpc_tls_config.max_recv_data() > MAX_RECV_DATA {
-                return Some(format!(
+                return Err(ProtocolError::InvalidConfig(format!(
                     "max_recv_data too large: {} > {}",
                     mpc_tls_config.max_recv_data(),
                     MAX_RECV_DATA
-                ));
+                )));
             }
 
-            None
+            Ok(())
         }
-        _ => Some("expected MPC-TLS protocol".to_string()),
+        _ => Err(ProtocolError::InvalidConfig(
+            "expected MPC-TLS protocol".to_string(),
+        )),
     }
 }
 
-fn proving_request_rejection_reason(
+fn validate_proving_request(
     server_identity_revealed: bool,
     reveal_payload_present: bool,
-) -> Option<String> {
+) -> Result<(), ProtocolError> {
     if !server_identity_revealed {
-        return Some("missing required server identity reveal".to_string());
+        return Err(ProtocolError::InvalidProvingRequest(
+            "missing required server identity reveal".to_string(),
+        ));
     }
 
     if !reveal_payload_present {
-        return Some("missing required transcript reveal payload".to_string());
+        return Err(ProtocolError::InvalidProvingRequest(
+            "missing required transcript reveal payload".to_string(),
+        ));
     }
 
-    None
+    Ok(())
 }
 
 fn select_unique_bound_field_for_hash(
     bindings: &HashMap<String, zktlsn::BoundCommitment>,
     proof_committed_hash: &[u8],
 ) -> Result<(String, [u8; 32]), ProtocolError> {
-    let mut matched_field: Option<String> = None;
-    let mut expected_hash = [0u8; 32];
-
-    for (field, binding) in bindings {
-        let commitment_hash_bytes = binding.hash.hash.value.as_bytes();
-        if commitment_hash_bytes.len() != proof_committed_hash.len() {
-            continue;
-        }
-        if commitment_hash_bytes != proof_committed_hash {
-            continue;
-        }
-
-        if let Some(existing_field) = &matched_field {
-            return Err(ProtocolError::CommitmentBindingFailed(format!(
-                "proof committed hash matched multiple fields: [{existing_field}, {field}]"
-            )));
-        }
-
-        expected_hash.copy_from_slice(commitment_hash_bytes);
-        matched_field = Some(field.clone());
-    }
-
-    matched_field.map_or_else(
-        || {
-            Err(ProtocolError::CommitmentBindingFailed(
+    bindings
+        .iter()
+        .filter(|(_, binding)| binding.hash.hash.value.as_bytes() == proof_committed_hash)
+        .try_fold(None, |acc, (field, binding)| match acc {
+            Some((existing, _)) => Err(ProtocolError::CommitmentBindingFailed(format!(
+                "proof committed hash matched multiple fields: [{existing}, {field}]"
+            ))),
+            None => {
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(binding.hash.hash.value.as_bytes());
+                Ok(Some((field.clone(), hash)))
+            }
+        })?
+        .ok_or_else(|| {
+            ProtocolError::CommitmentBindingFailed(
                 "proof committed hash does not match any bound transcript commitment".to_string(),
-            ))
-        },
-        |field| Ok((field, expected_hash)),
-    )
+            )
+        })
 }
 
 fn log_notarized_transcript(
@@ -548,56 +553,51 @@ fn build_commitment_mask(
     transcript_len: usize,
 ) -> Vec<bool> {
     let mut mask = vec![false; transcript_len];
-
-    for commitment in transcript_commitments {
-        if let TranscriptCommitment::Hash(hash) = commitment {
-            if hash.direction != direction {
-                continue;
-            }
-
+    // unwrap_or(0) on idx.min()/end(): RangeSet returns None for empty sets,
+    // where 0 is the correct semantic (empty range = no bytes committed).
+    transcript_commitments
+        .iter()
+        .filter_map(|c| match c {
+            TranscriptCommitment::Hash(hash) if hash.direction == direction => Some(hash),
+            _ => None,
+        })
+        .for_each(|hash| {
             let start = hash.idx.min().unwrap_or(0).min(transcript_len);
             let end = hash.idx.end().unwrap_or(0).min(transcript_len);
-            if end <= start {
-                continue;
-            }
-
-            for byte in &mut mask[start..end] {
-                *byte = true;
-            }
-        }
-    }
-
+            mask.get_mut(start..end)
+                .into_iter()
+                .flatten()
+                .for_each(|b| *b = true);
+        });
     mask
 }
 
 fn render_verifier_view(transcript: &str, commit_mask: &[bool]) -> String {
     let bytes = transcript.as_bytes();
     let max_len = bytes.len().min(commit_mask.len());
-    let mut out = String::new();
 
-    for idx in 0..max_len {
-        if commit_mask[idx] {
-            out.push('🔐');
-            continue;
-        }
-
-        let byte = bytes[idx];
-        if byte == 0 {
-            out.push('🙈');
-            continue;
-        }
-
-        match byte {
-            b'\r' | b'\n' => {
-                if !out.ends_with('\n') {
-                    out.push('\n');
+    let mut out = bytes.iter().zip(commit_mask.iter()).take(max_len).fold(
+        String::new(),
+        |mut out, (&byte, &committed)| {
+            if committed {
+                out.push('🔐');
+            } else if byte == 0 {
+                out.push('🙈');
+            } else {
+                match byte {
+                    b'\r' | b'\n' => {
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                    b'\t' => out.push('\t'),
+                    0x20..=0x7e => out.push(char::from(byte)),
+                    _ => out.push_str(&format!("\\x{byte:02X}")),
                 }
             }
-            b'\t' => out.push('\t'),
-            0x20..=0x7e => out.push(byte as char),
-            _ => out.push_str(&format!("\\x{byte:02X}")),
-        }
-    }
+            out
+        },
+    );
 
     if commit_mask.len() > bytes.len() {
         let hidden_tail = commit_mask.len() - bytes.len();
@@ -630,9 +630,9 @@ fn sanitize_log_text(input: &str) -> String {
                         out.push_str(&format!("\\0x{count}"));
                     }
                 } else if count == 1 {
-                    out.push_str(&format!("\\u{{{:04X}}}", c as u32));
+                    out.push_str(&format!("\\u{{{:04X}}}", u32::from(c)));
                 } else {
-                    out.push_str(&format!("\\u{{{:04X}}}x{count}", c as u32));
+                    out.push_str(&format!("\\u{{{:04X}}}x{count}", u32::from(c)));
                 }
             }
             c => out.push(c),
@@ -801,9 +801,8 @@ mod tests {
         ticket_message_hash,
     };
 
-    use crate::errors::ProtocolError;
-
     use super::{NotarizedTranscript, ProofMessage, VerificationOutcome, verify_proof_message};
+    use crate::errors::ProtocolError;
 
     static PROOF_LOCK: Mutex<()> = Mutex::new(());
     static FIXTURE_PROOF: OnceLock<Proof> = OnceLock::new();
@@ -1068,20 +1067,18 @@ mod tests {
     }
 
     fn redact_string(input: &str, keep_ranges: &[Range<usize>]) -> String {
-        let mut bytes = input.as_bytes().to_vec();
-        let mut keep_mask = vec![false; bytes.len()];
-        for range in keep_ranges {
-            for index in range.clone() {
-                keep_mask[index] = true;
-            }
-        }
-
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            if !keep_mask[index] {
-                *byte = 0;
-            }
-        }
-        String::from_utf8(bytes).expect("valid UTF-8")
+        let bytes: Vec<u8> = input
+            .bytes()
+            .enumerate()
+            .map(|(i, byte)| {
+                if keep_ranges.iter().any(|r| r.contains(&i)) {
+                    byte
+                } else {
+                    0
+                }
+            })
+            .collect();
+        String::from_utf8(bytes).expect("valid UTF-8 after redaction")
     }
 
     fn fixture_path(name: &str) -> PathBuf {

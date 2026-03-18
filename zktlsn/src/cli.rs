@@ -1,8 +1,12 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -36,6 +40,7 @@ pub(crate) struct BbProofArtifacts {
     pub proof: Vec<u8>,
     pub public_inputs: Vec<[u8; HONK_FIELD_BYTES]>,
     pub verification_key: Vec<u8>,
+    pub vk_hash: [u8; HONK_FIELD_BYTES],
 }
 
 pub(crate) fn ensure_cli_toolchain() -> Result<()> {
@@ -44,7 +49,17 @@ pub(crate) fn ensure_cli_toolchain() -> Result<()> {
     Ok(())
 }
 
+static COMPILED_PACKAGES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
 pub(crate) fn compile_package(package: &str) -> Result<()> {
+    let set = COMPILED_PACKAGES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set
+        .lock()
+        .map_err(|e| ZkTlsnError::InvalidInput(e.to_string()))?;
+    if !guard.insert(package.to_string()) {
+        return Ok(());
+    }
+    drop(guard);
     ensure_cli_toolchain()?;
     run_command(
         repo_root(),
@@ -118,6 +133,7 @@ pub(crate) fn prove_circuit(
         proof: fs::read(output_dir.join("proof"))?,
         public_inputs: read_field_words(&output_dir.join("public_inputs"))?,
         verification_key: fs::read(output_dir.join("vk"))?,
+        vk_hash: read_single_field_word(&output_dir.join("vk_hash"))?,
     })
 }
 
@@ -180,6 +196,57 @@ pub(crate) fn write_solidity_verifier(
         ],
     )?;
     Ok(())
+}
+
+pub(crate) fn write_vk_for_circuit(
+    circuit: RecursiveCircuit,
+    target: VerifierTarget,
+) -> Result<(Vec<u8>, [u8; HONK_FIELD_BYTES])> {
+    ensure_cli_toolchain()?;
+    let output_dir = cli_output_dir(&format!("{}-write-vk-{}", circuit.name(), target.as_str()));
+    fs::create_dir_all(&output_dir)?;
+    fs::create_dir_all(crs_path())?;
+    let bytecode_path = repo_root()
+        .join(TARGET_DIR)
+        .join(format!("{}.json", circuit.name()));
+
+    run_command(
+        repo_root(),
+        "bb",
+        &[
+            "write_vk",
+            "-b",
+            &path_arg(&bytecode_path)?,
+            "-o",
+            &path_arg(&output_dir)?,
+            "-t",
+            target.as_str(),
+            "-s",
+            scheme_for(circuit),
+            "-c",
+            &path_arg(&crs_path())?,
+        ],
+    )?;
+
+    Ok((
+        fs::read(output_dir.join("vk"))?,
+        read_single_field_word(&output_dir.join("vk_hash"))?,
+    ))
+}
+
+pub(crate) fn read_single_field_word(path: &Path) -> Result<[u8; HONK_FIELD_BYTES]> {
+    let bytes = fs::read(path)?;
+    if bytes.len() != HONK_FIELD_BYTES {
+        return Err(ZkTlsnError::InvalidInput(format!(
+            "expected {} bytes in `{}`, got {}",
+            HONK_FIELD_BYTES,
+            path.display(),
+            bytes.len()
+        )));
+    }
+    let mut word = [0u8; HONK_FIELD_BYTES];
+    word.copy_from_slice(&bytes);
+    Ok(word)
 }
 
 pub(crate) fn flatten_public_inputs(public_inputs: &[[u8; HONK_FIELD_BYTES]]) -> Vec<u8> {
@@ -270,11 +337,33 @@ fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
     })
 }
 
+static CLI_OUTPUT_DIRS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+
 fn cli_output_dir(label: &str) -> PathBuf {
-    repo_root()
+    let dir = repo_root()
         .join(TARGET_DIR)
         .join(CLI_DIR)
-        .join(next_cli_id(label))
+        .join(next_cli_id(label));
+    let tracker = CLI_OUTPUT_DIRS.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut dirs) = tracker.lock() {
+        dirs.push(dir.clone());
+    }
+    dir
+}
+
+pub(crate) fn cleanup_cli_outputs() -> Result<()> {
+    let tracker = CLI_OUTPUT_DIRS.get_or_init(|| Mutex::new(Vec::new()));
+    let dirs = tracker
+        .lock()
+        .map_err(|e| ZkTlsnError::InvalidInput(e.to_string()))?
+        .drain(..)
+        .collect::<Vec<_>>();
+    for dir in dirs {
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+    }
+    Ok(())
 }
 
 fn crs_path() -> PathBuf {

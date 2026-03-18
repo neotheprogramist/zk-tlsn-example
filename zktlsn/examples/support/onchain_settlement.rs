@@ -14,7 +14,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
     sol,
 };
-use alloy_sol_types::{SolCall, SolConstructor};
+use alloy_sol_types::{SolCall, SolConstructor, SolError};
 use anyhow::{Context, Result, ensure};
 
 use crate::deployment_artifacts::{
@@ -37,10 +37,28 @@ sol! {
         constructor(
             address verifier_,
             address token_,
-            uint256 expectedToUserId_
+            uint256 expectedToUserId_,
+            bytes32 expectedNullVkHash_,
+            bytes32 expectedRecursiveVkHash_,
+            bytes32 expectedInnerVkHash_
         );
         function settle(bytes calldata proof, bytes32[] calldata publicInputs, address recipient) external;
         function claimedRoot(bytes32 transfersRoot) external view returns (bool claimed);
+        function EXPECTED_NULL_VK_HASH() external view returns (bytes32);
+        function EXPECTED_RECURSIVE_VK_HASH() external view returns (bytes32);
+        function EXPECTED_INNER_VK_HASH() external view returns (bytes32);
+
+        error InvalidProof();
+        error WrongFiatDestination(uint256 expectedToUserId, uint256 actualToUserId);
+        error RootAlreadyClaimed(bytes32 transfersRoot);
+        error InvalidVkHashes(
+            bytes32 expectedNullVkHash,
+            bytes32 actualNullVkHash,
+            bytes32 expectedRecursiveVkHash,
+            bytes32 actualRecursiveVkHash,
+            bytes32 expectedInnerVkHash,
+            bytes32 actualInnerVkHash
+        );
     }
 }
 
@@ -86,6 +104,9 @@ pub async fn deploy_contracts<P>(
     deployer: Address,
     artifacts: &PreparedSettlementArtifacts,
     expected_to_user_id: u64,
+    null_vk_hash: FixedBytes<32>,
+    recursive_vk_hash: FixedBytes<32>,
+    inner_vk_hash: FixedBytes<32>,
 ) -> Result<OnchainContracts>
 where
     P: Provider,
@@ -121,6 +142,9 @@ where
         verifier_: verifier,
         token_: token,
         expectedToUserId_: U256::from(expected_to_user_id),
+        expectedNullVkHash_: null_vk_hash,
+        expectedRecursiveVkHash_: recursive_vk_hash,
+        expectedInnerVkHash_: inner_vk_hash,
     };
     let gate = deploy_bytecode(
         provider,
@@ -249,10 +273,23 @@ where
         .get_receipt()
         .await
         .context("failed to fetch settlement receipt")?;
-    ensure!(
-        receipt.status(),
-        "settlement transaction reverted: {tx_hash}"
-    );
+    if !receipt.status() {
+        let revert_data = provider
+            .call(
+                TransactionRequest::default()
+                    .with_from(deployer)
+                    .with_to(gate)
+                    .with_input(call.abi_encode()),
+            )
+            .await
+            .err()
+            .map(|e| e.to_string());
+        let decoded = revert_data.as_deref().map_or_else(
+            || format!("unknown revert (tx: {tx_hash})"),
+            decode_settlement_revert,
+        );
+        anyhow::bail!("settlement transaction reverted: {decoded}");
+    }
     Ok(tx_hash)
 }
 
@@ -295,6 +332,121 @@ where
 
 pub fn mint_amount(amount: u64) -> U256 {
     U256::from(amount) * U256::from(1_000_000_000_000_000_000_u128)
+}
+
+fn decode_settlement_revert(error_str: &str) -> String {
+    if let Some(hex_start) = error_str.find("0x") {
+        let hex_data = &error_str[hex_start..];
+        let hex_end = hex_data
+            .find(|c: char| !c.is_ascii_hexdigit() && c != 'x')
+            .unwrap_or(hex_data.len());
+        let hex_slice = &hex_data[..hex_end];
+
+        if let Ok(bytes) = hex::decode(hex_slice.strip_prefix("0x").unwrap_or(hex_slice))
+            && let Some(decoded) = try_decode_settlement_error(&bytes)
+        {
+            return decoded;
+        }
+    }
+    error_str.to_string()
+}
+
+fn try_decode_settlement_error(bytes: &[u8]) -> Option<String> {
+    let selector: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+    let data = &bytes[4..];
+
+    if selector == SettlementMintGate::InvalidProof::SELECTOR {
+        return Some("InvalidProof: verifier rejected the proof".to_string());
+    }
+    if selector == SettlementMintGate::WrongFiatDestination::SELECTOR
+        && let Ok(e) = <SettlementMintGate::WrongFiatDestination as SolError>::abi_decode_raw(data)
+    {
+        return Some(format!(
+            "WrongFiatDestination: expected to_user_id {}, got {}",
+            e.expectedToUserId, e.actualToUserId
+        ));
+    }
+    if selector == SettlementMintGate::RootAlreadyClaimed::SELECTOR
+        && let Ok(e) = <SettlementMintGate::RootAlreadyClaimed as SolError>::abi_decode_raw(data)
+    {
+        return Some(format!(
+            "RootAlreadyClaimed: transfers root {}",
+            e.transfersRoot
+        ));
+    }
+    if selector == SettlementMintGate::InvalidVkHashes::SELECTOR
+        && let Ok(e) = <SettlementMintGate::InvalidVkHashes as SolError>::abi_decode_raw(data)
+    {
+        return Some(format!(
+            "InvalidVkHashes: null VK expected {} got {}, recursive VK expected {} got {}, inner VK expected {} got {}",
+            e.expectedNullVkHash,
+            e.actualNullVkHash,
+            e.expectedRecursiveVkHash,
+            e.actualRecursiveVkHash,
+            e.expectedInnerVkHash,
+            e.actualInnerVkHash
+        ));
+    }
+    None
+}
+
+pub async fn preflight_vk_check<P>(
+    provider: &P,
+    gate: Address,
+    null_vk_hash: FixedBytes<32>,
+    recursive_vk_hash: FixedBytes<32>,
+    inner_vk_hash: FixedBytes<32>,
+) -> Result<()>
+where
+    P: Provider,
+{
+    let on_chain_null = provider
+        .call(
+            TransactionRequest::default()
+                .with_to(gate)
+                .with_input(SettlementMintGate::EXPECTED_NULL_VK_HASHCall {}.abi_encode()),
+        )
+        .decode_resp::<SettlementMintGate::EXPECTED_NULL_VK_HASHCall>()
+        .into_future()
+        .await
+        .context("failed to read EXPECTED_NULL_VK_HASH")?
+        .context("failed to decode EXPECTED_NULL_VK_HASH")?;
+    let on_chain_recursive = provider
+        .call(
+            TransactionRequest::default()
+                .with_to(gate)
+                .with_input(SettlementMintGate::EXPECTED_RECURSIVE_VK_HASHCall {}.abi_encode()),
+        )
+        .decode_resp::<SettlementMintGate::EXPECTED_RECURSIVE_VK_HASHCall>()
+        .into_future()
+        .await
+        .context("failed to read EXPECTED_RECURSIVE_VK_HASH")?
+        .context("failed to decode EXPECTED_RECURSIVE_VK_HASH")?;
+    let on_chain_inner = provider
+        .call(
+            TransactionRequest::default()
+                .with_to(gate)
+                .with_input(SettlementMintGate::EXPECTED_INNER_VK_HASHCall {}.abi_encode()),
+        )
+        .decode_resp::<SettlementMintGate::EXPECTED_INNER_VK_HASHCall>()
+        .into_future()
+        .await
+        .context("failed to read EXPECTED_INNER_VK_HASH")?
+        .context("failed to decode EXPECTED_INNER_VK_HASH")?;
+
+    ensure!(
+        on_chain_null == null_vk_hash,
+        "null VK hash mismatch: on-chain {on_chain_null}, local {null_vk_hash}"
+    );
+    ensure!(
+        on_chain_recursive == recursive_vk_hash,
+        "recursive VK hash mismatch: on-chain {on_chain_recursive}, local {recursive_vk_hash}"
+    );
+    ensure!(
+        on_chain_inner == inner_vk_hash,
+        "inner VK hash mismatch: on-chain {on_chain_inner}, local {inner_vk_hash}"
+    );
+    Ok(())
 }
 
 async fn ensure_contract_code<P>(provider: &P, address: Address, label: &str) -> Result<()>

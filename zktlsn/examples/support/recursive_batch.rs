@@ -1,57 +1,91 @@
 use anyhow::{Context, Result, ensure};
+use tracing::info;
 use zktlsn::{
-    KeccakProof, RecursiveCircuit, RecursiveState, SignedTransferTicket, TicketSigner,
-    prove_keccak_circuit, state_from_public_inputs, sync_recursive_circuit,
+    KeccakProof, Proof, RecursiveCircuit, RecursiveState, build_recursive_prover_toml,
+    cleanup_cli_outputs, compile_all_packages, derive_circuit_vk, prove_keccak_circuit,
+    prove_noir_recursive_circuit, prove_null_circuit, state_from_public_inputs,
 };
 
-const MAX_SETTLEMENT_TRANSFERS: usize = 4;
-
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields read by settlement.rs / settlement_demo.rs (separate include! contexts)
 pub struct SettlementBundle {
     pub keccak_proof: KeccakProof,
     pub state: RecursiveState,
 }
 
-pub fn generate_settlement_bundle(tickets: &[SignedTransferTicket]) -> Result<SettlementBundle> {
+pub fn generate_settlement_bundle(
+    attestation_proofs: &[Proof],
+    to_user_id: u64,
+) -> Result<SettlementBundle> {
     ensure!(
-        !tickets.is_empty(),
-        "settlement requires at least one signed ticket"
-    );
-    ensure!(
-        tickets.len() <= MAX_SETTLEMENT_TRANSFERS,
-        "settlement currently supports at most {MAX_SETTLEMENT_TRANSFERS} transfers"
+        !attestation_proofs.is_empty(),
+        "settlement requires at least one attestation proof"
     );
 
-    let expected_to_user_id = tickets[0].to_user_id;
-    ensure!(
-        tickets
-            .iter()
-            .all(|ticket| ticket.to_user_id == expected_to_user_id),
-        "all settlement tickets must target the same to_user_id"
-    );
-    let _total = tickets.iter().try_fold(0u64, |total, ticket| {
+    let _total = attestation_proofs.iter().try_fold(0u64, |total, proof| {
+        let fields = zktlsn::extract_transfer_fields_from_proof(proof)
+            .context("failed to extract transfer fields from attestation proof")?;
         total
-            .checked_add(ticket.amount)
+            .checked_add(fields.amount)
             .context("settlement total amount overflow")
     })?;
 
-    sync_recursive_circuit().context("failed to compile settlement circuit")?;
-
-    let signer = TicketSigner::from_env_or_default().context("failed to load ticket signer")?;
-    let padding_ticket = signer
-        .sign_padding_ticket()
-        .context("failed to build settlement padding ticket")?;
-
-    let mut slot_tickets = tickets.to_vec();
-    while slot_tickets.len() < MAX_SETTLEMENT_TRANSFERS {
-        slot_tickets.push(padding_ticket.clone());
+    let first_proof = attestation_proofs
+        .first()
+        .context("attestation proofs empty after non-empty check")?;
+    let expected_to_user_id = zktlsn::extract_transfer_fields_from_proof(first_proof)
+        .context("failed to extract fields from first proof")?
+        .to_user_id;
+    for (i, proof) in attestation_proofs.iter().enumerate().skip(1) {
+        let fields = zktlsn::extract_transfer_fields_from_proof(proof)
+            .with_context(|| format!("failed to extract fields from proof {i}"))?;
+        ensure!(
+            fields.to_user_id == expected_to_user_id,
+            "attestation proof {i} targets to_user_id {}, expected {expected_to_user_id}",
+            fields.to_user_id
+        );
     }
 
-    let keccak_proof = prove_keccak_circuit(
-        RecursiveCircuit::Recursive,
-        &settlement_prover_toml(tickets, &slot_tickets),
+    info!("Compiling all circuit packages...");
+    compile_all_packages().context("failed to compile settlement circuits")?;
+
+    info!("Deriving circuit verification keys...");
+    let attestation_vk = derive_circuit_vk(RecursiveCircuit::Attestation)
+        .context("failed to derive attestation circuit VK")?;
+    let null_vk =
+        derive_circuit_vk(RecursiveCircuit::Null).context("failed to derive null circuit VK")?;
+    let recursive_vk = derive_circuit_vk(RecursiveCircuit::Recursive)
+        .context("failed to derive recursive circuit VK")?;
+
+    info!("Generating null bootstrap proof...");
+    let mut prev = prove_null_circuit(
+        to_user_id,
+        &null_vk.vk_hash,
+        &recursive_vk.vk_hash,
+        &attestation_vk.vk_hash,
     )
-    .context("failed to generate settlement EVM proof")?;
+    .context("failed to generate null bootstrap proof")?;
+
+    let n = attestation_proofs.len();
+    let mut last_toml = String::new();
+    for (index, inner) in attestation_proofs.iter().enumerate() {
+        info!(i = index + 1, n, "Recursive step");
+        last_toml = build_recursive_prover_toml(
+            inner,
+            &prev,
+            &null_vk.vk_hash,
+            &recursive_vk.vk_hash,
+            &attestation_vk.vk_hash,
+        )
+        .context("failed to build recursive prover TOML")?;
+
+        prev = prove_noir_recursive_circuit(RecursiveCircuit::Recursive, &last_toml)
+            .with_context(|| format!("failed to prove recursive step {index}"))?;
+    }
+
+    info!("Generating EVM-compatible keccak proof...");
+    let keccak_proof = prove_keccak_circuit(RecursiveCircuit::Recursive, &last_toml)
+        .context("failed to generate settlement EVM proof")?;
     let state = state_from_public_inputs(
         &keccak_proof
             .public_inputs_hex()
@@ -60,66 +94,10 @@ pub fn generate_settlement_bundle(tickets: &[SignedTransferTicket]) -> Result<Se
     )
     .context("failed to parse settlement public inputs")?;
 
+    cleanup_cli_outputs().context("failed to clean up CLI output directories")?;
+
     Ok(SettlementBundle {
         keccak_proof,
         state,
     })
-}
-
-fn settlement_prover_toml(
-    real_tickets: &[SignedTransferTicket],
-    slot_tickets: &[SignedTransferTicket],
-) -> String {
-    let enabled_values = (0..slot_tickets.len())
-        .map(|index| {
-            if index < real_tickets.len() {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let tx_ids = slot_tickets
-        .iter()
-        .map(|ticket| format!("\"{}\"", ticket.tx_id))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let to_user_ids = slot_tickets
-        .iter()
-        .map(|ticket| format!("\"{}\"", ticket.to_user_id))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let amounts = slot_tickets
-        .iter()
-        .map(|ticket| format!("\"{}\"", ticket.amount))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let signatures = slot_tickets
-        .iter()
-        .map(|ticket| {
-            ticket
-                .signature_array()
-                .map(|signature| format_byte_array(&signature))
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .expect("ticket signatures should be 64 bytes")
-        .join(",\n");
-
-    format!(
-        "enabled = [{enabled_values}]\n\
-tx_ids = [{tx_ids}]\n\
-to_user_ids = [{to_user_ids}]\n\
-amounts = [{amounts}]\n\
-signatures = [\n{signatures}\n]\n"
-    )
-}
-
-fn format_byte_array<const N: usize>(bytes: &[u8; N]) -> String {
-    let values = bytes
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("  [{values}]")
 }

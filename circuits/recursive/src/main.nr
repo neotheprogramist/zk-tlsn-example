@@ -1,8 +1,11 @@
-mod generated_constants;
+use std::verify_proof_with_type;
 
-global MAX_SETTLEMENT_TRANSFERS: u32 = 4;
-global SIGNATURE_BYTES: u32 = 64;
-global TICKET_MESSAGE_BYTES: u32 = 40;
+global HONK_VK_SIZE: u32 = 115;
+global HONK_PROOF_SIZE: u32 = 508;
+// proof_type 6 = UltraHonk ZK verifier (bb_proof_verification PROOF_TYPE_HONK_ZK)
+global HONK_IDENTIFIER: u32 = 6;
+global INNER_PUBLIC_INPUTS: u32 = 35;
+global PREV_PUBLIC_INPUTS: u32 = 7;
 
 fn field_to_u64(value: Field) -> u64 {
     let narrowed = value as u64;
@@ -23,87 +26,57 @@ fn next_transfers_root(prev_root: Field, tx_id: Field, amount: Field) -> Field {
     std::hash::pedersen_hash([prev_root, leaf])
 }
 
-fn ticket_domain_separator() -> [u8; 16] {
-    [122, 107, 116, 108, 115, 110, 45, 116, 105, 99, 107, 101, 116, 45, 118, 49]
-}
-
-fn ticket_message_hash(tx_id: Field, to_user_id: Field, amount: Field) -> [u8; 32] {
-    let _tx_id_u64 = field_to_u64(tx_id);
-    let _to_user_id_u64 = field_to_u64(to_user_id);
-    let _amount_u64 = field_to_u64(amount);
-
-    let tx_id_bytes: [u8; 8] = tx_id.to_be_bytes();
-    let to_user_id_bytes: [u8; 8] = to_user_id.to_be_bytes();
-    let amount_bytes: [u8; 8] = amount.to_be_bytes();
-    let mut input: [u8; TICKET_MESSAGE_BYTES] = [0; TICKET_MESSAGE_BYTES];
-    let domain = ticket_domain_separator();
-
-    for i in 0..16 {
-        input[i] = domain[i];
-    }
-    for i in 0..8 {
-        input[16 + i] = tx_id_bytes[i];
-        input[24 + i] = to_user_id_bytes[i];
-        input[32 + i] = amount_bytes[i];
-    }
-
-    std::hash::blake3(input)
-}
-
-fn verify_ticket_signature(tx_id: Field, to_user_id: Field, amount: Field, signature: [u8; SIGNATURE_BYTES]) {
-    let message_hash = ticket_message_hash(tx_id, to_user_id, amount);
-    let valid_signature = std::ecdsa_secp256k1::verify_signature(
-        generated_constants::TICKET_SIGNER_PUBKEY_X,
-        generated_constants::TICKET_SIGNER_PUBKEY_Y,
-        signature,
-        message_hash,
-    );
-    assert(valid_signature, "invalid settlement ticket signature");
-}
-
 fn main(
-    enabled: [bool; MAX_SETTLEMENT_TRANSFERS],
-    tx_ids: [Field; MAX_SETTLEMENT_TRANSFERS],
-    to_user_ids: [Field; MAX_SETTLEMENT_TRANSFERS],
-    amounts: [Field; MAX_SETTLEMENT_TRANSFERS],
-    signatures: [[u8; SIGNATURE_BYTES]; MAX_SETTLEMENT_TRANSFERS],
-) -> pub (Field, Field, Field) {
-    let mut total_amount = 0;
-    let mut transfers_root = 0;
-    let mut batch_to_user_id = 0;
-    let mut seen_ticket = false;
+    inner_vk: [Field; HONK_VK_SIZE],
+    inner_proof: [Field; HONK_PROOF_SIZE],
+    inner_public_inputs: [Field; INNER_PUBLIC_INPUTS],
+    inner_key_hash: Field,
+    prev_vk: [Field; HONK_VK_SIZE],
+    prev_proof: [Field; HONK_PROOF_SIZE],
+    prev_public_inputs: [Field; PREV_PUBLIC_INPUTS],
+    prev_key_hash: Field,
+    allowed_null_vk_hash: Field,
+    allowed_recursive_vk_hash: Field,
+    allowed_inner_vk_hash: Field,
+) -> pub (Field, Field, Field, Field, Field, Field, Field) {
+    assert(inner_key_hash == allowed_inner_vk_hash, "inner VK not canonical");
 
-    for i in 0..MAX_SETTLEMENT_TRANSFERS {
-        let tx_id = tx_ids[i];
-        let to_user_id = to_user_ids[i];
-        let amount = amounts[i];
-        let signature = signatures[i];
+    let is_null = prev_key_hash == allowed_null_vk_hash;
+    let is_recursive = prev_key_hash == allowed_recursive_vk_hash;
+    assert(is_null | is_recursive, "prev VK not in allowed set");
 
-        verify_ticket_signature(tx_id, to_user_id, amount, signature);
+    verify_proof_with_type(inner_vk, inner_proof, inner_public_inputs, inner_key_hash, HONK_IDENTIFIER);
+    verify_proof_with_type(prev_vk, prev_proof, prev_public_inputs, prev_key_hash, HONK_IDENTIFIER);
 
-        if enabled[i] {
-            assert(tx_id != 0, "enabled slot must use non-zero tx_id");
-            assert(amount != 0, "enabled slot must use non-zero amount");
+    let inner_tx_id = inner_public_inputs[32];
+    let inner_to_user_id = inner_public_inputs[33];
+    let inner_amount = inner_public_inputs[34];
 
-            if seen_ticket {
-                assert(batch_to_user_id == to_user_id, "to_user_id mismatch");
-            } else {
-                batch_to_user_id = to_user_id;
-                seen_ticket = true;
-            }
+    let prev_total = prev_public_inputs[1];
+    let prev_root = prev_public_inputs[2];
+    let prev_to_user_id = prev_public_inputs[3];
+    let prev_null_hash = prev_public_inputs[4];
+    let prev_recursive_hash = prev_public_inputs[5];
+    let prev_inner_hash = prev_public_inputs[6];
 
-            total_amount = checked_total(total_amount, amount);
-            transfers_root = next_transfers_root(transfers_root, tx_id, amount);
-        } else {
-            assert(tx_id == 0, "disabled slot must use zero tx_id");
-            assert(to_user_id == 0, "disabled slot must use zero to_user_id");
-            assert(amount == 0, "disabled slot must use zero amount");
-            assert(signature == generated_constants::PADDING_SIGNATURE, "disabled slot signature mismatch");
-        }
-    }
+    assert(prev_null_hash == allowed_null_vk_hash, "null VK hash chain broken");
+    assert(prev_recursive_hash == allowed_recursive_vk_hash, "recursive VK hash chain broken");
+    assert(prev_inner_hash == allowed_inner_vk_hash, "inner VK hash chain broken");
 
-    assert(seen_ticket, "settlement requires at least one enabled ticket");
-    (total_amount, transfers_root, batch_to_user_id)
+    assert(prev_to_user_id == inner_to_user_id, "prev to_user_id mismatch");
+
+    let total_amount = checked_total(prev_total, inner_amount);
+    let transfers_root = next_transfers_root(prev_root, inner_tx_id, inner_amount);
+
+    (
+        0,
+        total_amount,
+        transfers_root,
+        inner_to_user_id,
+        allowed_null_vk_hash,
+        allowed_recursive_vk_hash,
+        allowed_inner_vk_hash,
+    )
 }
 
 #[test]

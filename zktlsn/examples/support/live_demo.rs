@@ -175,8 +175,9 @@ where
 
     let (connection_result, response_result) = futures::join!(connection, request_task);
     if let Err(error) = connection_result {
-        let broken_pipe = error.to_string().contains("Broken pipe");
-        if !broken_pipe {
+        if error.to_string().contains("Broken pipe") {
+            tracing::debug!("HTTP connection closed with expected broken pipe");
+        } else {
             return Err(anyhow!(error)).context("HTTP client connection failed");
         }
     }

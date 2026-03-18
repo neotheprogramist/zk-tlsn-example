@@ -10,9 +10,13 @@ import {StableToken} from "../src/StableToken.sol";
 contract SettlementMintGateTest is Test {
     string internal constant PROOF_PATH = "evm/testdata/settlement_proof.bin";
     string internal constant PUBLIC_INPUTS_PATH = "evm/testdata/settlement_public_inputs.bin";
-    uint256 internal constant TOTAL_AMOUNT_INDEX = 0;
-    uint256 internal constant TRANSFERS_ROOT_INDEX = 1;
-    uint256 internal constant TO_USER_ID_INDEX = 2;
+    uint256 internal constant RESERVED_INDEX = 0;
+    uint256 internal constant TOTAL_AMOUNT_INDEX = 1;
+    uint256 internal constant TRANSFERS_ROOT_INDEX = 2;
+    uint256 internal constant TO_USER_ID_INDEX = 3;
+    uint256 internal constant NULL_VK_HASH_INDEX = 4;
+    uint256 internal constant RECURSIVE_VK_HASH_INDEX = 5;
+    uint256 internal constant INNER_VK_HASH_INDEX = 6;
 
     SettlementHonkVerifier internal verifier;
     StableToken internal token;
@@ -23,7 +27,14 @@ contract SettlementMintGateTest is Test {
 
         verifier = new SettlementHonkVerifier();
         token = new StableToken(address(this));
-        gate = new SettlementMintGate(address(verifier), address(token), uint256(publicInputs[TO_USER_ID_INDEX]));
+        gate = new SettlementMintGate(
+            address(verifier),
+            address(token),
+            uint256(publicInputs[TO_USER_ID_INDEX]),
+            publicInputs[NULL_VK_HASH_INDEX],
+            publicInputs[RECURSIVE_VK_HASH_INDEX],
+            publicInputs[INNER_VK_HASH_INDEX]
+        );
         token.transferOwnership(address(gate));
     }
 
@@ -64,6 +75,27 @@ contract SettlementMintGateTest is Test {
         gate.settle(loadProof(), publicInputs, address(this));
     }
 
+    function test_settle_revertsOnInvalidVkHashes() public {
+        bytes32[] memory publicInputs = loadPublicInputs();
+        bytes32 originalNull = publicInputs[NULL_VK_HASH_INDEX];
+        bytes32 originalRecursive = publicInputs[RECURSIVE_VK_HASH_INDEX];
+        bytes32 originalInner = publicInputs[INNER_VK_HASH_INDEX];
+        publicInputs[NULL_VK_HASH_INDEX] = bytes32(uint256(0xdead));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SettlementMintGate.InvalidVkHashes.selector,
+                originalNull,
+                bytes32(uint256(0xdead)),
+                originalRecursive,
+                originalRecursive,
+                originalInner,
+                originalInner
+            )
+        );
+        gate.settle(loadProof(), publicInputs, address(this));
+    }
+
     function test_settle_revertsOnTamperedProof() public {
         bytes memory proof = loadProof();
         bytes32[] memory publicInputs = loadPublicInputs();
@@ -81,7 +113,7 @@ contract SettlementMintGateTest is Test {
     function test_settle_revertsOnTamperedPublicInputs() public {
         bytes32[] memory publicInputs = loadPublicInputs();
         address recipient = makeAddr("recipient");
-        publicInputs[TOTAL_AMOUNT_INDEX] = bytes32(uint256(publicInputs[0]) ^ 0x01);
+        publicInputs[TOTAL_AMOUNT_INDEX] = bytes32(uint256(publicInputs[TOTAL_AMOUNT_INDEX]) ^ 0x01);
 
         vm.expectRevert(SettlementMintGate.InvalidProof.selector);
         gate.settle(loadProof(), publicInputs, recipient);

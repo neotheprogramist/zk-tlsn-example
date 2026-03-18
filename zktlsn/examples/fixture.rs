@@ -8,7 +8,9 @@ mod recursive_batch;
 mod settlement_support;
 
 use anyhow::{Context, Result};
-use zktlsn::TicketSigner;
+use zktlsn::{
+    NoirProverInputs, compile_attestation_package, generate_settlement_bundle_from_inputs,
+};
 
 const SETTLEMENT_FIXTURE_TXS: &[(u64, u64, u64, [u8; 16])] = &[
     (
@@ -35,19 +37,21 @@ fn main() {
 
 fn run() -> Result<()> {
     zktlsn::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
+    compile_attestation_package().context("failed to compile attestation package")?;
 
-    let signer =
-        TicketSigner::from_env_or_default().context("failed to load verifier ticket signer")?;
-    let tickets = SETTLEMENT_FIXTURE_TXS
+    let to_user_id = SETTLEMENT_FIXTURE_TXS[0].1;
+    let attestation_proofs = SETTLEMENT_FIXTURE_TXS
         .iter()
-        .map(|(tx_id, to_user_id, amount, _blinder)| {
-            signer.sign_ticket(*tx_id, *to_user_id, *amount)
+        .map(|(tx_id, to_user_id, amount, blinder)| {
+            let inputs = NoirProverInputs::from_transfer(*tx_id, *to_user_id, *amount, *blinder)?;
+            let bundle = generate_settlement_bundle_from_inputs(inputs)?;
+            Ok(bundle.native_proof)
         })
-        .collect::<std::result::Result<Vec<_>, _>>()
+        .collect::<zktlsn::Result<Vec<_>>>()
         .map_err(anyhow::Error::from)
-        .context("failed to build deterministic settlement tickets")?;
+        .context("failed to generate deterministic attestation proofs")?;
 
-    settlement_support::prepare_settlement_artifacts(&tickets)
+    settlement_support::prepare_settlement_artifacts(&attestation_proofs, to_user_id)
         .context("failed to prepare deterministic settlement artifacts")?;
 
     println!(

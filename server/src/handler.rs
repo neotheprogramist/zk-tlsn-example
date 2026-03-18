@@ -9,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use shared::SmolExecutor;
 use thiserror::Error;
 use tower::Service;
+use tracing::info;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
@@ -27,6 +28,7 @@ pub async fn handle_connection<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    info!("New TLS connection");
     let tls_acceptor = TlsAcceptor::from(server_config);
     let stream = tls_acceptor.accept(cnx).await?;
     let stream = TokioIo::new(Compat::new(stream));

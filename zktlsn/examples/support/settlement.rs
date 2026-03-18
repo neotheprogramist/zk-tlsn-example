@@ -4,12 +4,12 @@ use std::{
     process::Command,
 };
 
-use alloy::hex;
+use alloy::{hex, primitives::FixedBytes};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
 use tokio::runtime::Builder;
 use zktlsn::{
-    RECURSIVE_PUBLIC_INPUTS, SignedTransferTicket, generate_honk_solidity_verifier,
+    Proof, RECURSIVE_PUBLIC_INPUTS, generate_honk_solidity_verifier,
     validate_generated_solidity_verifier,
 };
 
@@ -26,13 +26,13 @@ const GENERATED_VERIFIER_PATH: &str = "evm/src/generated/SettlementHonkVerifier.
 const FIXTURE_DIR: &str = "evm/testdata";
 const KECCAK_DIR: &str = "target/settlement_keccak";
 
-pub fn prepare_settlement_artifacts(tickets: &[SignedTransferTicket]) -> Result<()> {
+pub fn prepare_settlement_artifacts(attestation_proofs: &[Proof], to_user_id: u64) -> Result<()> {
     let repo_root = repo_root()?;
-    let bundle = recursive_batch::generate_settlement_bundle(tickets)
+    let bundle = recursive_batch::generate_settlement_bundle(attestation_proofs, to_user_id)
         .context("failed to build deterministic settlement bundle")?;
 
     write_generated_verifier(&repo_root, &bundle.keccak_proof)?;
-    write_fixture_files(&repo_root, tickets, &bundle)?;
+    write_fixture_files(&repo_root, &bundle)?;
     run_command(&repo_root, "forge", &["build"])?;
     deployment_artifacts::write_embedded_artifacts(&repo_root)
         .context("failed to write embedded deployment artifacts")?;
@@ -47,12 +47,18 @@ pub fn prepare_settlement_artifacts(tickets: &[SignedTransferTicket]) -> Result<
         .enable_all()
         .build()
         .context("failed to create Tokio runtime for fixture deploy")?;
+    let null_vk_hash = FixedBytes::<32>::from(bundle.state.null_vk_hash);
+    let recursive_vk_hash = FixedBytes::<32>::from(bundle.state.recursive_vk_hash);
+    let inner_vk_hash = FixedBytes::<32>::from(bundle.state.inner_vk_hash);
     let contracts = runtime
         .block_on(deploy_contracts(
             &provider,
             deployer,
             &artifacts,
             bundle.state.to_user_id,
+            null_vk_hash,
+            recursive_vk_hash,
+            inner_vk_hash,
         ))
         .context("failed to deploy settlement contracts")?;
     let deployment = runtime
@@ -97,11 +103,7 @@ fn write_generated_verifier(repo_root: &Path, proof: &zktlsn::KeccakProof) -> Re
     Ok(())
 }
 
-fn write_fixture_files(
-    repo_root: &Path,
-    tickets: &[SignedTransferTicket],
-    bundle: &recursive_batch::SettlementBundle,
-) -> Result<()> {
+fn write_fixture_files(repo_root: &Path, bundle: &recursive_batch::SettlementBundle) -> Result<()> {
     let fixture_dir = repo_root.join(FIXTURE_DIR);
     fs::create_dir_all(&fixture_dir).context("failed to create settlement fixture directory")?;
 
@@ -109,15 +111,12 @@ fn write_fixture_files(
     let proof_hex = format!("0x{}", hex::encode(&bundle.keccak_proof.solidity_proof));
     let public_inputs_hex = bundle.keccak_proof.public_inputs_hex();
     let fixture = json!({
-        "tickets": tickets.iter().map(|ticket| json!({
-            "tx_id": ticket.tx_id,
-            "to_user_id": ticket.to_user_id,
-            "amount": ticket.amount,
-            "signature": ticket.signature,
-        })).collect::<Vec<_>>(),
         "total_amount": bundle.state.total_amount,
         "transfers_root": format!("0x{}", hex::encode(bundle.state.transfers_root)),
         "to_user_id": bundle.state.to_user_id,
+        "null_vk_hash": format!("0x{}", hex::encode(bundle.state.null_vk_hash)),
+        "recursive_vk_hash": format!("0x{}", hex::encode(bundle.state.recursive_vk_hash)),
+        "inner_vk_hash": format!("0x{}", hex::encode(bundle.state.inner_vk_hash)),
         "proof_hex": proof_hex,
         "public_inputs": public_inputs_hex,
     });

@@ -13,7 +13,7 @@ use crate::{
     cli::{self, VerifierTarget},
     error::{Result, ZkTlsnError},
     padding::PaddingConfig,
-    recursive::{HONK_FIELD_BYTES, RecursiveCircuit},
+    recursive::{HONK_FIELD_BYTES, RecursiveCircuit, field_word_hex},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +21,8 @@ pub struct Proof {
     pub verification_key: Vec<u8>,
     pub proof: Vec<u8>,
     pub public_inputs: Vec<[u8; HONK_FIELD_BYTES]>,
+    #[serde(default)]
+    pub vk_hash: [u8; HONK_FIELD_BYTES],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,10 +35,7 @@ pub struct KeccakProof {
 
 impl KeccakProof {
     pub fn public_inputs_hex(&self) -> Vec<String> {
-        self.public_inputs
-            .iter()
-            .map(|word| field_word_hex(word))
-            .collect()
+        self.public_inputs.iter().map(field_word_hex).collect()
     }
 }
 
@@ -184,6 +183,7 @@ fn generate_native_proof_from_inputs(input: &NoirProverInputs) -> Result<Proof> 
         verification_key: artifacts.verification_key,
         proof: artifacts.proof,
         public_inputs: artifacts.public_inputs,
+        vk_hash: artifacts.vk_hash,
     })
 }
 
@@ -224,7 +224,9 @@ fn prepare_proof_input(
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
 
-    let range_start = secret.idx.min().unwrap_or(0);
+    let range_start = secret.idx.min().ok_or(ZkTlsnError::InvalidInput(
+        "received secret commitment has empty index range".to_string(),
+    ))?;
     let range_end = range_start.saturating_add(padding_config.commitment_length);
     let range = range_start..range_end;
     let committed_data = received_data
@@ -291,15 +293,6 @@ fn u64_to_field_word(value: u64) -> [u8; HONK_FIELD_BYTES] {
     word
 }
 
-fn field_word_hex(word: &[u8; HONK_FIELD_BYTES]) -> String {
-    let mut encoded = String::from("0x");
-    for byte in word {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("write to string");
-    }
-    encoded
-}
-
 fn format_decimal_byte_array(bytes: &[u8]) -> String {
     let body = bytes
         .iter()
@@ -320,7 +313,7 @@ fn escape_toml_string(value: &str) -> String {
             '\t' => escaped.push_str("\\t"),
             '\u{08}' => escaped.push_str("\\b"),
             '\u{0C}' => escaped.push_str("\\f"),
-            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04X}", ch as u32)),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04X}", u32::from(ch))),
             ch => escaped.push(ch),
         }
     }
@@ -335,9 +328,8 @@ struct ProofInput {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_fixtures::{load_attestation_fixture, parse_fixture_public_inputs};
-
     use super::NoirProverInputs;
+    use crate::test_fixtures::{load_attestation_fixture, parse_fixture_public_inputs};
 
     #[test]
     fn noir_inputs_from_transfer_match_attestation_fixture() {

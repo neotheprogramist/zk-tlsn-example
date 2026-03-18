@@ -118,24 +118,22 @@ pub fn ticket_message_hash(tx_id: u64, to_user_id: u64, amount: u64) -> [u8; 32]
 mod tests {
     use k256::ecdsa::{Signature, signature::hazmat::PrehashVerifier};
 
-    use crate::test_fixtures::load_settlement_fixture;
-
     use super::{
         DEFAULT_VERIFIER_TICKET_PRIVATE_KEY, SignedTransferTicket, TicketSigner,
         ticket_message_hash,
     };
 
     #[test]
-    fn ticket_signer_matches_fixture_signature_for_fixed_payload() {
+    fn ticket_signer_produces_deterministic_signatures() {
         let signer =
             TicketSigner::from_hex(DEFAULT_VERIFIER_TICKET_PRIVATE_KEY).expect("load signer");
-        let ticket = signer.sign_ticket(1, 3, 25).expect("sign ticket");
-        let fixture = load_settlement_fixture();
+        let ticket_a = signer.sign_ticket(1, 3, 25).expect("sign ticket");
+        let ticket_b = signer.sign_ticket(1, 3, 25).expect("sign ticket");
 
-        assert_eq!(ticket.tx_id, 1);
-        assert_eq!(ticket.to_user_id, 3);
-        assert_eq!(ticket.amount, 25);
-        assert_eq!(ticket, fixture.tickets[0]);
+        assert_eq!(ticket_a.tx_id, 1);
+        assert_eq!(ticket_a.to_user_id, 3);
+        assert_eq!(ticket_a.amount, 25);
+        assert_eq!(ticket_a, ticket_b);
     }
 
     #[test]

@@ -17,7 +17,7 @@ The flow is:
 1. The prover generates an attestation proof with [circuits/attestation/src/main.nr](./circuits/attestation/src/main.nr).
 2. The verifier checks the TLSNotary transcript binding and verifies the attestation proof with `bb verify`.
 3. On success, the verifier signs a transfer ticket `(tx_id, to_user_id, amount)` with a fixed secp256k1 key.
-4. The settlement circuit in [circuits/recursive/src/main.nr](./circuits/recursive/src/main.nr) verifies up to 4 signed tickets, enforces a shared `to_user_id`, accumulates `total_amount`, and computes `transfers_root`.
+4. [circuits/null/src/main.nr](./circuits/null/src/main.nr) produces a bootstrap proof with zero state. The recursive circuit in [circuits/recursive/src/main.nr](./circuits/recursive/src/main.nr) then folds each attestation proof into the chain using `verify_proof_with_type`, enforcing a shared `to_user_id`, accumulating `total_amount`, and computing `transfers_root` via Pedersen hashing.
 5. [evm/src/SettlementMintGate.sol](./evm/src/SettlementMintGate.sol) verifies the final settlement proof, prevents replay by `transfers_root`, and mints [evm/src/StableToken.sol](./evm/src/StableToken.sol).
 
 `single-settle` is only a wrapper around the canonical settlement pipeline with batch size `1`.
@@ -36,7 +36,7 @@ The flow is:
 - [evm/src/SettlementMintGate.sol](./evm/src/SettlementMintGate.sol): onchain mint gate
 - [evm/src/generated/SettlementHonkVerifier.sol](./evm/src/generated/SettlementHonkVerifier.sol): generated Solidity verifier
 
-The legacy [circuits/null/src/main.nr](./circuits/null/src/main.nr) package is still present in the workspace, but the latest-4.0 settlement path does not use Noir recursive aggregation.
+[circuits/null/src/main.nr](./circuits/null/src/main.nr) serves as the bootstrap circuit for the recursive settlement chain, producing the initial zero-state proof that anchors the first recursive step.
 
 ## Toolchain
 
@@ -219,5 +219,5 @@ Anvil instance that has already been initialized by `fixture`.
 ## Design Notes
 
 - The server-side artifact boundary stays stable: attestation proof bytes, public inputs, and VK bytes are still produced before settlement.
-- Latest Barretenberg 4.0 does not currently support the original Noir custom recursive aggregation circuit shape this repo started from.
+- The recursive settlement circuit uses `verify_proof_with_type` with proof type `6` (UltraHonk ZK) to fold attestation proofs into a running batch state.
 - The signed-ticket design preserves mobile proving while keeping the latest CLI toolchain and a sound server-side authorization step.

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use shared::{FiatTransferAttestation, encode_transfer_attestation};
 use smol::lock::RwLock;
 use thiserror::Error;
+use tracing::{info, warn};
 
 #[derive(Error, Debug)]
 pub enum ApiError {
@@ -373,11 +374,13 @@ pub fn get_app(config: AppConfig) -> Result<Router, ApiError> {
 }
 
 async fn get_config(State(state): State<AppState>) -> Json<ServerConfigResponse> {
+    info!("GET /api/config");
     let ledger = state.ledger.read().compat().await;
     Json(ledger.config())
 }
 
 async fn list_users(State(state): State<AppState>) -> Json<Vec<UserResponse>> {
+    info!("GET /api/users");
     let ledger = state.ledger.read().compat().await;
     Json(ledger.list_users())
 }
@@ -386,9 +389,12 @@ async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    info!(username = %request.username, balance = request.balance, "POST /api/users");
     let mut ledger = state.ledger.write().compat().await;
     ledger
         .register_user(request.username, request.balance)
+        .inspect(|resp| info!(user_id = resp.id, "User created"))
+        .inspect_err(|e| warn!(error = %e, "User creation rejected"))
         .map(Json)
 }
 
@@ -396,6 +402,7 @@ async fn get_balance(
     State(state): State<AppState>,
     Path(username): Path<String>,
 ) -> Result<Json<BalanceResponse>, ApiError> {
+    info!(username = %username, "GET /api/balance");
     let ledger = state.ledger.read().compat().await;
     ledger.balance(&username).map(Json)
 }
@@ -404,16 +411,30 @@ async fn create_transfer(
     State(state): State<AppState>,
     Json(request): Json<TransferRequest>,
 ) -> Result<Json<TransferResponse>, ApiError> {
+    info!(
+        from = %request.from_username,
+        to = %request.to_username,
+        amount = request.amount,
+        "POST /api/transfers"
+    );
     let mut ledger = state.ledger.write().compat().await;
-    ledger.transfer(request).map(Json)
+    ledger
+        .transfer(request)
+        .inspect(|resp| info!(tx_id = resp.tx_id, "Transfer created"))
+        .inspect_err(|e| warn!(error = %e, "Transfer rejected"))
+        .map(Json)
 }
 
 async fn get_attestation(
     State(state): State<AppState>,
     Path(tx_id): Path<u64>,
 ) -> Result<Json<TransferResponse>, ApiError> {
+    info!(tx_id, "GET /api/attestations");
     let ledger = state.ledger.read().compat().await;
-    ledger.attestation(tx_id).map(Json)
+    ledger
+        .attestation(tx_id)
+        .inspect_err(|e| warn!(tx_id, error = %e, "Attestation lookup failed"))
+        .map(Json)
 }
 
 #[cfg(test)]

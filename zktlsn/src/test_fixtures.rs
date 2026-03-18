@@ -7,8 +7,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    HONK_FIELD_BYTES, Proof, SignedTransferTicket, cli::read_field_words_from_bytes,
-    parse_hex_field_word, repo_root,
+    HONK_FIELD_BYTES, Proof, cli::read_field_words_from_bytes, parse_hex_field_word, repo_root,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -24,10 +23,12 @@ pub(crate) struct AttestationFixture {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SettlementFixture {
-    pub(crate) tickets: Vec<SignedTransferTicket>,
     pub(crate) total_amount: u64,
     pub(crate) transfers_root: String,
     pub(crate) to_user_id: u64,
+    pub(crate) null_vk_hash: String,
+    pub(crate) recursive_vk_hash: String,
+    pub(crate) inner_vk_hash: String,
     pub(crate) public_inputs: Vec<String>,
 }
 
@@ -54,6 +55,7 @@ pub(crate) fn load_attestation_proof_from_fixture() -> Proof {
             "evm/testdata/public_inputs.bin",
         )
         .expect("read attestation fixture public inputs"),
+        vk_hash: [0u8; 32],
     }
 }
 

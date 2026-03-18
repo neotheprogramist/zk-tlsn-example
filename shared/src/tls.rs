@@ -23,9 +23,17 @@ pub fn generate_self_signed_cert() -> Result<SelfSignedCertificate, CertificateE
 
     let now = chrono::Utc::now();
     let future = now + chrono::Duration::days(3650);
-    params.not_before = rcgen::date_time_ymd(now.year(), now.month() as u8, now.day() as u8);
-    params.not_after =
-        rcgen::date_time_ymd(future.year(), future.month() as u8, future.day() as u8);
+    // month() returns 1..=12, day() returns 1..=31 — both always fit in u8
+    params.not_before = rcgen::date_time_ymd(
+        now.year(),
+        u8::try_from(now.month())?,
+        u8::try_from(now.day())?,
+    );
+    params.not_after = rcgen::date_time_ymd(
+        future.year(),
+        u8::try_from(future.month())?,
+        u8::try_from(future.day())?,
+    );
 
     Ok(SelfSignedCertificate {
         cert: params.self_signed(&key_pair)?,

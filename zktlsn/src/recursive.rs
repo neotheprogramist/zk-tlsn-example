@@ -1,22 +1,31 @@
-use std::{fmt::Write as _, fs, path::PathBuf};
+use std::{fmt::Write as _, fs};
 
 use crate::{
-    Result, TicketSigner, ZkTlsnError,
-    cli::{self, VerifierTarget},
-    prover::KeccakProof,
+    Result, ZkTlsnError,
+    cli::{self, VerifierTarget, read_field_words_from_bytes},
+    prover::{KeccakProof, Proof},
     repo_root,
 };
 
 pub const HONK_FIELD_BYTES: usize = 32;
 pub const INNER_PUBLIC_INPUTS: usize = 35;
-pub const NULL_PUBLIC_INPUTS: usize = 6;
-pub const RECURSIVE_PUBLIC_INPUTS: usize = 3;
+pub const NULL_PUBLIC_INPUTS: usize = 7;
+pub const RECURSIVE_PUBLIC_INPUTS: usize = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursiveState {
     pub total_amount: u64,
     pub transfers_root: [u8; 32],
     pub to_user_id: u64,
+    pub null_vk_hash: [u8; 32],
+    pub recursive_vk_hash: [u8; 32],
+    pub inner_vk_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct VkArtifacts {
+    pub verification_key: Vec<u8>,
+    pub vk_hash: [u8; HONK_FIELD_BYTES],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,13 +44,13 @@ impl RecursiveCircuit {
         }
     }
 
-    pub fn bytecode_path(self) -> PathBuf {
+    pub fn bytecode_path(self) -> std::path::PathBuf {
         repo_root()
             .join("target")
             .join(format!("{}.json", self.name()))
     }
 
-    pub fn prover_toml_path(self) -> PathBuf {
+    pub fn prover_toml_path(self) -> std::path::PathBuf {
         repo_root()
             .join("circuits")
             .join(self.name())
@@ -61,33 +70,102 @@ pub fn compile_attestation_package() -> Result<()> {
     cli::compile_package(RecursiveCircuit::Attestation.name())
 }
 
-pub fn compile_recursive_package() -> Result<()> {
+pub fn compile_all_packages() -> Result<()> {
+    cli::compile_package(RecursiveCircuit::Attestation.name())?;
+    cli::compile_package(RecursiveCircuit::Null.name())?;
     cli::compile_package(RecursiveCircuit::Recursive.name())
 }
 
-pub fn write_recursive_constants() -> Result<()> {
-    let signer = TicketSigner::from_env_or_default()?;
-    let (pubkey_x, pubkey_y) = signer.public_key_coordinates()?;
-    let padding_ticket = signer.sign_padding_ticket()?;
-    let padding_signature = padding_ticket.signature_array()?;
-    let contents = format!(
-        "pub global TICKET_SIGNER_PUBKEY_X: [u8; 32] = {};\n\
-pub global TICKET_SIGNER_PUBKEY_Y: [u8; 32] = {};\n\
-pub global PADDING_SIGNATURE: [u8; 64] = {};\n",
-        format_byte_array(&pubkey_x),
-        format_byte_array(&pubkey_y),
-        format_byte_array(&padding_signature),
-    );
-    fs::write(
-        repo_root().join("circuits/recursive/src/generated_constants.nr"),
-        contents,
-    )?;
-    Ok(())
+pub fn derive_circuit_vk(circuit: RecursiveCircuit) -> Result<VkArtifacts> {
+    let (verification_key, vk_hash) =
+        cli::write_vk_for_circuit(circuit, VerifierTarget::NoirRecursive)?;
+    Ok(VkArtifacts {
+        verification_key,
+        vk_hash,
+    })
 }
 
-pub fn sync_recursive_circuit() -> Result<()> {
-    write_recursive_constants()?;
-    compile_recursive_package()
+pub fn prove_null_circuit(
+    to_user_id: u64,
+    null_vk_hash: &[u8; HONK_FIELD_BYTES],
+    recursive_vk_hash: &[u8; HONK_FIELD_BYTES],
+    inner_vk_hash: &[u8; HONK_FIELD_BYTES],
+) -> Result<Proof> {
+    let prover_toml = format!(
+        "to_user_id = \"{to_user_id}\"\n\
+         allowed_null_vk_hash = \"{}\"\n\
+         allowed_recursive_vk_hash = \"{}\"\n\
+         allowed_inner_vk_hash = \"{}\"\n",
+        field_word_hex(null_vk_hash),
+        field_word_hex(recursive_vk_hash),
+        field_word_hex(inner_vk_hash),
+    );
+
+    cli::write_package_prover_toml(RecursiveCircuit::Null.name(), &prover_toml)?;
+    let witness_path = cli::execute_package(RecursiveCircuit::Null.name())?;
+    let artifacts = cli::prove_circuit(
+        RecursiveCircuit::Null,
+        &witness_path,
+        VerifierTarget::NoirRecursive,
+    )?;
+
+    Ok(Proof {
+        verification_key: artifacts.verification_key,
+        proof: artifacts.proof,
+        public_inputs: artifacts.public_inputs,
+        vk_hash: artifacts.vk_hash,
+    })
+}
+
+pub fn prove_noir_recursive_circuit(circuit: RecursiveCircuit, prover_toml: &str) -> Result<Proof> {
+    cli::write_package_prover_toml(circuit.name(), prover_toml)?;
+    let witness_path = cli::execute_package(circuit.name())?;
+    let artifacts = cli::prove_circuit(circuit, &witness_path, VerifierTarget::NoirRecursive)?;
+
+    Ok(Proof {
+        verification_key: artifacts.verification_key,
+        proof: artifacts.proof,
+        public_inputs: artifacts.public_inputs,
+        vk_hash: artifacts.vk_hash,
+    })
+}
+
+pub fn build_recursive_prover_toml(
+    inner: &Proof,
+    prev: &Proof,
+    null_vk_hash: &[u8; HONK_FIELD_BYTES],
+    recursive_vk_hash: &[u8; HONK_FIELD_BYTES],
+    inner_vk_hash: &[u8; HONK_FIELD_BYTES],
+) -> Result<String> {
+    let inner_proof_fields = read_field_words_from_bytes(&inner.proof, "inner proof")?;
+    let inner_vk_fields = read_field_words_from_bytes(&inner.verification_key, "inner vk")?;
+    let prev_proof_fields = read_field_words_from_bytes(&prev.proof, "prev proof")?;
+    let prev_vk_fields = read_field_words_from_bytes(&prev.verification_key, "prev vk")?;
+
+    Ok(format!(
+        "inner_vk = {}\n\
+         inner_proof = {}\n\
+         inner_public_inputs = {}\n\
+         inner_key_hash = \"{}\"\n\
+         prev_vk = {}\n\
+         prev_proof = {}\n\
+         prev_public_inputs = {}\n\
+         prev_key_hash = \"{}\"\n\
+         allowed_null_vk_hash = \"{}\"\n\
+         allowed_recursive_vk_hash = \"{}\"\n\
+         allowed_inner_vk_hash = \"{}\"\n",
+        format_field_array(&inner_vk_fields),
+        format_field_array(&inner_proof_fields),
+        format_field_array(&inner.public_inputs),
+        field_word_hex(&inner.vk_hash),
+        format_field_array(&prev_vk_fields),
+        format_field_array(&prev_proof_fields),
+        format_field_array(&prev.public_inputs),
+        field_word_hex(&prev.vk_hash),
+        field_word_hex(null_vk_hash),
+        field_word_hex(recursive_vk_hash),
+        field_word_hex(inner_vk_hash),
+    ))
 }
 
 pub fn prove_keccak_circuit(circuit: RecursiveCircuit, prover_toml: &str) -> Result<KeccakProof> {
@@ -135,9 +213,12 @@ pub fn state_from_public_inputs(public_inputs: &[String]) -> Result<RecursiveSta
     }
 
     Ok(RecursiveState {
-        total_amount: field_word_to_u64(&public_inputs[0])?,
-        transfers_root: parse_hex_field_word(&public_inputs[1])?,
-        to_user_id: field_word_to_u64(&public_inputs[2])?,
+        total_amount: field_word_to_u64(&public_inputs[1])?,
+        transfers_root: parse_hex_field_word(&public_inputs[2])?,
+        to_user_id: field_word_to_u64(&public_inputs[3])?,
+        null_vk_hash: parse_hex_field_word(&public_inputs[4])?,
+        recursive_vk_hash: parse_hex_field_word(&public_inputs[5])?,
+        inner_vk_hash: parse_hex_field_word(&public_inputs[6])?,
     })
 }
 
@@ -179,10 +260,19 @@ pub fn field_word_to_u64(value: &str) -> Result<u64> {
     Ok(u64::from_be_bytes(value_bytes))
 }
 
-fn format_byte_array<const N: usize>(bytes: &[u8; N]) -> String {
-    let values = bytes
+pub(crate) fn field_word_hex(word: &[u8; HONK_FIELD_BYTES]) -> String {
+    let mut encoded = String::from("0x");
+    for byte in word {
+        // write! to String is infallible per std::fmt::Write impl for String
+        write!(&mut encoded, "{byte:02x}").expect("write to string");
+    }
+    encoded
+}
+
+fn format_field_array(words: &[[u8; HONK_FIELD_BYTES]]) -> String {
+    let values = words
         .iter()
-        .map(u8::to_string)
+        .map(|word| format!("\"{}\"", field_word_hex(word)))
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{values}]")
@@ -195,29 +285,19 @@ fn decode_hex_nibble(byte: u8) -> Result<u8> {
         b'A'..=b'F' => Ok(byte - b'A' + 10),
         _ => Err(ZkTlsnError::InvalidInput(format!(
             "invalid hex character `{}`",
-            byte as char
+            char::from(byte)
         ))),
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn field_word_hex(word: &[u8; HONK_FIELD_BYTES]) -> String {
-    let mut encoded = String::from("0x");
-    for byte in word {
-        write!(&mut encoded, "{byte:02x}").expect("write to string");
-    }
-    encoded
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::test_fixtures::{
-        load_settlement_fixture, load_settlement_public_inputs_from_fixture,
-    };
-
     use super::{
         INNER_PUBLIC_INPUTS, NULL_PUBLIC_INPUTS, RECURSIVE_PUBLIC_INPUTS, RecursiveCircuit,
         field_word_hex, field_word_to_u64, state_from_public_inputs,
+    };
+    use crate::test_fixtures::{
+        load_settlement_fixture, load_settlement_public_inputs_from_fixture,
     };
 
     #[test]
@@ -255,6 +335,12 @@ mod tests {
             fixture.transfers_root
         );
         assert_eq!(state.to_user_id, fixture.to_user_id);
+        assert_eq!(field_word_hex(&state.null_vk_hash), fixture.null_vk_hash);
+        assert_eq!(
+            field_word_hex(&state.recursive_vk_hash),
+            fixture.recursive_vk_hash
+        );
+        assert_eq!(field_word_hex(&state.inner_vk_hash), fixture.inner_vk_hash);
     }
 
     #[test]
@@ -281,7 +367,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("expected 3 settlement public inputs")
+                .contains("expected 7 settlement public inputs")
         );
     }
 

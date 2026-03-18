@@ -2,7 +2,7 @@ use crate::{
     Proof,
     cli::{self, VerifierTarget},
     error::{Result, ZkTlsnError},
-    recursive::{HONK_FIELD_BYTES, field_word_to_u64},
+    recursive::{HONK_FIELD_BYTES, field_word_hex, field_word_to_u64},
 };
 
 const COMMITTED_HASH_BYTES: usize = 32;
@@ -34,21 +34,22 @@ pub fn extract_committed_hash_from_proof(proof: &Proof) -> Result<[u8; COMMITTED
         )));
     }
 
-    let mut committed_hash = [0u8; COMMITTED_HASH_BYTES];
-    for (index, field) in proof
+    // HONK_FIELD_BYTES is a const (32), so all slice indexing on [u8; HONK_FIELD_BYTES] is
+    // compile-time checked and cannot panic.
+    proof
         .public_inputs
         .iter()
         .take(COMMITTED_HASH_BYTES)
         .enumerate()
-    {
-        if field[..HONK_FIELD_BYTES - 1].iter().any(|&byte| byte != 0) {
-            return Err(ZkTlsnError::InvalidInput(format!(
-                "public input {index} does not fit into a commitment byte"
-            )));
-        }
-        committed_hash[index] = field[HONK_FIELD_BYTES - 1];
-    }
-    Ok(committed_hash)
+        .try_fold([0u8; COMMITTED_HASH_BYTES], |mut hash, (index, field)| {
+            if field[..HONK_FIELD_BYTES - 1].iter().any(|&byte| byte != 0) {
+                return Err(ZkTlsnError::InvalidInput(format!(
+                    "public input {index} does not fit into a commitment byte"
+                )));
+            }
+            hash[index] = field[HONK_FIELD_BYTES - 1];
+            Ok(hash)
+        })
 }
 
 pub fn verify_proof_against_hash(
@@ -64,38 +65,29 @@ pub fn verify_proof_against_hash(
 }
 
 pub fn extract_transfer_fields_from_proof(proof: &Proof) -> Result<ProofTransferFields> {
-    if proof.public_inputs.len() <= AMOUNT_INDEX {
-        return Err(ZkTlsnError::InvalidInput(format!(
-            "proof public inputs are too short: expected at least {}, got {}",
-            AMOUNT_INDEX + 1,
-            proof.public_inputs.len()
-        )));
-    }
+    let get_field = |index: usize, name: &str| -> Result<&[u8; HONK_FIELD_BYTES]> {
+        proof.public_inputs.get(index).ok_or_else(|| {
+            ZkTlsnError::InvalidInput(format!(
+                "proof public inputs too short for {name}: need index {index}, got length {}",
+                proof.public_inputs.len()
+            ))
+        })
+    };
 
     Ok(ProofTransferFields {
-        tx_id: field_word_to_u64(&field_word_hex(&proof.public_inputs[TX_ID_INDEX]))?,
-        to_user_id: field_word_to_u64(&field_word_hex(&proof.public_inputs[TO_USER_ID_INDEX]))?,
-        amount: field_word_to_u64(&field_word_hex(&proof.public_inputs[AMOUNT_INDEX]))?,
+        tx_id: field_word_to_u64(&field_word_hex(get_field(TX_ID_INDEX, "tx_id")?))?,
+        to_user_id: field_word_to_u64(&field_word_hex(get_field(TO_USER_ID_INDEX, "to_user_id")?))?,
+        amount: field_word_to_u64(&field_word_hex(get_field(AMOUNT_INDEX, "amount")?))?,
     })
-}
-
-fn field_word_hex(word: &[u8; HONK_FIELD_BYTES]) -> String {
-    let mut encoded = String::from("0x");
-    for byte in word {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("write to string");
-    }
-    encoded
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::test_fixtures::{load_attestation_fixture, load_attestation_proof_from_fixture};
-
     use super::{
         AMOUNT_INDEX, COMMITTED_HASH_BYTES, ProofTransferFields, TO_USER_ID_INDEX, TX_ID_INDEX,
         extract_committed_hash_from_proof, extract_transfer_fields_from_proof,
     };
+    use crate::test_fixtures::{load_attestation_fixture, load_attestation_proof_from_fixture};
 
     #[test]
     fn attestation_fixture_committed_hash_matches_fixture_json() {
@@ -160,11 +152,7 @@ mod tests {
 
         let error = extract_transfer_fields_from_proof(&proof)
             .expect_err("short public inputs should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("proof public inputs are too short")
-        );
+        assert!(error.to_string().contains("proof public inputs too short"));
     }
 
     #[test]

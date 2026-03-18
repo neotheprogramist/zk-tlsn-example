@@ -12,7 +12,7 @@ use crate::{
     live_demo::{DemoConnectionConfig, create_transfer, fetch_server_config},
     onchain_settlement::{
         connect_anvil, load_local_deployment, load_settlement_artifacts, mint_amount,
-        read_claimed_root, read_token_balance, repo_root, submit_proof_onchain,
+        preflight_vk_check, read_claimed_root, read_token_balance, repo_root, submit_proof_onchain,
     },
     recursive_batch::generate_settlement_bundle,
 };
@@ -45,18 +45,32 @@ pub async fn run_settlement(args: SettlementArgs) -> Result<()> {
         server_addr: args.server_addr,
         server_name: args.server_name.clone(),
     };
+    info!("Fetching server configuration...");
     let server_config = fetch_server_config(&demo)
         .await
         .context("failed to fetch server configuration")?;
 
-    let mut signed_tickets = Vec::with_capacity(args.amounts.len());
+    let TestQuicConfig { client_config, .. } = shared::get_or_create_test_quic_config(
+        std::path::Path::new("cert.pem"),
+        std::path::Path::new("key.pem"),
+    )
+    .await
+    .context("failed to load QUIC test configuration")?;
+    let mut endpoint = Endpoint::client("[::]:0".parse().context("invalid client bind address")?)
+        .context("failed to create QUIC endpoint")?;
+    endpoint.set_default_client_config(client_config);
+
+    let mut attestation_proofs = Vec::with_capacity(args.amounts.len());
     let mut total_amount = 0u64;
-    for ((from_user, to_user), amount) in args
+    let n = args.amounts.len();
+    for (i, ((from_user, to_user), amount)) in args
         .from_users
         .iter()
         .zip(args.to_users.iter())
         .zip(args.amounts.iter().copied())
+        .enumerate()
     {
+        info!(i = i + 1, n, from = %from_user, to = %to_user, amount, "Creating transfer");
         let transfer = create_transfer(
             &demo,
             &TransferRequest {
@@ -76,7 +90,13 @@ pub async fn run_settlement(args: SettlementArgs) -> Result<()> {
             server_config.special_username,
             server_config.special_user_id
         );
-        let proof_flow = connect_and_prove(&args, transfer.tx_id)
+        info!(
+            i = i + 1,
+            n,
+            tx_id = transfer.tx_id,
+            "Generating attestation proof"
+        );
+        let proof_flow = connect_and_prove(&endpoint, &args, transfer.tx_id)
             .await
             .with_context(|| {
                 format!(
@@ -90,19 +110,20 @@ pub async fn run_settlement(args: SettlementArgs) -> Result<()> {
             transfer.tx_id,
             proof_flow.verification.message
         );
-        let signed_ticket = proof_flow
-            .verification
-            .signed_ticket
-            .context("verifier did not return a signed settlement ticket")?;
         total_amount = total_amount
-            .checked_add(signed_ticket.amount)
+            .checked_add(amount)
             .context("settlement total amount overflow")?;
-        signed_tickets.push(signed_ticket);
+        attestation_proofs.push(proof_flow.bundle.native_proof);
     }
 
-    let settlement_bundle =
-        generate_settlement_bundle(&signed_tickets).context("failed to build settlement bundle")?;
-    let _artifacts = load_settlement_artifacts(&settlement_bundle.keccak_proof)
+    let to_user_id = server_config.special_user_id;
+    info!(
+        count = attestation_proofs.len(),
+        "Generating recursive settlement bundle"
+    );
+    let settlement_bundle = generate_settlement_bundle(&attestation_proofs, to_user_id)
+        .context("failed to build settlement bundle")?;
+    load_settlement_artifacts(&settlement_bundle.keccak_proof)
         .context("failed to load settlement deployment artifacts")?;
     let repo_root = repo_root().context("failed to resolve repo root")?;
     let (provider, deployer) = connect_anvil(&args.anvil_rpc_url, &args.anvil_private_key)
@@ -114,6 +135,19 @@ pub async fn run_settlement(args: SettlementArgs) -> Result<()> {
     let balance_before = read_token_balance(&provider, contracts.token, recipient)
         .await
         .context("failed to read recipient token balance before settlement")?;
+
+    info!("Running pre-flight VK hash check...");
+    preflight_vk_check(
+        &provider,
+        contracts.gate,
+        alloy::primitives::FixedBytes::from(settlement_bundle.state.null_vk_hash),
+        alloy::primitives::FixedBytes::from(settlement_bundle.state.recursive_vk_hash),
+        alloy::primitives::FixedBytes::from(settlement_bundle.state.inner_vk_hash),
+    )
+    .await
+    .context("pre-flight VK hash check failed; circuits may need recompilation")?;
+
+    info!("Submitting settlement proof on-chain...");
     let tx_hash = submit_proof_onchain(
         &provider,
         deployer,
@@ -157,17 +191,11 @@ pub async fn run_settlement(args: SettlementArgs) -> Result<()> {
     Ok(())
 }
 
-async fn connect_and_prove(args: &SettlementArgs, tx_id: u64) -> Result<AttestationProofFlow> {
-    let TestQuicConfig { client_config, .. } = shared::get_or_create_test_quic_config(
-        std::path::Path::new("cert.pem"),
-        std::path::Path::new("key.pem"),
-    )
-    .await
-    .context("failed to load QUIC test configuration")?;
-    let mut endpoint = Endpoint::client("[::]:0".parse().context("invalid client bind address")?)
-        .context("failed to create QUIC endpoint")?;
-    endpoint.set_default_client_config(client_config);
-
+async fn connect_and_prove(
+    endpoint: &Endpoint,
+    args: &SettlementArgs,
+    tx_id: u64,
+) -> Result<AttestationProofFlow> {
     let connection = endpoint
         .connect(args.verifier_addr, "localhost")
         .context("failed to start QUIC connection")?
