@@ -1,0 +1,302 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use crate::{
+    Result, ZkTlsnError,
+    recursive::{HONK_FIELD_BYTES, RecursiveCircuit},
+    repo_root,
+};
+
+const EXPECTED_NARGO_VERSION: &str = "1.0.0-beta.19";
+const EXPECTED_BB_VERSION: &str = "4.0.0-nightly.20260120";
+const TARGET_DIR: &str = "target";
+const CLI_DIR: &str = "cli";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifierTarget {
+    Evm,
+    NoirRecursive,
+}
+
+impl VerifierTarget {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Evm => "evm",
+            Self::NoirRecursive => "noir-recursive",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BbProofArtifacts {
+    pub proof: Vec<u8>,
+    pub public_inputs: Vec<[u8; HONK_FIELD_BYTES]>,
+    pub verification_key: Vec<u8>,
+}
+
+pub(crate) fn ensure_cli_toolchain() -> Result<()> {
+    ensure_command_version("nargo", &["--version"], EXPECTED_NARGO_VERSION)?;
+    ensure_command_version("bb", &["--version"], EXPECTED_BB_VERSION)?;
+    Ok(())
+}
+
+pub(crate) fn compile_package(package: &str) -> Result<()> {
+    ensure_cli_toolchain()?;
+    run_command(
+        repo_root(),
+        "nargo",
+        &["compile", "--force", "--package", package],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn write_package_prover_toml(package: &str, contents: &str) -> Result<PathBuf> {
+    let path = repo_root()
+        .join("circuits")
+        .join(package)
+        .join("Prover.toml");
+    fs::write(&path, contents)?;
+    Ok(path)
+}
+
+pub(crate) fn execute_package(package: &str) -> Result<PathBuf> {
+    ensure_cli_toolchain()?;
+    let witness_name = next_cli_id(package);
+    run_command(
+        repo_root(),
+        "nargo",
+        &["execute", &witness_name, "--package", package],
+    )?;
+    Ok(repo_root()
+        .join(TARGET_DIR)
+        .join(format!("{witness_name}.gz")))
+}
+
+pub(crate) fn prove_circuit(
+    circuit: RecursiveCircuit,
+    witness_path: &Path,
+    target: VerifierTarget,
+) -> Result<BbProofArtifacts> {
+    ensure_cli_toolchain()?;
+    let output_dir = cli_output_dir(&format!("{}-prove-{}", circuit.name(), target.as_str()));
+    fs::create_dir_all(&output_dir)?;
+    fs::create_dir_all(crs_path())?;
+    let bytecode_path = repo_root()
+        .join(TARGET_DIR)
+        .join(format!("{}.json", circuit.name()));
+
+    let bytecode_path = path_arg(&bytecode_path)?;
+    let witness_path = path_arg(witness_path)?;
+    let output_path = path_arg(&output_dir)?;
+    run_command(
+        repo_root(),
+        "bb",
+        &[
+            "prove",
+            "-b",
+            &bytecode_path,
+            "-w",
+            &witness_path,
+            "-o",
+            &output_path,
+            "-t",
+            target.as_str(),
+            "-s",
+            scheme_for(circuit),
+            "-c",
+            &path_arg(&crs_path())?,
+            "--write_vk",
+            "--verify",
+        ],
+    )?;
+
+    Ok(BbProofArtifacts {
+        proof: fs::read(output_dir.join("proof"))?,
+        public_inputs: read_field_words(&output_dir.join("public_inputs"))?,
+        verification_key: fs::read(output_dir.join("vk"))?,
+    })
+}
+
+pub(crate) fn verify_proof(
+    proof: &[u8],
+    public_inputs: &[[u8; HONK_FIELD_BYTES]],
+    verification_key: &[u8],
+    target: VerifierTarget,
+) -> Result<()> {
+    ensure_cli_toolchain()?;
+    let output_dir = cli_output_dir(&format!("verify-{}", target.as_str()));
+    fs::create_dir_all(&output_dir)?;
+
+    let proof_path = output_dir.join("proof");
+    let public_inputs_path = output_dir.join("public_inputs");
+    let vk_path = output_dir.join("vk");
+    fs::write(&proof_path, proof)?;
+    fs::write(&vk_path, verification_key)?;
+    fs::write(&public_inputs_path, flatten_public_inputs(public_inputs))?;
+
+    run_command(
+        repo_root(),
+        "bb",
+        &[
+            "verify",
+            "-p",
+            &path_arg(&proof_path)?,
+            "-i",
+            &path_arg(&public_inputs_path)?,
+            "-k",
+            &path_arg(&vk_path)?,
+            "-t",
+            target.as_str(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn write_solidity_verifier(
+    vk_path: &Path,
+    output_path: &Path,
+    target: VerifierTarget,
+) -> Result<()> {
+    ensure_cli_toolchain()?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    run_command(
+        repo_root(),
+        "bb",
+        &[
+            "write_solidity_verifier",
+            "-k",
+            &path_arg(vk_path)?,
+            "-o",
+            &path_arg(output_path)?,
+            "-t",
+            target.as_str(),
+            "--optimized",
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn flatten_public_inputs(public_inputs: &[[u8; HONK_FIELD_BYTES]]) -> Vec<u8> {
+    public_inputs
+        .iter()
+        .flat_map(|input| input.iter().copied())
+        .collect()
+}
+
+pub(crate) fn read_field_words(path: &Path) -> Result<Vec<[u8; HONK_FIELD_BYTES]>> {
+    let bytes = fs::read(path)?;
+    read_field_words_from_bytes(&bytes, &path.display().to_string())
+}
+
+pub(crate) fn read_field_words_from_bytes(
+    bytes: &[u8],
+    label: &str,
+) -> Result<Vec<[u8; HONK_FIELD_BYTES]>> {
+    if !bytes.len().is_multiple_of(HONK_FIELD_BYTES) {
+        return Err(ZkTlsnError::InvalidInput(format!(
+            "expected `{label}` to contain {}-byte field words, got {} bytes",
+            HONK_FIELD_BYTES,
+            bytes.len()
+        )));
+    }
+
+    bytes
+        .chunks_exact(HONK_FIELD_BYTES)
+        .map(|chunk| {
+            let mut word = [0u8; HONK_FIELD_BYTES];
+            word.copy_from_slice(chunk);
+            Ok(word)
+        })
+        .collect()
+}
+
+fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(repo_root())
+        .output()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => ZkTlsnError::MissingTool {
+                tool: program.to_string(),
+            },
+            _ => ZkTlsnError::Io(error),
+        })?;
+    if !output.status.success() {
+        return Err(ZkTlsnError::CommandFailed {
+            program: program.to_string(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains(expected) {
+        return Err(ZkTlsnError::UnsupportedToolVersion {
+            tool: program.to_string(),
+            expected: expected.to_string(),
+            actual: stdout.trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => ZkTlsnError::MissingTool {
+                tool: program.to_string(),
+            },
+            _ => ZkTlsnError::Io(error),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(ZkTlsnError::CommandFailed {
+        program: program.to_string(),
+        args: args.iter().map(|arg| (*arg).to_string()).collect(),
+        status: output.status.to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
+}
+
+fn cli_output_dir(label: &str) -> PathBuf {
+    repo_root()
+        .join(TARGET_DIR)
+        .join(CLI_DIR)
+        .join(next_cli_id(label))
+}
+
+fn crs_path() -> PathBuf {
+    repo_root().join(TARGET_DIR).join("crs")
+}
+
+fn next_cli_id(label: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{label}-{id}")
+}
+
+fn scheme_for(circuit: RecursiveCircuit) -> &'static str {
+    match circuit {
+        RecursiveCircuit::Attestation | RecursiveCircuit::Null | RecursiveCircuit::Recursive => {
+            "ultra_honk"
+        }
+    }
+}
+
+fn path_arg(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ZkTlsnError::InvalidInput(format!("invalid UTF-8 path: {}", path.display())))
+}

@@ -38,6 +38,27 @@ pub enum ZkTlsnError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    #[error("required CLI tool `{tool}` is not installed or not on PATH")]
+    MissingTool { tool: String },
+
+    #[error("unsupported {tool} version: expected `{expected}`, got `{actual}`")]
+    UnsupportedToolVersion {
+        tool: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error(
+        "command failed: `{program} {args}` ({status}) stderr: {stderr}",
+        args = .args.join(" ")
+    )]
+    CommandFailed {
+        program: String,
+        args: Vec<String>,
+        status: String,
+        stderr: String,
+    },
+
     #[error(
         "Cached Barretenberg SRS not found at {path}. Run `cargo run --package zktlsn --release --example fixture` first."
     )]

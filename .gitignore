@@ -41,6 +41,7 @@ evm/testdata/
 
 # General
 .DS_Store
+node_modules/
 __MACOSX/
 .AppleDouble
 .LSOverride

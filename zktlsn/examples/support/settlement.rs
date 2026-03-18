@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -7,76 +7,155 @@ use std::{
 use alloy::hex;
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
-use zktlsn::{SettlementBundle, validate_generated_solidity_verifier};
+use tokio::runtime::Builder;
+use zktlsn::{
+    RECURSIVE_PUBLIC_INPUTS, SignedTransferTicket, generate_honk_solidity_verifier,
+    validate_generated_solidity_verifier,
+};
 
-const GENERATED_VERIFIER_PATH: &str = "evm/src/generated/HonkVerifier.sol";
+use crate::{
+    deployment_artifacts,
+    onchain_settlement::{
+        DEFAULT_ANVIL_PRIVATE_KEY, DEFAULT_ANVIL_RPC_URL, connect_anvil, deploy_contracts,
+        load_settlement_artifacts, repo_root, write_local_deployment,
+    },
+    recursive_batch,
+};
+
+const GENERATED_VERIFIER_PATH: &str = "evm/src/generated/SettlementHonkVerifier.sol";
 const FIXTURE_DIR: &str = "evm/testdata";
+const KECCAK_DIR: &str = "target/settlement_keccak";
 
-pub fn prepare_settlement_artifacts(bundle: &SettlementBundle) -> Result<()> {
+pub fn prepare_settlement_artifacts(tickets: &[SignedTransferTicket]) -> Result<()> {
     let repo_root = repo_root()?;
+    let bundle = recursive_batch::generate_settlement_bundle(tickets)
+        .context("failed to build deterministic settlement bundle")?;
 
-    write_prover_toml(&repo_root, bundle)?;
-    run_command(&repo_root, "nargo", &["compile", "--force"])?;
-    run_command(
-        &repo_root.join("circuits/attestation"),
-        "nargo",
-        &["execute", "witness"],
-    )?;
-    run_command(
-        &repo_root,
-        "bb",
-        &[
-            "write_vk",
-            "-b",
-            "./target/attestation.json",
-            "-o",
-            "./target",
-            "--oracle_hash",
-            "keccak",
-        ],
-    )?;
-    run_command(
-        &repo_root,
-        "bb",
-        &[
-            "prove",
-            "-b",
-            "./target/attestation.json",
-            "-w",
-            "./target/witness.gz",
-            "-o",
-            "./target/solidity",
-            "--oracle_hash",
-            "keccak",
-        ],
-    )?;
-    run_command(
-        &repo_root,
-        "bb",
-        &[
-            "write_solidity_verifier",
-            "-k",
-            "./target/vk",
-            "-o",
-            "./target/Verifier.sol",
-        ],
-    )?;
+    write_generated_verifier(&repo_root, &bundle.keccak_proof)?;
+    write_fixture_files(&repo_root, tickets, &bundle)?;
+    run_command(&repo_root, "forge", &["build"])?;
+    deployment_artifacts::write_embedded_artifacts(&repo_root)
+        .context("failed to write embedded deployment artifacts")?;
 
-    verify_cli_artifacts(&repo_root, bundle)?;
-    write_fixture_files(&repo_root, bundle)?;
-    write_generated_verifier(&repo_root, bundle)
+    let artifacts = load_settlement_artifacts(&bundle.keccak_proof)
+        .context("failed to reload settlement deployment artifacts")?;
+    let rpc_url = anvil_rpc_url();
+    let private_key = anvil_private_key();
+    let (provider, deployer) = connect_anvil(&rpc_url, &private_key)
+        .context("failed to connect to Anvil; start Anvil before running fixture")?;
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create Tokio runtime for fixture deploy")?;
+    let contracts = runtime
+        .block_on(deploy_contracts(
+            &provider,
+            deployer,
+            &artifacts,
+            bundle.state.to_user_id,
+        ))
+        .context("failed to deploy settlement contracts")?;
+    let deployment = runtime
+        .block_on(write_local_deployment(
+            &repo_root,
+            &provider,
+            deployer,
+            contracts,
+            bundle.state.to_user_id,
+        ))
+        .context("failed to persist settlement deployment manifest")?;
+
+    println!(
+        "Deployed settlement contracts chain_id={} verifier={} token={} gate={}",
+        deployment.chain_id, deployment.verifier, deployment.token, deployment.gate
+    );
+    Ok(())
 }
 
-fn repo_root() -> Result<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .canonicalize()
-        .context("failed to resolve repo root")
+fn write_generated_verifier(repo_root: &Path, proof: &zktlsn::KeccakProof) -> Result<()> {
+    let source = generate_honk_solidity_verifier(&proof.verification_key, "SettlementHonkVerifier")
+        .context("failed to generate settlement Solidity verifier")?;
+    ensure!(
+        source.contains("contract SettlementHonkVerifier is"),
+        "generated settlement verifier is missing the expected contract declaration"
+    );
+    validate_generated_solidity_verifier(&source, RECURSIVE_PUBLIC_INPUTS)
+        .context("generated settlement verifier does not match the expected circuit shape")?;
+
+    let verifier_path = repo_root.join(GENERATED_VERIFIER_PATH);
+    let parent = verifier_path
+        .parent()
+        .ok_or_else(|| anyhow!("generated verifier path is missing parent"))?;
+    fs::create_dir_all(parent).context("failed to create generated verifier directory")?;
+    fs::write(&verifier_path, source)
+        .with_context(|| format!("failed to write {}", verifier_path.display()))?;
+
+    let keccak_dir = repo_root.join(KECCAK_DIR);
+    fs::create_dir_all(&keccak_dir).context("failed to create settlement keccak directory")?;
+    fs::write(keccak_dir.join("vk"), &proof.verification_key)
+        .context("failed to write settlement verification key")?;
+    Ok(())
 }
 
-fn write_prover_toml(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
-    let path = repo_root.join("circuits/attestation/Prover.toml");
-    fs::write(path, bundle.noir_inputs.to_prover_toml()).context("failed to write Prover.toml")
+fn write_fixture_files(
+    repo_root: &Path,
+    tickets: &[SignedTransferTicket],
+    bundle: &recursive_batch::SettlementBundle,
+) -> Result<()> {
+    let fixture_dir = repo_root.join(FIXTURE_DIR);
+    fs::create_dir_all(&fixture_dir).context("failed to create settlement fixture directory")?;
+
+    let public_inputs_bin = flatten_public_inputs(&bundle.keccak_proof.public_inputs);
+    let proof_hex = format!("0x{}", hex::encode(&bundle.keccak_proof.solidity_proof));
+    let public_inputs_hex = bundle.keccak_proof.public_inputs_hex();
+    let fixture = json!({
+        "tickets": tickets.iter().map(|ticket| json!({
+            "tx_id": ticket.tx_id,
+            "to_user_id": ticket.to_user_id,
+            "amount": ticket.amount,
+            "signature": ticket.signature,
+        })).collect::<Vec<_>>(),
+        "total_amount": bundle.state.total_amount,
+        "transfers_root": format!("0x{}", hex::encode(bundle.state.transfers_root)),
+        "to_user_id": bundle.state.to_user_id,
+        "proof_hex": proof_hex,
+        "public_inputs": public_inputs_hex,
+    });
+
+    [
+        (
+            fixture_dir.join("settlement_proof.bin"),
+            bundle.keccak_proof.solidity_proof.clone(),
+        ),
+        (
+            fixture_dir.join("settlement_combined_proof.bin"),
+            bundle.keccak_proof.combined_proof.clone(),
+        ),
+        (
+            fixture_dir.join("settlement_public_inputs.bin"),
+            public_inputs_bin,
+        ),
+        (
+            fixture_dir.join("settlement_public_inputs.json"),
+            serde_json::to_vec_pretty(&public_inputs_hex)
+                .context("failed to encode settlement public inputs")?,
+        ),
+        (
+            fixture_dir.join("settlement_fixture.json"),
+            serde_json::to_vec_pretty(&fixture).context("failed to encode settlement fixture")?,
+        ),
+    ]
+    .into_iter()
+    .try_for_each(|(path, bytes): (PathBuf, Vec<u8>)| {
+        fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))
+    })
+}
+
+fn flatten_public_inputs(public_inputs: &[[u8; 32]]) -> Vec<u8> {
+    public_inputs
+        .iter()
+        .flat_map(|input| input.iter().copied())
+        .collect()
 }
 
 fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
@@ -93,95 +172,10 @@ fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn verify_cli_artifacts(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
-    let keccak = &bundle.keccak_proof;
-    let expected_public_inputs = flatten_public_inputs(&keccak.public_inputs);
-    let cli_public_inputs = fs::read(repo_root.join("target/solidity/public_inputs"))
-        .context("failed to read CLI public inputs")?;
-    ensure!(
-        cli_public_inputs == expected_public_inputs,
-        "CLI public inputs do not match settlement public inputs"
-    );
-
-    let cli_proof =
-        fs::read(repo_root.join("target/solidity/proof")).context("failed to read CLI proof")?;
-    ensure!(
-        cli_proof.len() == keccak.solidity_proof.len() && cli_proof.len() % 32 == 0,
-        "CLI keccak proof shape does not match settlement proof"
-    );
-
-    let cli_vk = fs::read(repo_root.join("target/vk")).context("failed to read CLI vk")?;
-    ensure!(
-        cli_vk == keccak.verification_key,
-        "CLI verification key does not match settlement verification key"
-    );
-    Ok(())
+fn anvil_rpc_url() -> String {
+    env::var("ZKTLSN_ANVIL_RPC_URL").unwrap_or_else(|_| DEFAULT_ANVIL_RPC_URL.to_string())
 }
 
-fn write_fixture_files(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
-    let fixture_dir = repo_root.join(FIXTURE_DIR);
-    fs::create_dir_all(&fixture_dir).context("failed to create fixture directory")?;
-
-    let keccak = &bundle.keccak_proof;
-    let public_inputs_bin = flatten_public_inputs(&keccak.public_inputs);
-    let proof_hex = format!("0x{}", hex::encode(&keccak.solidity_proof));
-    let public_inputs_hex = keccak.public_inputs_hex();
-    let fixture = json!({
-        "attestation": bundle.noir_inputs.attestation,
-        "attestation_blinder": bundle.noir_inputs.attestation_blinder,
-        "attestation_committed_hash": bundle.noir_inputs.attestation_committed_hash,
-        "tx_id": bundle.noir_inputs.tx_id,
-        "to_user_id": bundle.noir_inputs.to_user_id,
-        "amount": bundle.noir_inputs.amount,
-        "mint_amount_wei": u128::from(bundle.noir_inputs.amount)
-            .checked_mul(1_000_000_000_000_000_000_u128)
-            .context("mint amount overflow")?
-            .to_string(),
-        "proof_hex": proof_hex,
-        "public_inputs": public_inputs_hex,
-    });
-
-    [
-        (fixture_dir.join("proof.bin"), keccak.solidity_proof.clone()),
-        (
-            fixture_dir.join("combined_proof.bin"),
-            keccak.combined_proof.clone(),
-        ),
-        (fixture_dir.join("public_inputs.bin"), public_inputs_bin),
-        (fixture_dir.join("proof.hex"), proof_hex.into_bytes()),
-        (
-            fixture_dir.join("public_inputs.json"),
-            serde_json::to_vec_pretty(&public_inputs_hex)
-                .context("failed to encode public inputs json")?,
-        ),
-        (
-            fixture_dir.join("fixture.json"),
-            serde_json::to_vec_pretty(&fixture).context("failed to encode fixture json")?,
-        ),
-    ]
-    .into_iter()
-    .try_for_each(|(path, bytes)| {
-        fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))
-    })
-}
-
-fn write_generated_verifier(repo_root: &Path, bundle: &SettlementBundle) -> Result<()> {
-    let verifier_source = fs::read_to_string(repo_root.join("target/Verifier.sol"))
-        .context("failed to read generated verifier")?;
-    validate_generated_solidity_verifier(&verifier_source, bundle.keccak_proof.public_inputs.len())
-        .context("generated verifier does not match the expected circuit shape")?;
-    let verifier_path = repo_root.join(GENERATED_VERIFIER_PATH);
-    let parent = verifier_path
-        .parent()
-        .ok_or_else(|| anyhow!("generated verifier path is missing parent"))?;
-    fs::create_dir_all(parent).context("failed to create generated verifier directory")?;
-    fs::write(&verifier_path, verifier_source)
-        .with_context(|| format!("failed to write {}", verifier_path.display()))
-}
-
-fn flatten_public_inputs(public_inputs: &[[u8; 32]]) -> Vec<u8> {
-    public_inputs
-        .iter()
-        .flat_map(|input| input.iter().copied())
-        .collect()
+fn anvil_private_key() -> String {
+    env::var("ZKTLSN_ANVIL_PRIVATE_KEY").unwrap_or_else(|_| DEFAULT_ANVIL_PRIVATE_KEY.to_string())
 }

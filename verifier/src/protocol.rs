@@ -10,7 +10,9 @@ use tlsnotary::{
 };
 use tracing::{debug, info, instrument, warn};
 use zktlsn::{
-    Proof, bind_commitments_to_keys, extract_committed_hash_from_proof, verify_proof_against_hash,
+    Proof, SignedTransferTicket, TicketSigner, bind_commitments_to_keys,
+    extract_committed_hash_from_proof, extract_transfer_fields_from_proof,
+    verify_proof_against_hash,
 };
 
 use crate::{MAX_RECV_DATA, MAX_SENT_DATA, errors::ProtocolError};
@@ -81,15 +83,22 @@ pub struct VerificationOutcome {
     pub server_name: String,
     pub verified_fields: Vec<String>,
     pub message: String,
+    pub signed_ticket: Option<SignedTransferTicket>,
 }
 
 impl VerificationOutcome {
-    pub fn success(server_name: String, verified_fields: Vec<String>, message: String) -> Self {
+    pub fn success(
+        server_name: String,
+        verified_fields: Vec<String>,
+        message: String,
+        signed_ticket: SignedTransferTicket,
+    ) -> Self {
         Self {
             success: true,
             server_name,
             verified_fields,
             message,
+            signed_ticket: Some(signed_ticket),
         }
     }
 
@@ -99,6 +108,7 @@ impl VerificationOutcome {
             server_name,
             verified_fields: Vec::new(),
             message,
+            signed_ticket: None,
         }
     }
 
@@ -156,30 +166,32 @@ where
         "Received full proof payload bytes"
     );
 
-    let verified_fields = match verify_proof_message(&notarized_transcript, proof_message) {
-        Ok(verified_fields) => verified_fields,
-        Err(error) => {
-            warn!(error = %error, "Proof verification failed");
-            progress.tick("proof verification finished");
-            send_verification_outcome_and_close(
-                &mut io,
-                &VerificationOutcome::failure(
-                    notarized_transcript.server_name.clone(),
-                    error.to_string(),
-                ),
-            )
-            .await?;
-            progress.tick("sent verification result");
-            progress.tick("stream closed");
-            return Err(error);
-        }
-    };
+    let (verified_fields, signed_ticket) =
+        match verify_proof_message(&notarized_transcript, proof_message) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, "Proof verification failed");
+                progress.tick("proof verification finished");
+                send_verification_outcome_and_close(
+                    &mut io,
+                    &VerificationOutcome::failure(
+                        notarized_transcript.server_name.clone(),
+                        error.to_string(),
+                    ),
+                )
+                .await?;
+                progress.tick("sent verification result");
+                progress.tick("stream closed");
+                return Err(error);
+            }
+        };
     progress.tick("proof verification finished");
 
     let verification_outcome = VerificationOutcome::success(
         notarized_transcript.server_name.clone(),
         verified_fields,
         "ZK proof verified successfully".to_string(),
+        signed_ticket,
     );
     send_verification_outcome_and_close(&mut io, &verification_outcome).await?;
     progress.tick("sent verification result");
@@ -272,7 +284,7 @@ where
 fn verify_proof_message(
     notarized_transcript: &NotarizedTranscript,
     proof_message: ProofMessage,
-) -> Result<Vec<String>, ProtocolError> {
+) -> Result<(Vec<String>, SignedTransferTicket), ProtocolError> {
     let parsed_response = parser::redacted::Response::from_str(&notarized_transcript.response)
         .map_err(|error| ProtocolError::ResponseParse(format!("{error:?}")))?;
     let bindings = bind_commitments_to_keys(
@@ -315,7 +327,14 @@ fn verify_proof_message(
         "Proof cryptographically bound to transcript commitment"
     );
 
-    Ok(vec![matched_field])
+    let transfer = extract_transfer_fields_from_proof(&proof_message.proof)
+        .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
+    let signed_ticket = TicketSigner::from_env_or_default()
+        .map_err(|error| ProtocolError::InvalidConfig(error.to_string()))?
+        .sign_ticket(transfer.tx_id, transfer.to_user_id, transfer.amount)
+        .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
+
+    Ok((vec![matched_field], signed_ticket))
 }
 
 fn create_verifier_config() -> Result<VerifierConfig, ProtocolError> {
@@ -755,4 +774,320 @@ fn hex_preview(bytes: &[u8], max_len: usize) -> String {
         .take(max_len)
         .map(|b| format!("{b:02x}"))
         .collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        ops::Range,
+        path::PathBuf,
+        str::FromStr,
+        sync::{Mutex, OnceLock},
+    };
+
+    use futures::io::Cursor;
+    use k256::{
+        EncodedPoint,
+        ecdsa::{Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
+    };
+    use parser::JsonFieldRangeExt;
+    use rangeset::set::RangeSet;
+    use serde::Deserialize;
+    use tlsn::hash::{Hash, TypedHash};
+    use tlsnotary::{Direction, HashAlgId, PlaintextHash, TranscriptCommitment};
+    use zktlsn::{
+        DEFAULT_VERIFIER_TICKET_PRIVATE_KEY, NoirProverInputs, Proof, TicketSigner,
+        ticket_message_hash,
+    };
+
+    use crate::errors::ProtocolError;
+
+    use super::{NotarizedTranscript, ProofMessage, VerificationOutcome, verify_proof_message};
+
+    static PROOF_LOCK: Mutex<()> = Mutex::new(());
+    static FIXTURE_PROOF: OnceLock<Proof> = OnceLock::new();
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct AttestationFixture {
+        attestation: String,
+        attestation_blinder: Vec<u8>,
+    }
+
+    #[test]
+    fn verify_proof_message_issues_signed_ticket_for_valid_fixture_proof() {
+        let proof = fixture_proof().clone();
+        let committed_hash =
+            zktlsn::extract_committed_hash_from_proof(&proof).expect("extract committed hash");
+        let notarized_transcript =
+            notarized_transcript_with_fields(&[(".attestation", committed_hash)], &[]);
+
+        let (verified_fields, signed_ticket) =
+            verify_proof_message(&notarized_transcript, ProofMessage::new(proof.clone()))
+                .expect("verify proof message");
+
+        assert_eq!(verified_fields, vec![".attestation".to_string()]);
+        let transfer =
+            zktlsn::extract_transfer_fields_from_proof(&proof).expect("extract transfer fields");
+        assert_eq!(signed_ticket.tx_id, transfer.tx_id);
+        assert_eq!(signed_ticket.to_user_id, transfer.to_user_id);
+        assert_eq!(signed_ticket.amount, transfer.amount);
+
+        let signer =
+            TicketSigner::from_hex(DEFAULT_VERIFIER_TICKET_PRIVATE_KEY).expect("load signer");
+        let signature = Signature::from_slice(&signed_ticket.signature).expect("parse signature");
+        let (pubkey_x, pubkey_y) = signer.public_key_coordinates().expect("load public key");
+        let encoded =
+            EncodedPoint::from_affine_coordinates(&pubkey_x.into(), &pubkey_y.into(), false);
+        let verifying_key = VerifyingKey::from_encoded_point(&encoded).expect("decode public key");
+        verifying_key
+            .verify_prehash(
+                &ticket_message_hash(
+                    signed_ticket.tx_id,
+                    signed_ticket.to_user_id,
+                    signed_ticket.amount,
+                ),
+                &signature,
+            )
+            .expect("verify issued ticket signature");
+    }
+
+    #[test]
+    fn verify_proof_message_rejects_tampered_proof_before_ticket_issue() {
+        let mut proof = fixture_proof().clone();
+        let committed_hash =
+            zktlsn::extract_committed_hash_from_proof(&proof).expect("extract committed hash");
+        let notarized_transcript =
+            notarized_transcript_with_fields(&[(".attestation", committed_hash)], &[]);
+        let original_last = *proof.proof.last().expect("fixture proof bytes");
+        *proof.proof.last_mut().expect("fixture proof bytes") = original_last ^ 0x01;
+
+        let error = verify_proof_message(&notarized_transcript, ProofMessage::new(proof))
+            .expect_err("tampered proof should fail");
+        assert!(matches!(error, ProtocolError::ProofVerificationFailed(_)));
+    }
+
+    #[test]
+    fn verify_proof_message_rejects_mismatched_committed_hash() {
+        let proof = fixture_proof().clone();
+        let notarized_transcript =
+            notarized_transcript_with_fields(&[(".attestation", [0u8; 32])], &[]);
+
+        let error = verify_proof_message(&notarized_transcript, ProofMessage::new(proof))
+            .expect_err("mismatched committed hash should fail");
+        assert!(matches!(error, ProtocolError::CommitmentBindingFailed(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match any bound transcript commitment")
+        );
+    }
+
+    #[test]
+    fn verify_proof_message_rejects_when_multiple_fields_match_same_hash() {
+        let proof = fixture_proof().clone();
+        let committed_hash =
+            zktlsn::extract_committed_hash_from_proof(&proof).expect("extract committed hash");
+        let notarized_transcript = notarized_transcript_with_fields(
+            &[
+                (".attestation", committed_hash),
+                (".mirror", committed_hash),
+            ],
+            &[(".mirror", fixture_attestation().attestation)],
+        );
+
+        let error = verify_proof_message(&notarized_transcript, ProofMessage::new(proof))
+            .expect_err("ambiguous committed hash should fail");
+        assert!(matches!(error, ProtocolError::CommitmentBindingFailed(_)));
+        assert!(error.to_string().contains("matched multiple fields"));
+    }
+
+    #[test]
+    fn verify_proof_message_rejects_when_no_bound_field_matches() {
+        let proof = fixture_proof().clone();
+        let notarized_transcript =
+            notarized_transcript_with_fields(&[(".attestation", [7u8; 32])], &[]);
+
+        let error = verify_proof_message(&notarized_transcript, ProofMessage::new(proof))
+            .expect_err("unmatched field should fail");
+        assert!(matches!(error, ProtocolError::CommitmentBindingFailed(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match any bound transcript commitment")
+        );
+    }
+
+    #[test]
+    fn verification_failure_outcomes_do_not_include_signed_ticket() {
+        let failure = VerificationOutcome::failure("server.test".to_string(), "failed".to_string());
+        assert!(failure.signed_ticket.is_none());
+        assert!(!failure.success);
+    }
+
+    #[test]
+    fn proof_message_frame_roundtrip_preserves_payload() {
+        smol::block_on(async {
+            let message = ProofMessage::new(fixture_proof().clone());
+            let mut cursor = Cursor::new(Vec::new());
+            message.write_to(&mut cursor).await.expect("write frame");
+            cursor.set_position(0);
+
+            let decoded = ProofMessage::read_from(&mut cursor)
+                .await
+                .expect("read frame");
+            assert_eq!(decoded.proof.proof, message.proof.proof);
+            assert_eq!(decoded.proof.public_inputs, message.proof.public_inputs);
+            assert_eq!(
+                decoded.proof.verification_key,
+                message.proof.verification_key
+            );
+        });
+    }
+
+    #[test]
+    fn verification_outcome_frame_roundtrip_preserves_payload() {
+        smol::block_on(async {
+            let outcome = VerificationOutcome::success(
+                "server.test".to_string(),
+                vec![".attestation".to_string()],
+                "ok".to_string(),
+                TicketSigner::from_hex(DEFAULT_VERIFIER_TICKET_PRIVATE_KEY)
+                    .expect("load signer")
+                    .sign_ticket(1, 3, 25)
+                    .expect("sign ticket"),
+            );
+            let mut cursor = Cursor::new(Vec::new());
+            outcome.write_to(&mut cursor).await.expect("write frame");
+            cursor.set_position(0);
+
+            let decoded = VerificationOutcome::read_from(&mut cursor)
+                .await
+                .expect("read frame");
+            assert_eq!(decoded.success, outcome.success);
+            assert_eq!(decoded.server_name, outcome.server_name);
+            assert_eq!(decoded.verified_fields, outcome.verified_fields);
+            assert_eq!(decoded.message, outcome.message);
+            assert_eq!(decoded.signed_ticket, outcome.signed_ticket);
+        });
+    }
+
+    fn fixture_proof() -> &'static Proof {
+        FIXTURE_PROOF.get_or_init(|| {
+            let _guard = PROOF_LOCK.lock().expect("lock proof generation");
+            let fixture = fixture_attestation();
+            let attestation_blinder: [u8; 16] = fixture
+                .attestation_blinder
+                .clone()
+                .try_into()
+                .expect("fixture blinder length");
+            let inputs =
+                NoirProverInputs::from_attestation(fixture.attestation, attestation_blinder)
+                    .expect("build Noir inputs");
+
+            zktlsn::generate_settlement_bundle_from_inputs(inputs)
+                .expect("generate attestation proof")
+                .native_proof
+        })
+    }
+
+    fn fixture_attestation() -> AttestationFixture {
+        let path = fixture_path("fixture.json");
+        let bytes = fs::read(&path).unwrap_or_else(|error| {
+            panic!("failed to read {}: {error}", path.display());
+        });
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!("failed to decode {}: {error}", path.display());
+        })
+    }
+
+    fn notarized_transcript_with_fields(
+        committed_fields: &[(&str, [u8; 32])],
+        extra_string_fields: &[(&str, String)],
+    ) -> NotarizedTranscript {
+        let fixture = fixture_attestation();
+        let full_response = response_with_fields(&fixture.attestation, extra_string_fields);
+        let parsed = parser::standard::Response::from_str(&full_response).expect("parse response");
+        let mut keep_ranges = vec![
+            parsed.protocol_version_with_space(),
+            parsed.status_code_with_space(),
+            parsed.status_with_newline(),
+        ];
+        for (keypath, _) in committed_fields {
+            if let parser::standard::Body::KeyValue { key, .. } =
+                parsed.body.get(*keypath).expect("field should exist")
+            {
+                keep_ranges.push(key.with_quotes_and_colon());
+            }
+        }
+        let response = redact_string(&full_response, &keep_ranges);
+        let transcript_commitments = committed_fields
+            .iter()
+            .map(|(keypath, hash)| {
+                TranscriptCommitment::Hash(PlaintextHash {
+                    direction: Direction::Received,
+                    idx: RangeSet::from(body_value_range(&parsed, keypath)),
+                    hash: TypedHash {
+                        alg: HashAlgId::BLAKE3,
+                        value: Hash::try_from(hash.to_vec()).expect("hash length"),
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+
+        NotarizedTranscript {
+            server_name: "server.test".to_string(),
+            request: "POST /transfers HTTP/1.1\nHost: server.test\n\n".to_string(),
+            response,
+            transcript_commitments,
+        }
+    }
+
+    fn response_with_fields(attestation: &str, extra_string_fields: &[(&str, String)]) -> String {
+        let mut body = format!(
+            "{{\"status\":\"success\",\"txId\":1,\"toUserId\":3,\"amount\":25,\"attestation\":\"{attestation}\""
+        );
+        for (keypath, value) in extra_string_fields {
+            let key = keypath.trim_start_matches('.');
+            body.push_str(&format!(",\"{key}\":\"{value}\""));
+        }
+        body.push('}');
+
+        format!(
+            "HTTP/1.1 200 OK\nContent-Type: application/json\nTransfer-Encoding: chunked\n\n{:x}\n{}\n0\n",
+            body.len(),
+            body,
+        )
+    }
+
+    fn body_value_range(parsed: &parser::standard::Response, keypath: &str) -> Range<usize> {
+        match parsed.body.get(keypath).expect("field should exist") {
+            parser::standard::Body::KeyValue { value, .. } => value.clone(),
+            parser::standard::Body::Value(range) => range.clone(),
+        }
+    }
+
+    fn redact_string(input: &str, keep_ranges: &[Range<usize>]) -> String {
+        let mut bytes = input.as_bytes().to_vec();
+        let mut keep_mask = vec![false; bytes.len()];
+        for range in keep_ranges {
+            for index in range.clone() {
+                keep_mask[index] = true;
+            }
+        }
+
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            if !keep_mask[index] {
+                *byte = 0;
+            }
+        }
+        String::from_utf8(bytes).expect("valid UTF-8")
+    }
+
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("evm/testdata")
+            .join(name)
+    }
 }

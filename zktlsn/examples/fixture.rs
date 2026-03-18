@@ -1,20 +1,16 @@
-#[path = "support/batch_settlement.rs"]
-mod batch_settlement_support;
 #[path = "support/deployment_artifacts.rs"]
 mod deployment_artifacts;
+#[path = "support/onchain_settlement.rs"]
+mod onchain_settlement;
 #[path = "support/recursive_batch.rs"]
 mod recursive_batch;
 #[path = "support/settlement.rs"]
 mod settlement_support;
 
 use anyhow::{Context, Result};
-use zktlsn::{NoirProverInputs, generate_settlement_bundle_from_inputs};
+use zktlsn::TicketSigner;
 
-const FIXTURE_TX_ID: u64 = 1;
-const FIXTURE_TO_USER_ID: u64 = 3;
-const FIXTURE_AMOUNT: u64 = 25;
-const FIXTURE_BLINDER: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-const BATCH_FIXTURE_TXS: &[(u64, u64, u64, [u8; 16])] = &[
+const SETTLEMENT_FIXTURE_TXS: &[(u64, u64, u64, [u8; 16])] = &[
     (
         1,
         3,
@@ -38,35 +34,24 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let srs_path = zktlsn::download_barretenberg_srs_to_cache()
-        .context("failed to download cached Barretenberg SRS")?;
-    zktlsn::setup_cached_barretenberg_srs().context("failed to setup cached Barretenberg SRS")?;
+    zktlsn::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
 
-    let inputs = NoirProverInputs::from_transfer(
-        FIXTURE_TX_ID,
-        FIXTURE_TO_USER_ID,
-        FIXTURE_AMOUNT,
-        FIXTURE_BLINDER,
-    )
-    .context("failed to build deterministic fixture inputs")?;
-    let bundle = generate_settlement_bundle_from_inputs(inputs)
-        .context("failed to build deterministic settlement bundle")?;
-    settlement_support::prepare_settlement_artifacts(&bundle)
-        .context("failed to prepare deterministic settlement artifacts")?;
-    let batch_inputs = BATCH_FIXTURE_TXS
+    let signer =
+        TicketSigner::from_env_or_default().context("failed to load verifier ticket signer")?;
+    let tickets = SETTLEMENT_FIXTURE_TXS
         .iter()
-        .map(|(tx_id, to_user_id, amount, blinder)| {
-            NoirProverInputs::from_transfer(*tx_id, *to_user_id, *amount, *blinder)
+        .map(|(tx_id, to_user_id, amount, _blinder)| {
+            signer.sign_ticket(*tx_id, *to_user_id, *amount)
         })
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(anyhow::Error::from)
-        .context("failed to build deterministic batch fixture inputs")?;
-    batch_settlement_support::prepare_batch_settlement_artifacts(&batch_inputs)
-        .context("failed to prepare deterministic batch settlement artifacts")?;
+        .context("failed to build deterministic settlement tickets")?;
+
+    settlement_support::prepare_settlement_artifacts(&tickets)
+        .context("failed to prepare deterministic settlement artifacts")?;
 
     println!(
-        "Downloaded cached Barretenberg SRS to `{}`, generated settlement fixtures under `evm/testdata/`, generated verifiers under `evm/src/generated/`, and embedded deployment artifacts under `zktlsn/examples/support/`.",
-        srs_path.display()
+        "Generated settlement fixtures under `evm/testdata/`, generated verifier under `evm/src/generated/`, embedded deployment artifacts under `zktlsn/examples/support/`, and deployed settlement contracts recorded under `target/`."
     );
     Ok(())
 }

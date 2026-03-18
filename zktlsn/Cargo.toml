@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+blake3.workspace = true
 flate2.workspace = true
-noir.workspace = true
+hex.workspace = true
+k256.workspace = true
 parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,6 +30,7 @@ futures-rustls.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+proptest = "1.6.0"
 quinn.workspace = true
 rustls.workspace = true
 server.workspace = true

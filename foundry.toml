@@ -4,10 +4,9 @@ test = "evm/test"
 out = "out"
 libs = ["dependencies"]
 optimizer = true
-optimizer_runs = 200
+optimizer_runs = 1
 ignored_warnings_from = [
-    "evm/src/generated/HonkVerifier.sol",
-    "evm/src/generated/RecursiveHonkVerifier.sol",
+    "evm/src/generated/SettlementHonkVerifier.sol",
 ]
 fs_permissions = [{ access = "read", path = "./evm/testdata" }]
 
@@ -17,8 +16,7 @@ openzeppelin-contracts = { version = "5.6.1", git = "https://github.com/OpenZepp
 
 [lint]
 ignore = [
-    "evm/src/generated/HonkVerifier.sol",
-    "evm/src/generated/RecursiveHonkVerifier.sol",
+    "evm/src/generated/SettlementHonkVerifier.sol",
 ]
 lint_on_build = false
 

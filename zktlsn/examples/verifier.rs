@@ -8,10 +8,8 @@ use verifier::serve;
 type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() {
-    // Use the fixture-managed SRS cache before proof verification.
-    zktlsn::setup_cached_barretenberg_srs().expect(
-        "failed to setup cached Barretenberg SRS; run `cargo run --package zktlsn --release --example fixture` first",
-    );
+    zktlsn::ensure_cli_toolchain().expect("failed to validate nargo/bb CLI toolchain");
+    zktlsn::compile_attestation_package().expect("failed to compile the attestation circuit");
     init_logging("info");
 
     smol::block_on(async {

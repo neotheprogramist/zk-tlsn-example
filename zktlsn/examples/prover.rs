@@ -35,9 +35,8 @@ struct Cli {
 }
 
 fn main() {
-    zktlsn::setup_cached_barretenberg_srs().expect(
-        "failed to setup cached Barretenberg SRS; run `cargo run --package zktlsn --release --example fixture` first",
-    );
+    zktlsn::ensure_cli_toolchain().expect("failed to validate nargo/bb CLI toolchain");
+    zktlsn::compile_attestation_package().expect("failed to compile the attestation circuit");
     init_logging("info");
 
     smol::block_on(async {

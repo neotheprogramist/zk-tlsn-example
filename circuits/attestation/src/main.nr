@@ -26,7 +26,6 @@ fn main(
     assert(parsed_tx_id == tx_id, "tx_id mismatch");
     assert(parsed_to_user_id == to_user_id, "to_user_id mismatch");
     assert(parsed_amount == amount, "amount mismatch");
-    assert(amount > 0, "amount must be positive");
 }
 
 fn verify_commitment<let N: u32>(

@@ -26,7 +26,7 @@ use crate::{
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    about = "Create one or more fiat transfers, collect verifier-signed tickets, and mint one onchain settlement"
+    about = "Create one fiat transfer and submit it through the canonical settlement pipeline"
 )]
 struct Cli {
     #[arg(long, env = "ZKTLSN_SERVER_ADDR", default_value = "127.0.0.1:8443")]
@@ -35,30 +35,12 @@ struct Cli {
     server_name: String,
     #[arg(long, env = "ZKTLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
     verifier_addr: SocketAddr,
-    #[arg(
-        long,
-        env = "ZKTLSN_BATCH_FROM_USERS",
-        num_args = 1..,
-        value_delimiter = ',',
-        default_value = "alice,bob,alice"
-    )]
-    from_users: Vec<String>,
-    #[arg(
-        long,
-        env = "ZKTLSN_BATCH_TO_USERS",
-        num_args = 1..,
-        value_delimiter = ',',
-        default_value = "treasury,treasury,treasury"
-    )]
-    to_users: Vec<String>,
-    #[arg(
-        long,
-        env = "ZKTLSN_BATCH_AMOUNTS",
-        num_args = 1..,
-        value_delimiter = ',',
-        default_value = "25,10,15"
-    )]
-    amounts: Vec<u64>,
+    #[arg(long, env = "ZKTLSN_FROM_USER", default_value = "alice")]
+    from_user: String,
+    #[arg(long, env = "ZKTLSN_TO_USER", default_value = "treasury")]
+    to_user: String,
+    #[arg(long, env = "ZKTLSN_TRANSFER_AMOUNT", default_value_t = 25)]
+    amount: u64,
     #[arg(long, env = "ZKTLSN_ANVIL_RPC_URL", default_value = DEFAULT_ANVIL_RPC_URL)]
     anvil_rpc_url: String,
     #[arg(
@@ -78,7 +60,7 @@ async fn main() {
     init_logging("info");
 
     if let Err(error) = run(Cli::parse()).await {
-        error!(error = %format!("{error:#}"), "settlement flow failed");
+        error!(error = %format!("{error:#}"), "single settlement flow failed");
         std::process::exit(1);
     }
 }
@@ -88,9 +70,9 @@ async fn run(cli: Cli) -> Result<()> {
         server_addr: cli.server_addr,
         server_name: cli.server_name,
         verifier_addr: cli.verifier_addr,
-        from_users: cli.from_users,
-        to_users: cli.to_users,
-        amounts: cli.amounts,
+        from_users: vec![cli.from_user],
+        to_users: vec![cli.to_user],
+        amounts: vec![cli.amount],
         anvil_rpc_url: cli.anvil_rpc_url,
         anvil_private_key: cli.anvil_private_key,
         mint_recipient: cli.mint_recipient,

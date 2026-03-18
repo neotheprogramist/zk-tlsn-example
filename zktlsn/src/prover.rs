@@ -1,13 +1,5 @@
-use noir::{
-    barretenberg::{
-        prove::{prove_ultra_honk, prove_ultra_honk_keccak},
-        verify::{get_ultra_honk_keccak_verification_key, get_ultra_honk_verification_key},
-    },
-    blackbox_solver::blake3,
-    witness::from_vec_str_to_witness_map,
-};
+use blake3::Hasher;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use shared::{
     ATTESTATION_LEN, FiatTransferAttestation, encode_transfer_attestation,
     parse_transfer_attestation,
@@ -18,25 +10,17 @@ use tlsnotary::{
 };
 
 use crate::{
+    cli::{self, VerifierTarget},
     error::{Result, ZkTlsnError},
     padding::PaddingConfig,
+    recursive::{HONK_FIELD_BYTES, RecursiveCircuit},
 };
-
-const HONK_FIELD_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
     pub verification_key: Vec<u8>,
     pub proof: Vec<u8>,
-}
-
-impl Proof {
-    pub fn new(verification_key: Vec<u8>, proof: Vec<u8>) -> Self {
-        Self {
-            verification_key,
-            proof,
-        }
-    }
+    pub public_inputs: Vec<[u8; HONK_FIELD_BYTES]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +35,7 @@ impl KeccakProof {
     pub fn public_inputs_hex(&self) -> Vec<String> {
         self.public_inputs
             .iter()
-            .map(|word| format!("0x{}", hex_encode(word)))
+            .map(|word| field_word_hex(word))
             .collect()
     }
 }
@@ -60,7 +44,6 @@ impl KeccakProof {
 pub struct SettlementBundle {
     pub noir_inputs: NoirProverInputs,
     pub native_proof: Proof,
-    pub keccak_proof: KeccakProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,15 +85,9 @@ impl NoirProverInputs {
             )));
         }
 
-        let hash_input = [attestation_bytes, &attestation_blinder].concat();
-        let committed_hash =
-            blake3(&hash_input).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
-
+        let committed_hash = blake3_hash(attestation_bytes, &attestation_blinder);
         Ok(Self {
-            attestation_committed_hash: to_fixed_array::<32>(
-                &committed_hash,
-                "attestation_committed_hash",
-            )?,
+            attestation_committed_hash: committed_hash,
             tx_id: parsed.tx_id,
             to_user_id: parsed.to_user_id,
             amount: parsed.amount,
@@ -146,25 +123,6 @@ impl NoirProverInputs {
             )
             .collect()
     }
-
-    pub fn witness_values(&self) -> Vec<String> {
-        self.attestation_committed_hash
-            .iter()
-            .map(|byte| byte.to_string())
-            .chain(
-                [self.tx_id, self.to_user_id, self.amount]
-                    .into_iter()
-                    .map(|value| value.to_string()),
-            )
-            .chain(
-                self.attestation
-                    .as_bytes()
-                    .iter()
-                    .map(|byte| byte.to_string()),
-            )
-            .chain(self.attestation_blinder.iter().map(|byte| byte.to_string()))
-            .collect()
-    }
 }
 
 pub fn generate_settlement_bundle(
@@ -179,59 +137,17 @@ pub fn generate_settlement_bundle(
         received_data,
         padding_config,
     )?;
-
     generate_settlement_bundle_from_inputs(noir_inputs)
 }
 
 pub fn generate_settlement_bundle_from_inputs(
     noir_inputs: NoirProverInputs,
 ) -> Result<SettlementBundle> {
+    cli::compile_package(RecursiveCircuit::Attestation.name())?;
     let native_proof = generate_native_proof_from_inputs(&noir_inputs)?;
-    let keccak_proof = generate_keccak_proof_from_inputs(&noir_inputs)?;
-
     Ok(SettlementBundle {
         noir_inputs,
         native_proof,
-        keccak_proof,
-    })
-}
-
-fn generate_keccak_proof_from_inputs(input: &NoirProverInputs) -> Result<KeccakProof> {
-    let bytecode = load_circuit_bytecode()?;
-    let inputs = input.witness_values();
-    let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-    let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
-
-    let vk = get_ultra_honk_keccak_verification_key(&bytecode, false, false)
-        .map_err(ZkTlsnError::NoirError)?;
-    let combined_proof = prove_ultra_honk_keccak(&bytecode, witness, vk.clone(), false, false)
-        .map_err(ZkTlsnError::NoirError)?;
-
-    let expected_public_inputs = input.to_solidity_public_inputs();
-    let public_inputs_size = expected_public_inputs.len() * HONK_FIELD_BYTES;
-    if combined_proof.len() < public_inputs_size {
-        return Err(ZkTlsnError::InvalidInput(format!(
-            "combined keccak proof is too short: {} bytes, need at least {public_inputs_size}",
-            combined_proof.len()
-        )));
-    }
-    let parsed_public_inputs = combined_proof[..public_inputs_size]
-        .chunks_exact(HONK_FIELD_BYTES)
-        .map(|value| to_fixed_array::<HONK_FIELD_BYTES>(value, "solidity_public_input"))
-        .collect::<Result<Vec<_>>>()?;
-
-    if parsed_public_inputs != expected_public_inputs {
-        return Err(ZkTlsnError::InvalidInput(
-            "parsed Solidity public inputs do not match transcript-derived inputs".to_string(),
-        ));
-    }
-    let solidity_proof = combined_proof[public_inputs_size..].to_vec();
-
-    Ok(KeccakProof {
-        verification_key: vk,
-        combined_proof,
-        solidity_proof,
-        public_inputs: parsed_public_inputs,
     })
 }
 
@@ -249,8 +165,26 @@ pub fn derive_noir_prover_inputs(
         received_secret,
         padding_config,
     )?;
-
     build_noir_prover_inputs(&proof_input)
+}
+
+fn generate_native_proof_from_inputs(input: &NoirProverInputs) -> Result<Proof> {
+    cli::write_package_prover_toml(
+        RecursiveCircuit::Attestation.name(),
+        &input.to_prover_toml(),
+    )?;
+    let witness_path = cli::execute_package(RecursiveCircuit::Attestation.name())?;
+    let artifacts = cli::prove_circuit(
+        RecursiveCircuit::Attestation,
+        &witness_path,
+        VerifierTarget::NoirRecursive,
+    )?;
+
+    Ok(Proof {
+        verification_key: artifacts.verification_key,
+        proof: artifacts.proof,
+        public_inputs: artifacts.public_inputs,
+    })
 }
 
 fn extract_received_commitment(commitments: &[TranscriptCommitment]) -> Result<PlaintextHash> {
@@ -269,19 +203,12 @@ fn extract_received_secret(secrets: &[TranscriptSecret]) -> Result<PlaintextHash
     secrets
         .iter()
         .find_map(|secret| match secret {
-            TranscriptSecret::Hash(hash) if hash.direction == Direction::Received => {
-                Some(hash.clone())
+            TranscriptSecret::Hash(secret) if secret.direction == Direction::Received => {
+                Some(secret.clone())
             }
             _ => None,
         })
         .ok_or(ZkTlsnError::NoReceivedSecrets)
-}
-
-#[derive(Debug, Clone)]
-struct ProofInput {
-    committed_hash: Vec<u8>,
-    committed_data: Vec<u8>,
-    blinder: Vec<u8>,
 }
 
 fn prepare_proof_input(
@@ -290,32 +217,16 @@ fn prepare_proof_input(
     secret: PlaintextHashSecret,
     padding_config: PaddingConfig,
 ) -> Result<ProofInput> {
-    if commitment.direction != Direction::Received || commitment.hash.alg != HashAlgId::BLAKE3 {
+    if commitment.direction != Direction::Received {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
-    if secret.direction != Direction::Received || secret.alg != HashAlgId::BLAKE3 {
-        return Err(ZkTlsnError::InvalidCommitmentDirection);
+    if commitment.hash.alg != HashAlgId::BLAKE3 {
+        return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
 
-    let range_start = commitment.idx.min().ok_or_else(|| {
-        ZkTlsnError::InvalidInput("received commitment is missing range start".to_string())
-    })?;
-    let range_end = commitment.idx.end().ok_or_else(|| {
-        ZkTlsnError::InvalidInput("received commitment is missing range end".to_string())
-    })?;
-    if range_end < range_start {
-        return Err(ZkTlsnError::InvalidInput(format!(
-            "received commitment has invalid range: start={range_start}, end={range_end}"
-        )));
-    }
+    let range_start = secret.idx.min().unwrap_or(0);
+    let range_end = range_start.saturating_add(padding_config.commitment_length);
     let range = range_start..range_end;
-    if range.len() != padding_config.commitment_length {
-        return Err(ZkTlsnError::InvalidCommitmentLength {
-            expected: padding_config.commitment_length,
-            actual: range.len(),
-        });
-    }
-
     let committed_data = received_data
         .get(range.clone())
         .ok_or_else(|| {
@@ -326,11 +237,8 @@ fn prepare_proof_input(
         })?
         .to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
-    let data_to_hash = [&committed_data[..], &blinder[..]].concat();
-    let committed_hash = blake3(&data_to_hash).map_err(|_| ZkTlsnError::HashVerificationFailed)?;
-
-    let tlsnotary_hash = commitment.hash.value.as_bytes();
-    if tlsnotary_hash != committed_hash.as_slice() {
+    let committed_hash = blake3_hash(&committed_data, &blinder);
+    if commitment.hash.value.as_bytes() != committed_hash {
         return Err(ZkTlsnError::HashVerificationFailed);
     }
 
@@ -339,27 +247,6 @@ fn prepare_proof_input(
         committed_data,
         blinder,
     })
-}
-
-pub(crate) fn load_circuit_bytecode() -> Result<String> {
-    const PROGRAM_JSON: &str = include_str!("../../target/attestation.json");
-    let json: Value = serde_json::from_str(PROGRAM_JSON)?;
-    json["bytecode"]
-        .as_str()
-        .ok_or(ZkTlsnError::BytecodeNotFound)
-        .map(String::from)
-}
-
-fn generate_native_proof_from_inputs(input: &NoirProverInputs) -> Result<Proof> {
-    let bytecode = load_circuit_bytecode()?;
-    let inputs = input.witness_values();
-    let input_refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-    let witness = from_vec_str_to_witness_map(input_refs).map_err(ZkTlsnError::NoirError)?;
-    let vk = get_ultra_honk_verification_key(&bytecode, false).map_err(ZkTlsnError::NoirError)?;
-    let proof =
-        prove_ultra_honk(&bytecode, witness, vk.clone(), false).map_err(ZkTlsnError::NoirError)?;
-
-    Ok(Proof::new(vk, proof))
 }
 
 fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
@@ -382,6 +269,13 @@ fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
     })
 }
 
+fn blake3_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
+    let mut hasher = Hasher::new();
+    hasher.update(data);
+    hasher.update(blinder);
+    *hasher.finalize().as_bytes()
+}
+
 fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8; N]> {
     bytes.try_into().map_err(|_| {
         ZkTlsnError::InvalidInput(format!(
@@ -389,6 +283,21 @@ fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8;
             bytes.len()
         ))
     })
+}
+
+fn u64_to_field_word(value: u64) -> [u8; HONK_FIELD_BYTES] {
+    let mut word = [0u8; HONK_FIELD_BYTES];
+    word[HONK_FIELD_BYTES - 8..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn field_word_hex(word: &[u8; HONK_FIELD_BYTES]) -> String {
+    let mut encoded = String::from("0x");
+    for byte in word {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("write to string");
+    }
+    encoded
 }
 
 fn format_decimal_byte_array(bytes: &[u8]) -> String {
@@ -418,105 +327,67 @@ fn escape_toml_string(value: &str) -> String {
     escaped
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push_str(&format!("{byte:02x}"));
-    }
-    encoded
-}
-
-fn u64_to_field_word(value: u64) -> [u8; HONK_FIELD_BYTES] {
-    let mut word = [0u8; HONK_FIELD_BYTES];
-    word[HONK_FIELD_BYTES - 8..].copy_from_slice(&value.to_be_bytes());
-    word
+struct ProofInput {
+    committed_hash: Vec<u8>,
+    committed_data: Vec<u8>,
+    blinder: Vec<u8>,
 }
 
 #[cfg(test)]
-mod unit_tests {
-    use shared::ATTESTATION_LEN;
+mod tests {
+    use crate::test_fixtures::{load_attestation_fixture, parse_fixture_public_inputs};
 
-    use super::{NoirProverInputs, u64_to_field_word};
+    use super::NoirProverInputs;
 
     #[test]
-    fn test_noir_prover_inputs_render_prover_toml() {
+    fn noir_inputs_from_transfer_match_attestation_fixture() {
+        let fixture = load_attestation_fixture();
+        let attestation_blinder: [u8; 16] = fixture
+            .attestation_blinder
+            .clone()
+            .try_into()
+            .expect("fixture blinder length");
+        let attestation_committed_hash: [u8; 32] = fixture
+            .attestation_committed_hash
+            .clone()
+            .try_into()
+            .expect("fixture committed hash length");
+
         let inputs = NoirProverInputs::from_transfer(
-            1,
-            3,
-            25,
-            [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+            fixture.tx_id,
+            fixture.to_user_id,
+            fixture.amount,
+            attestation_blinder,
         )
-        .expect("inputs");
+        .expect("build Noir inputs");
 
-        let toml = inputs.to_prover_toml();
-
-        assert!(toml.contains("attestation_blinder = [\"9\", \"9\""));
-        assert!(toml.contains("attestation_committed_hash = [\""));
-        assert!(toml.contains("tx_id = \"1\""));
-        assert!(toml.contains("to_user_id = \"3\""));
-        assert!(toml.contains("amount = \"25\""));
+        assert_eq!(inputs.attestation, fixture.attestation);
+        assert_eq!(inputs.attestation_blinder, attestation_blinder);
+        assert_eq!(
+            inputs.attestation_committed_hash,
+            attestation_committed_hash
+        );
     }
 
     #[test]
-    fn test_noir_prover_inputs_from_transfer() {
+    fn solidity_public_inputs_match_attestation_fixture() {
+        let fixture = load_attestation_fixture();
+        let attestation_blinder: [u8; 16] = fixture
+            .attestation_blinder
+            .clone()
+            .try_into()
+            .expect("fixture blinder length");
         let inputs = NoirProverInputs::from_transfer(
-            1,
-            3,
-            25,
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            fixture.tx_id,
+            fixture.to_user_id,
+            fixture.amount,
+            attestation_blinder,
         )
-        .expect("inputs");
+        .expect("build Noir inputs");
 
-        assert_eq!(inputs.attestation.len(), ATTESTATION_LEN);
-        assert_eq!(inputs.tx_id, 1);
-        assert_eq!(inputs.to_user_id, 3);
-        assert_eq!(inputs.amount, 25);
-    }
-
-    #[test]
-    fn test_noir_prover_inputs_expand_to_solidity_public_inputs() {
-        let inputs = NoirProverInputs::from_transfer(
-            1,
-            3,
-            25,
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-        )
-        .expect("inputs");
-
-        let public_inputs = inputs.to_solidity_public_inputs();
-        assert_eq!(public_inputs.len(), 35);
-        assert_eq!(public_inputs[0][31], inputs.attestation_committed_hash[0]);
-        assert_eq!(public_inputs[31][31], inputs.attestation_committed_hash[31]);
-        assert_eq!(public_inputs[32], u64_to_field_word(1));
-        assert_eq!(public_inputs[33], u64_to_field_word(3));
-        assert_eq!(public_inputs[34], u64_to_field_word(25));
-    }
-
-    #[test]
-    fn test_expected_keccak_split_layout_is_prefix_based() {
-        let inputs = NoirProverInputs::from_transfer(
-            1,
-            3,
-            25,
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-        )
-        .expect("inputs");
-        let public_inputs = inputs.to_solidity_public_inputs();
-
-        let mut combined = Vec::new();
-        for public_input in &public_inputs {
-            combined.extend_from_slice(public_input);
-        }
-        combined.extend_from_slice(&[0xabu8; 64]);
-
-        let split_at = public_inputs.len() * 32;
-        assert_eq!(split_at, 1120);
-        assert_eq!(combined[..split_at].len(), 1120);
-        assert_eq!(combined[split_at..].len(), 64);
-        assert_eq!(combined[31], inputs.attestation_committed_hash[0]);
-        assert_eq!(combined[1023], inputs.attestation_committed_hash[31]);
-        assert_eq!(combined[1055], 1);
-        assert_eq!(combined[1087], 3);
-        assert_eq!(combined[1119], 25);
+        assert_eq!(
+            inputs.to_solidity_public_inputs(),
+            parse_fixture_public_inputs(&fixture.public_inputs)
+        );
     }
 }
