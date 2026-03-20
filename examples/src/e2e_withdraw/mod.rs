@@ -9,6 +9,8 @@ use stwo_circuit::{
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
+use crate::common_rpc;
+
 pub(crate) mod chain;
 mod tlsn;
 
@@ -132,8 +134,7 @@ pub fn run() {
             refund_amount = refund_amount.0,
             "Resolved partial-withdraw amounts"
         );
-        let token_address =
-            BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
+        let token_address = common_rpc::address_to_m31(app.withdraw_token);
 
         tracing::info!("Step 2: Preparing pool state and performing real deposit");
 

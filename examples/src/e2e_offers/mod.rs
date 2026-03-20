@@ -1,17 +1,18 @@
-use alloy::primitives::{Bytes, U256};
+use alloy::primitives::U256;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    OfferSpendInputs, build_offer_onchain_verification_input, build_verify_calldata,
-    prove_offer_withdraw, verify_offer_withdraw,
+    OfferCreateInputs, build_offer_onchain_verification_input,
+    prove_offer_create, verify_offer_create,
     poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
     offchain_merkle::poseidon_hash_pair,
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
+use crate::common_rpc;
+
 use self::{
     chain::{
-        build_offchain_merkle_tree, send_approve_tx, send_cancel_claim_tx, send_cancel_intent_tx,
-        send_create_offer_tx, send_deposit_tx, try_call_current_root, try_call_next_leaf_index,
+        send_cancel_claim_tx, send_cancel_intent_tx, send_create_offer_tx,
     },
     config::AppState,
 };
@@ -33,25 +34,29 @@ pub fn run() {
     smol::block_on(async {
         let app = AppState::from_env();
 
+        crate::common_rpc::ensure_owner_has_eth_for_gas(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            "0x3635C9ADC5DEA000000000",
+        ).await;
+
         let deposit_amount = BaseField::from_u32_unchecked(app.deposit_amount);
-        let token_address = BaseField::from_u32_unchecked(chain::address_to_m31(app.token_address));
+        let token_address = common_rpc::address_to_m31(app.token_address);
 
-        let mut offchain_tree = build_offchain_merkle_tree(&app)
-            .await
-            .unwrap_or_else(|e| panic!("Failed to build off-chain Merkle tree: {e}"));
+        let mut offchain_tree = crate::common_rpc::build_offchain_merkle_tree(
+            app.rpc_url.clone(),
+            app.privacy_pool_address,
+        ).await;
         
-        let idx_before = offchain_tree.leaf_count() as u64;
+        let idx_before = offchain_tree.leaf_count();
 
-        let effective_secret_u32 = app.deposit_secret.wrapping_add(idx_before as u32);
-        let effective_nullifier_u32 = app.deposit_nullifier.wrapping_add(idx_before as u32);
-        let deposit_secret = BaseField::from_u32_unchecked(effective_secret_u32);
-        let deposit_nullifier = BaseField::from_u32_unchecked(effective_nullifier_u32);
+        let idx = BaseField::from_u32_unchecked(idx_before as u32);
+        let deposit_secret = poseidon_hash_pair(BaseField::from_u32_unchecked(app.deposit_secret), idx);
+        let deposit_nullifier = poseidon_hash_pair(BaseField::from_u32_unchecked(app.deposit_nullifier), idx);
 
         tracing::info!(
             deposit_amount = app.deposit_amount,
             merkle_index = idx_before,
-            effective_secret = effective_secret_u32,
-            effective_nullifier = effective_nullifier_u32,
             "Creating 2 offers: Offer1=30, Offer2=40 from deposit of 100"
         );
 
@@ -65,23 +70,38 @@ pub fn run() {
         let secret_nullifier_hash = deposit_outputs.secret_nullifier_hash;
         let deposit_leaf = deposit_outputs.leaf;
 
-        send_approve_tx(&app, U256::from(deposit_amount.0))
+        crate::common_rpc::send_approve_tx(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            app.max_fee_per_gas,
+            app.max_priority_fee_per_gas,
+            app.gas_limit,
+            app.token_address,
+            app.privacy_pool_address,
+            U256::from(deposit_amount.0),
+        )
             .await
             .expect("approve failed");
 
-        send_deposit_tx(
-            &app,
+        crate::common_rpc::send_deposit_tx(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            app.max_fee_per_gas,
+            app.max_priority_fee_per_gas,
+            app.gas_limit,
+            app.privacy_pool_address,
             U256::from(secret_nullifier_hash.0),
             U256::from(deposit_amount.0),
+            app.token_address,
         )
         .await
         .unwrap();
 
         // Verify deposit succeeded by checking index incremented and root matches our tree
-        let idx_after = try_call_next_leaf_index(&app)
+        let idx_after = crate::common_rpc::try_call_next_leaf_index(app.rpc_url.clone(), app.privacy_pool_address)
             .await
             .unwrap_or_else(|| panic!("getNextLeafIndex unavailable after deposit"));
-        let root_after = try_call_current_root(&app)
+        let root_after = crate::common_rpc::try_call_current_root(app.rpc_url.clone(), app.privacy_pool_address)
             .await
             .unwrap_or_else(|| panic!("getCurrentRoot unavailable after deposit"));
 
@@ -107,7 +127,14 @@ pub fn run() {
         let offer1_refund_secret = BaseField::from_u32_unchecked(2006);
         let offer1_refund_nullifier = BaseField::from_u32_unchecked(2008);
 
-        let offer1_inputs = OfferSpendInputs {
+        // offer1 commitment inputs
+        let offer1_secret = BaseField::from_u32_unchecked(5001);
+        let offer1_nullifier = BaseField::from_u32_unchecked(5002);
+        let offer1_fiat_amount = common_rpc::string_to_m31("100");
+        let offer1_currency_hash = common_rpc::string_to_m31("USD");
+        let offer1_rev_tag_hash = common_rpc::string_to_m31("@alice");
+
+        let offer1_inputs = OfferCreateInputs {
             secret: deposit_secret,
             nullifier: deposit_nullifier,
             deposit_amount,
@@ -119,16 +146,20 @@ pub fn run() {
             merkle_siblings,
             merkle_index,
             merkle_root,
+            offer_secret: offer1_secret,
+            offer_nullifier: offer1_nullifier,
+            fiat_amount: offer1_fiat_amount,
+            currency_hash: offer1_currency_hash,
+            rev_tag_hash: offer1_rev_tag_hash,
         };
 
         tracing::info!("Generating offer-withdraw proof");
-        let offer1_proof = prove_offer_withdraw(offer1_inputs, 8).expect("Offer proof generation failed");
-        verify_offer_withdraw(offer1_proof.clone()).expect("Offer proof verification failed");
+        let offer1_proof = prove_offer_create(offer1_inputs, 8).expect("Offer proof generation failed");
+        verify_offer_create(offer1_proof.clone()).expect("Offer proof verification failed");
 
         tracing::info!("Building on-chain verification payload");
         let offer1_verify_input =
             build_offer_onchain_verification_input(&offer1_proof).expect("Failed to build onchain input");
-        let offer1_verify_calldata = build_verify_calldata(&offer1_verify_input);
 
         tracing::info!("Calling createOffer transaction");
         let secret_hash = U256::from(12345u64.wrapping_add(idx_before));
@@ -138,16 +169,17 @@ pub fn run() {
 
         send_create_offer_tx(
             &app,
-            U256::from(offer1_proof.merkle_root.0),
-            U256::from(offer1_proof.nullifier.0),
+            U256::from(offer1_proof.public_inputs.merkle_root.0),
+            U256::from(offer1_proof.public_inputs.nullifier.0),
             app.token_address,
-            U256::from(offer1_proof.amount.0),
-            U256::from(offer1_proof.refund_commitment_hash.0),
+            U256::from(offer1_proof.public_inputs.amount.0),
+            U256::from(offer1_proof.public_inputs.offer_commitment.0),
+            U256::from(offer1_proof.public_inputs.refund_commitment_hash.0),
             secret_hash,
             currency,
             fiat_amount,
             rev_tag,
-            Bytes::from(offer1_verify_calldata),
+            &offer1_verify_input,
         )
         .await
         .expect("Failed to send createOffer transaction");
@@ -157,7 +189,7 @@ pub fn run() {
         // Create second offer from first offer's refund commitment
         tracing::info!("Creating second offer from refund commitment");
         
-        offchain_tree.add_leaf(offer1_proof.refund_commitment_hash);
+        offchain_tree.add_leaf(offer1_proof.public_inputs.refund_commitment_hash);
         let idx_after_offer1 = (offchain_tree.leaf_count() - 1) as u64;  // Local calculation - no RPC!
 
         let offer2_merkle_index = u32::try_from(idx_after_offer1)
@@ -172,7 +204,14 @@ pub fn run() {
         let offer2_refund_secret = BaseField::from_u32_unchecked(3004);
         let offer2_refund_nullifier = BaseField::from_u32_unchecked(3002);
 
-        let offer2_inputs = OfferSpendInputs {
+        // offer2 commitment inputs
+        let offer2_secret = BaseField::from_u32_unchecked(6001);
+        let offer2_nullifier = BaseField::from_u32_unchecked(6002);
+        let offer2_fiat_amount = common_rpc::string_to_m31("200");
+        let offer2_currency_hash = common_rpc::string_to_m31("EUR");
+        let offer2_rev_tag_hash = common_rpc::string_to_m31("@bob");
+
+        let offer2_inputs = OfferCreateInputs {
             secret: offer1_refund_secret,
             nullifier: offer1_refund_nullifier,
             deposit_amount: offer1_refund_amount,
@@ -184,19 +223,22 @@ pub fn run() {
             merkle_siblings: offer2_merkle_siblings,
             merkle_index: offer2_merkle_index,
             merkle_root: offer2_merkle_root,
+            offer_secret: offer2_secret,
+            offer_nullifier: offer2_nullifier,
+            fiat_amount: offer2_fiat_amount,
+            currency_hash: offer2_currency_hash,
+            rev_tag_hash: offer2_rev_tag_hash,
         };
 
         tracing::info!("Generating second offer proof");
-        let offer2_proof = prove_offer_withdraw(offer2_inputs, 8).expect("Offer2 proof generation failed");
-        verify_offer_withdraw(offer2_proof.clone()).expect("Offer2 proof verification failed");
+        let offer2_proof = prove_offer_create(offer2_inputs, 8).expect("Offer2 proof generation failed");
+        verify_offer_create(offer2_proof.clone()).expect("Offer2 proof verification failed");
 
         tracing::info!("Building second offer on-chain verification payload");
         let offer2_verify_input =
             build_offer_onchain_verification_input(&offer2_proof).expect("Failed to build offer2 onchain input");
-        let offer2_verify_calldata = build_verify_calldata(&offer2_verify_input);
 
         tracing::info!("Calling createOffer transaction for offer2");
-        // Create offerSecret and hash it: offerSecretHash = poseidon(offerSecret, offerSecret)
         let offer2_secret = BaseField::from_u32_unchecked(77777);
         let offer2_secret_hash = poseidon_hash_pair(offer2_secret, offer2_secret);
         let secret_hash_2 = U256::from(offer2_secret_hash.0);
@@ -206,16 +248,17 @@ pub fn run() {
 
         send_create_offer_tx(
             &app,
-            U256::from(offer2_proof.merkle_root.0),
-            U256::from(offer2_proof.nullifier.0),
+            U256::from(offer2_proof.public_inputs.merkle_root.0),
+            U256::from(offer2_proof.public_inputs.nullifier.0),
             app.token_address,
-            U256::from(offer2_proof.amount.0),
-            U256::from(offer2_proof.refund_commitment_hash.0),
+            U256::from(offer2_proof.public_inputs.amount.0),
+            U256::from(offer2_proof.public_inputs.offer_commitment.0),
+            U256::from(offer2_proof.public_inputs.refund_commitment_hash.0),
             secret_hash_2,
             currency_2,
             fiat_amount_2,
             rev_tag_2,
-            Bytes::from(offer2_verify_calldata),
+            &offer2_verify_input,
         )
         .await
         .expect("Failed to send createOffer transaction for offer2");

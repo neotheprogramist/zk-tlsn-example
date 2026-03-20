@@ -10,14 +10,15 @@ use stwo::{
 };
 
 use super::types::{ChainInputs, ChainOutputs};
-use crate::privacy_pool::poseidon_hash::{
+use crate::{poseidon_chain::OfferChainInputs, privacy_pool::poseidon_hash::{
     EXTERNAL_ROUND_CONSTS, INTERNAL_ROUND_CONSTS, N_HALF_FULL_ROUNDS, N_PARTIAL_ROUNDS, N_STATE,
     apply_external_round_matrix, apply_internal_round_matrix,
-};
+}};
 
 pub type ColumnVec<T> = Vec<T>;
 
 pub const N_CHAIN_ROWS: usize = 3;
+pub const N_OFFER_CHAIN_ROWS: usize = 6;
 
 pub const N_COLUMNS: usize = N_STATE // initial_state
     + (N_HALF_FULL_ROUNDS * 3 * N_STATE) // first_half_full_rounds
@@ -65,6 +66,45 @@ pub fn gen_poseidon_chain_trace(
             leaf,
         },
     )
+}
+
+pub fn gen_offer_chain_trace(
+    log_size: u32,
+    inputs: OfferChainInputs,
+) -> (
+    ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
+    BaseField,
+) {
+    let n_rows = 1 << log_size;
+    assert!(n_rows >= N_OFFER_CHAIN_ROWS, "log_size too small for offer chain");
+
+    let mut trace = (0..N_COLUMNS)
+        .map(|_| Col::<SimdBackend, BaseField>::zeros(n_rows))
+        .collect::<Vec<_>>();
+
+    let h1 = fill_poseidon_row(&mut trace, 0, inputs.offer_secret, inputs.offer_nullifier);
+    let h2 = fill_poseidon_row(&mut trace, 1, h1, inputs.offer_amount);
+    let h3 = fill_poseidon_row(&mut trace, 2, h2, inputs.token_address);
+    let h4 = fill_poseidon_row(&mut trace, 3, h3, inputs.fiat_amount);
+    let h5 = fill_poseidon_row(&mut trace, 4, h4, inputs.currency_hash);
+    let offer_commitment = fill_poseidon_row(&mut trace, 5, h5, inputs.rev_tag_hash);
+
+    for row in N_OFFER_CHAIN_ROWS..n_rows {
+        for col_index in 0..N_COLUMNS {
+            trace[col_index].set(row, BaseField::from_u32_unchecked(0));
+        }
+    }
+
+    for col in trace.iter_mut() {
+        bit_reverse_coset_to_circle_domain_order(col.as_mut_slice());
+    }
+
+    let trace_cols = trace
+        .into_iter()
+        .map(|col| CircleEvaluation::new(CanonicCoset::new(log_size).circle_domain(), col))
+        .collect::<Vec<_>>();
+
+    (trace_cols, offer_commitment)
 }
 
 pub fn fill_poseidon_row(

@@ -2,7 +2,10 @@
 pragma solidity ^0.8.9;
 
 import "./MerkleTreeLibrary.sol";
+import "./IStwoVerifier.sol";
 import {Poseidon2} from "poseidon2-M31-solidity/src/Poseidon2.sol";
+
+uint256 constant M31_MODULUS = 2_147_483_647;
 
 interface IERC20 {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -39,6 +42,7 @@ contract PrivacyPool {
     MerkleTreeLib.Tree private tree;       // Deposits and refunds
     MerkleTreeLib.Tree private offersTree; // Offer commitments
     mapping(uint256 => bool) public nullifierHashes;
+    mapping(uint256 => uint256) public offerCommitmentToSecretHash;
     address public owner;
     address public stwoVerifier;
 
@@ -195,7 +199,9 @@ contract PrivacyPool {
         string calldata currency,
         uint256 fiatAmount,
         string calldata revTag,
-        bytes calldata verifyCalldata
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
     ) external {
         // Check if nullifier already used
         if (nullifierHashes[nullifier]) {
@@ -209,13 +215,17 @@ contract PrivacyPool {
 
         if (stwoVerifier == address(0)) revert VerifierNotSet();
 
-        // Verify proof
+        uint64[] memory publicInputs = new uint64[](6);
+        publicInputs[0] = uint64(root);
+        publicInputs[1] = uint64(nullifier);
+        publicInputs[2] = uint64(amount);
+        publicInputs[3] = uint64(offerCommitment);
+        publicInputs[4] = uint64(refundCommitmentHash);
+        publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
         uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
         uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
         emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
@@ -229,6 +239,9 @@ contract PrivacyPool {
 
         // Add offer commitment to offers tree
         offersTree.addLeaf(offerCommitment);
+
+        // Register reverse mapping so cancelOffer can find this offer by its commitment
+        offerCommitmentToSecretHash[offerCommitment] = secretHash;
 
         // Add refund commitment to deposits tree
         {

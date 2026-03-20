@@ -16,7 +16,8 @@ use crate::{
         AllElements, BlakeComponentsForIntegration, BlakeStatement0, BlakeStatement1,
         preprocessed_columns::XorTable,
     },
-    offer_circuit::OfferSpendProof,
+    offer_circuit::OfferCreateProof,
+    offer_spend_circuit::OfferAcceptProof,
     withdraw_circuit::WithdrawProof,
     privacy_pool::{
         merkle_membership::{
@@ -39,6 +40,9 @@ use crate::{
         scheduler::{
             PrivacyPoolSchedulerComponent, PrivacyPoolSchedulerEval, SchedulerStatement0,
             is_first_column_id as scheduler_is_first_column_id,
+        },
+        offer_scheduler::{
+            OfferSchedulerComponent, OfferSchedulerEval, OfferSchedulerStatement0,
         },
     },
 };
@@ -368,7 +372,7 @@ pub fn build_onchain_verification_input(
 
 /// Build onchain verification input for offer proof (simpler - no BLAKE3 commitment)
 pub fn build_offer_onchain_verification_input(
-    proof_data: &OfferSpendProof<stwo::core::vcs::keccak_merkle::KeccakMerkleHasher>,
+    proof_data: &OfferCreateProof<stwo::core::vcs::keccak_merkle::KeccakMerkleHasher>,
 ) -> Result<OnchainVerificationInput, String> {
     let chain_log_sizes = ChainStatement0 {
         log_size: proof_data.log_size,
@@ -378,7 +382,7 @@ pub fn build_offer_onchain_verification_input(
         log_size: proof_data.log_size,
     }
     .log_sizes();
-    let scheduler_log_sizes = SchedulerStatement0 {
+    let scheduler_log_sizes = OfferSchedulerStatement0 {
         log_size: proof_data.log_size,
     }
     .log_sizes();
@@ -397,6 +401,7 @@ pub fn build_offer_onchain_verification_input(
     let mut commitment_scheme =
         CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
+    proof_data.public_inputs.mix_into(&mut channel);
     commitment_scheme.commit(
         proof_data.proof.commitments[0],
         &full_log_sizes[0],
@@ -449,15 +454,16 @@ pub fn build_offer_onchain_verification_input(
         proof_data.merkle_claimed_sum,
     );
 
-    let scheduler_component = PrivacyPoolSchedulerComponent::new(
+    let scheduler_component = OfferSchedulerComponent::new(
         &mut tree_span_provider,
-        PrivacyPoolSchedulerEval {
+        OfferSchedulerEval {
             log_n_rows: proof_data.log_size,
             is_first_id: scheduler_is_first_column_id(proof_data.log_size),
             leaf_relation: leaf_relation.clone(),
             root_relation: root_relation.clone(),
-            amount: proof_data.amount,
-            refund_commitment_hash: proof_data.refund_commitment_hash,
+            offer_amount: proof_data.public_inputs.amount,
+            offer_commitment: proof_data.public_inputs.offer_commitment,
+            refund_commitment_hash: proof_data.public_inputs.refund_commitment_hash,
             claimed_sum: proof_data.scheduler_claimed_sum,
         },
         proof_data.scheduler_claimed_sum,
@@ -518,11 +524,20 @@ pub fn build_offer_onchain_verification_input(
         .map(|tree_sizes| tree_sizes.clone())
         .collect();
 
+    let public_inputs: Vec<u64> = vec![
+        proof_data.public_inputs.merkle_root.0 as u64,
+        proof_data.public_inputs.nullifier.0 as u64,
+        proof_data.public_inputs.amount.0 as u64,
+        proof_data.public_inputs.offer_commitment.0 as u64,
+        proof_data.public_inputs.refund_commitment_hash.0 as u64,
+        proof_data.public_inputs.token_address.0 as u64,
+    ];
+
     Ok(OnchainVerificationInput {
         proof: convert_to_solidity_proof(&proof_data.proof, &proof_data.composition_polynomial),
         params: verification_params,
         tree_column_log_sizes,
-        public_inputs: vec![],
+        public_inputs,
     })
 }
 
@@ -553,4 +568,187 @@ fn ordered_offer_preprocessed_ids(log_size: u32, merkle_depth: usize) -> Vec<Str
         merkle_is_last_column_id(log_size, merkle_depth).id,
         scheduler_is_first_column_id(log_size).id,
     ]
+}
+
+fn ordered_offer_accept_preprocessed_ids(log_size: u32, merkle_depth: usize) -> Vec<String> {
+    vec![
+        is_active_column_id(log_size, "offer").id,
+        is_step_column_id(log_size, "offer").id,
+        is_last_column_id(log_size, "offer").id,
+        merkle_is_active_column_id(log_size, merkle_depth).id,
+        merkle_is_step_column_id(log_size, merkle_depth).id,
+        merkle_is_first_column_id(log_size, merkle_depth).id,
+        merkle_is_last_column_id(log_size, merkle_depth).id,
+        scheduler_is_first_column_id(log_size).id,
+    ]
+}
+
+pub fn build_offer_accept_onchain_verification_input(
+    proof_data: &OfferAcceptProof<stwo::core::vcs::keccak_merkle::KeccakMerkleHasher>,
+) -> Result<OnchainVerificationInput, String> {
+    let chain_log_sizes = ChainStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let merkle_log_sizes = MerkleStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+    let scheduler_log_sizes = OfferSchedulerStatement0 {
+        log_size: proof_data.log_size,
+    }
+    .log_sizes();
+
+    let mut full_log_sizes = chain_log_sizes.clone();
+    full_log_sizes[0].extend(merkle_log_sizes[0].iter().copied());
+    full_log_sizes[0].extend(scheduler_log_sizes[0].iter().copied());
+    full_log_sizes[1].extend(merkle_log_sizes[1].iter().copied());
+    full_log_sizes[1].extend(scheduler_log_sizes[1].iter().copied());
+    full_log_sizes[2].extend(merkle_log_sizes[2].iter().copied());
+    full_log_sizes[2].extend(scheduler_log_sizes[2].iter().copied());
+
+    let n_preprocessed_columns = full_log_sizes[0].len();
+
+    let mut channel = KeccakChannel::default();
+    let mut commitment_scheme =
+        CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
+
+    proof_data.public_inputs.mix_into(&mut channel);
+    commitment_scheme.commit(
+        proof_data.proof.commitments[0],
+        &full_log_sizes[0],
+        &mut channel,
+    );
+    commitment_scheme.commit(
+        proof_data.proof.commitments[1],
+        &full_log_sizes[1],
+        &mut channel,
+    );
+
+    let leaf_relation = LeafRelation::draw(&mut channel);
+    let root_relation = RootRelation::draw(&mut channel);
+
+    commitment_scheme.commit(
+        proof_data.proof.commitments[2],
+        &full_log_sizes[2],
+        &mut channel,
+    );
+
+    let mut tree_span_provider = TraceLocationAllocator::default();
+
+    let offer_component = PoseidonChainComponent::new(
+        &mut tree_span_provider,
+        PoseidonChainEval {
+            log_n_rows: proof_data.log_size,
+            is_active_id: is_active_column_id(proof_data.log_size, "offer"),
+            is_step_id: is_step_column_id(proof_data.log_size, "offer"),
+            is_last_id: is_last_column_id(proof_data.log_size, "offer"),
+            leaf_relation: leaf_relation.clone(),
+            leaf_multiplicity: 2,
+            claimed_sum: proof_data.offer_claimed_sum,
+        },
+        proof_data.offer_claimed_sum,
+    );
+
+    let merkle_component = MerkleMembershipComponent::new(
+        &mut tree_span_provider,
+        MerkleMembershipEval {
+            log_n_rows: proof_data.log_size,
+            depth: proof_data.merkle_depth,
+            is_active_id: merkle_is_active_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_step_id: merkle_is_step_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_first_id: merkle_is_first_column_id(proof_data.log_size, proof_data.merkle_depth),
+            is_last_id: merkle_is_last_column_id(proof_data.log_size, proof_data.merkle_depth),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            claimed_sum: proof_data.merkle_claimed_sum,
+        },
+        proof_data.merkle_claimed_sum,
+    );
+
+    let scheduler_component = OfferSchedulerComponent::new(
+        &mut tree_span_provider,
+        OfferSchedulerEval {
+            log_n_rows: proof_data.log_size,
+            is_first_id: scheduler_is_first_column_id(proof_data.log_size),
+            leaf_relation: leaf_relation.clone(),
+            root_relation: root_relation.clone(),
+            offer_amount: proof_data.public_inputs.amount,
+            offer_commitment: proof_data.public_inputs.offer_commitment,
+            refund_commitment_hash: proof_data.public_inputs.output_commitment,
+            claimed_sum: proof_data.scheduler_claimed_sum,
+        },
+        proof_data.scheduler_claimed_sum,
+    );
+
+    let ordered_ids =
+        ordered_offer_accept_preprocessed_ids(proof_data.log_size, proof_data.merkle_depth);
+    let preprocessed_index: HashMap<String, usize> = ordered_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect();
+
+    let mut component_params = Vec::new();
+
+    let offer_info = component_info(&offer_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: offer_component.log_size(),
+        claimedSum: qm31(proof_data.offer_claimed_sum),
+        info: offer_info,
+    });
+
+    let merkle_info = component_info(&merkle_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: merkle_component.log_size(),
+        claimedSum: qm31(proof_data.merkle_claimed_sum),
+        info: merkle_info,
+    });
+
+    let scheduler_info = component_info(&scheduler_component, &preprocessed_index)?;
+    component_params.push(ComponentParams {
+        logSize: scheduler_component.log_size(),
+        claimedSum: qm31(proof_data.scheduler_claimed_sum),
+        info: scheduler_info,
+    });
+
+    let all_component_provers = vec![
+        &offer_component as &dyn Component,
+        &merkle_component as &dyn Component,
+        &scheduler_component as &dyn Component,
+    ];
+
+    let components = Components {
+        components: all_component_provers,
+        n_preprocessed_columns,
+    };
+
+    let verification_params = VerificationParams {
+        componentParams: component_params,
+        nPreprocessedColumns: U256::from(n_preprocessed_columns),
+        componentsCompositionLogDegreeBound: components.composition_log_degree_bound(),
+        nInteractionDraws: 2,
+        interactionMixFelts: vec![],
+    };
+
+    let tree_column_log_sizes: Vec<Vec<u32>> = full_log_sizes
+        .iter()
+        .map(|tree_sizes| tree_sizes.clone())
+        .collect();
+
+    let public_inputs: Vec<u64> = vec![
+        proof_data.public_inputs.offers_merkle_root.0 as u64,
+        proof_data.public_inputs.nullifier.0 as u64,
+        proof_data.public_inputs.amount.0 as u64,
+        proof_data.public_inputs.offer_commitment.0 as u64,
+        proof_data.public_inputs.output_commitment.0 as u64,
+        proof_data.public_inputs.token_address.0 as u64,
+    ];
+
+    Ok(OnchainVerificationInput {
+        proof: convert_to_solidity_proof(&proof_data.proof, &proof_data.composition_polynomial),
+        params: verification_params,
+        tree_column_log_sizes,
+        public_inputs,
+    })
 }

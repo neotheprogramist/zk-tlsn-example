@@ -40,7 +40,7 @@ use crate::{
         poseidon_chain::{
             ChainInputs, ChainStatement0, PoseidonChainComponent, PoseidonChainEval,
             gen_is_active_column, gen_is_last_column, gen_is_step_column,
-            gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace, is_active_column_id,
+            N_CHAIN_ROWS, gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace, is_active_column_id,
             is_last_column_id, is_step_column_id,
         },
         relations::{LeafRelation, RootRelation},
@@ -406,7 +406,7 @@ pub fn prove_withdraw(
     };
 
     let (deposit_interaction, deposit_claimed_sum) =
-        gen_poseidon_chain_interaction_trace(&deposit_trace, &leaf_relation, log_size, 2);
+        gen_poseidon_chain_interaction_trace(&deposit_trace, &leaf_relation, log_size, 2, N_CHAIN_ROWS);
 
     let (merkle_interaction, merkle_claimed_sum) = gen_merkle_membership_interaction_trace(
         &merkle_trace,

@@ -55,10 +55,6 @@ async fn send_simple_tx(
     .await
 }
 
-pub fn address_to_m31(address: Address) -> u32 {
-    common_rpc::address_to_m31(address)
-}
-
 pub async fn try_call_next_leaf_index(app: &AppState) -> Option<u64> {
     let data = IPrivacyPool::getNextLeafIndexCall {}.abi_encode();
     let raw = match common_rpc::run_eth_call(app.rpc_url.clone(), app.privacy_pool_address, data.into()).await {
