@@ -284,6 +284,65 @@ contract PrivacyPool {
         );
     }
 
+    /// @notice Cancel offer with ZK proof — proves membership in offersTree, creates new deposit
+    function cancelOffer(
+        uint256 offersRoot,
+        uint256 offerNullifier,
+        address token,
+        uint256 amount,
+        uint256 offerCommitment,
+        uint256 outputCommitment,
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
+    ) external {
+        if (nullifierHashes[offerNullifier]) {
+            revert NullifierAlreadyUsed();
+        }
+        if (!offersTree.isValidRoot(offersRoot)) {
+            revert InvalidRoot();
+        }
+
+        if (stwoVerifier == address(0)) revert VerifierNotSet();
+
+        uint64[] memory publicInputs = new uint64[](6);
+        publicInputs[0] = uint64(offersRoot);
+        publicInputs[1] = uint64(offerNullifier);
+        publicInputs[2] = uint64(amount);
+        publicInputs[3] = uint64(offerCommitment);
+        publicInputs[4] = uint64(outputCommitment);
+        publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
+        uint256 gasBeforeVerification = gasleft();
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
+        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
+        emit VerificationGasUsed(verificationGasUsed, isValid);
+        if (!isValid) revert ProofVerificationFailed();
+
+        nullifierHashes[offerNullifier] = true;
+
+        // Update offer status and remove from active offers if the commitment is known
+        uint256 secretHash = offerCommitmentToSecretHash[offerCommitment];
+        if (secretHash != 0) {
+            Offer storage offer = offers[secretHash];
+            offer.status = OfferStatus.CANCELLED;
+
+            for (uint256 i = 0; i < activeOffers.length; i++) {
+                if (activeOffers[i] == secretHash) {
+                    activeOffers[i] = activeOffers[activeOffers.length - 1];
+                    activeOffers.pop();
+                    break;
+                }
+            }
+
+            emit OfferCancelled(secretHash, 0);
+        }
+
+        uint64 leafIndex = tree.freeLeafIndex;
+        uint256 newRoot = tree.addLeaf(outputCommitment);
+        emit Deposit(outputCommitment, amount, token, leafIndex, newRoot);
+    }
+
     /// @notice Cancel intent - reveals offer secret to prove ownership
     /// @dev Step 1: Mark offer as cancelled by revealing offerSecret
     function cancelIntent(
