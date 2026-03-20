@@ -95,7 +95,11 @@ sol! {
             uint256 amount,
             address recipient,
             uint256 refundCommitmentHash,
-            bytes calldata verifyCalldata
+            uint32 commitmentLogSize,
+            bytes32 committedHash,
+            Proof calldata proof,
+            VerificationParams calldata params,
+            uint32[][] calldata treeColumnLogSizes
         ) external;
 
 

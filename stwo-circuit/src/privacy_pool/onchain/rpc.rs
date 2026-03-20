@@ -66,6 +66,12 @@ pub fn build_withdraw_calldata(
     refund_commitment_hash: U256,
     input: &OnchainVerificationInput,
 ) -> Vec<u8> {
+    let commitment_log_size = input.public_inputs.first().copied().unwrap_or(0) as u32;
+    let mut hash_bytes = [0u8; 32];
+    for (i, chunk) in input.public_inputs.get(1..5).unwrap_or(&[]).iter().enumerate() {
+        let le = chunk.to_le_bytes();
+        hash_bytes[i * 8..(i + 1) * 8].copy_from_slice(&le);
+    }
     IPrivacyPool::withdrawCall {
         root,
         nullifier,
@@ -73,7 +79,11 @@ pub fn build_withdraw_calldata(
         amount,
         recipient,
         refundCommitmentHash: refund_commitment_hash,
-        verifyCalldata: build_verify_calldata(input),
+        commitmentLogSize: commitment_log_size,
+        committedHash: hash_bytes.into(),
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
     }
     .abi_encode()
 }

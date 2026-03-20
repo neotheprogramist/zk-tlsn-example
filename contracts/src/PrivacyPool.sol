@@ -144,7 +144,11 @@ contract PrivacyPool {
         uint256 amount,
         address recipient,
         uint256 refundCommitmentHash,
-        bytes calldata verifyCalldata
+        uint32 commitmentLogSize,
+        bytes32 committedHash,
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
     ) external {
         // Check if nullifier already used
         if (nullifierHashes[nullifier]) {
@@ -158,14 +162,33 @@ contract PrivacyPool {
 
         if (stwoVerifier == address(0)) revert VerifierNotSet();
 
-        // Verify STWO proof atomically in the same transaction.
-        // STWOVerifier.verify() is non-view and updates internal state, so staticcall reverts.
+        // Build publicInputs on-chain so the caller cannot substitute them.
+        // Layout mirrors build_onchain_verification_input in Rust:
+        //   [0]    commitmentLogSize
+        //   [1..4] committedHash split into 4 little-endian u64 chunks
+        //   [5]    merkle_root
+        //   [6]    nullifier
+        //   [7]    amount
+        //   [8]    refundCommitmentHash
+        //   [9]    token_address mod M31
+        uint64[] memory publicInputs = new uint64[](10);
+        publicInputs[0] = uint64(commitmentLogSize);
+        for (uint256 i = 0; i < 4; i++) {
+            uint64 chunk = 0;
+            for (uint256 j = 0; j < 8; j++) {
+                chunk |= uint64(uint8(committedHash[i * 8 + j])) << (j * 8);
+            }
+            publicInputs[1 + i] = chunk;
+        }
+        publicInputs[5] = uint64(root);
+        publicInputs[6] = uint64(nullifier);
+        publicInputs[7] = uint64(amount);
+        publicInputs[8] = uint64(refundCommitmentHash);
+        publicInputs[9] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
         uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
         uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
         emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
