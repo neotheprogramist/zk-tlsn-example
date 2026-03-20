@@ -29,9 +29,10 @@ use crate::privacy_pool::{
         merkle_is_step_column_id,
     },
     poseidon_chain::{
-        ChainInputs, ChainStatement0, PoseidonChainComponent, PoseidonChainEval,
-        gen_is_active_column, gen_is_last_column, gen_is_step_column,
-        gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace,
+        ChainInputs, ChainStatement0, OfferChainInputs, N_OFFER_CHAIN_ROWS,
+        PoseidonChainComponent, PoseidonChainEval,
+        gen_is_active_column_n, gen_is_last_column_n, gen_is_step_column_n,
+        gen_offer_chain_trace, gen_poseidon_chain_interaction_trace, gen_poseidon_chain_trace,
         is_active_column_id, is_last_column_id, is_step_column_id,
     },
     relations::{LeafRelation, RootRelation},
@@ -51,6 +52,9 @@ pub struct OfferAcceptInputs {
     pub offer_nullifier: BaseField,
     pub offer_amount: BaseField,
     pub token_address: BaseField,
+    pub fiat_amount: BaseField,
+    pub currency_hash: BaseField,
+    pub rev_tag_hash: BaseField,
     pub offers_merkle_siblings: Vec<BaseField>,
     pub offers_merkle_index: u32,
     pub offers_merkle_root: BaseField,
@@ -99,14 +103,16 @@ pub fn prove_offer_accept(
 ) -> Result<OfferAcceptProof<KeccakMerkleHasher>, String> {
     tracing::info!("Starting offer-accept proof generation");
 
-    let offer_inputs = ChainInputs::for_deposit(
-        inputs.offer_secret,
-        inputs.offer_nullifier,
-        inputs.offer_amount,
-        inputs.token_address,
-    );
-    let (offer_trace, offer_outputs) = gen_poseidon_chain_trace(log_size, offer_inputs);
-    let offer_leaf = offer_outputs.leaf;
+    let offer_chain_inputs = OfferChainInputs {
+        offer_secret: inputs.offer_secret,
+        offer_nullifier: inputs.offer_nullifier,
+        offer_amount: inputs.offer_amount,
+        token_address: inputs.token_address,
+        fiat_amount: inputs.fiat_amount,
+        currency_hash: inputs.currency_hash,
+        rev_tag_hash: inputs.rev_tag_hash,
+    };
+    let (offer_trace, offer_leaf) = gen_offer_chain_trace(log_size, offer_chain_inputs);
 
     let output_inputs = ChainInputs::for_deposit(
         inputs.output_secret,
@@ -157,19 +163,6 @@ pub fn prove_offer_accept(
     let mut commitment_scheme =
         CommitmentSchemeProver::<SimdBackend, KeccakMerkleChannel>::new(config, &twiddles);
 
-    let mut tree_builder = commitment_scheme.tree_builder();
-    tree_builder.extend_evals(vec![
-        gen_is_active_column(log_size),
-        gen_is_step_column(log_size),
-        gen_is_last_column(log_size),
-        gen_merkle_is_active_column(log_size, merkle_depth),
-        gen_merkle_is_step_column(log_size, merkle_depth),
-        gen_merkle_is_first_column(log_size, merkle_depth),
-        gen_merkle_is_last_column(log_size, merkle_depth),
-        gen_scheduler_is_first_column(log_size),
-    ]);
-    tree_builder.commit(prover_channel);
-
     let public_inputs = OfferAcceptPublicInputs {
         offers_merkle_root: inputs.offers_merkle_root,
         nullifier: inputs.offer_nullifier,
@@ -181,6 +174,19 @@ pub fn prove_offer_accept(
     public_inputs.mix_into(prover_channel);
 
     let mut tree_builder = commitment_scheme.tree_builder();
+    tree_builder.extend_evals(vec![
+        gen_is_active_column_n(log_size, N_OFFER_CHAIN_ROWS),
+        gen_is_step_column_n(log_size, N_OFFER_CHAIN_ROWS),
+        gen_is_last_column_n(log_size, N_OFFER_CHAIN_ROWS),
+        gen_merkle_is_active_column(log_size, merkle_depth),
+        gen_merkle_is_step_column(log_size, merkle_depth),
+        gen_merkle_is_first_column(log_size, merkle_depth),
+        gen_merkle_is_last_column(log_size, merkle_depth),
+        gen_scheduler_is_first_column(log_size),
+    ]);
+    tree_builder.commit(prover_channel);
+
+    let mut tree_builder = commitment_scheme.tree_builder();
     tree_builder.extend_evals(offer_trace.clone());
     tree_builder.extend_evals(merkle_trace.clone());
     tree_builder.extend_evals(scheduler_trace.clone());
@@ -190,7 +196,7 @@ pub fn prove_offer_accept(
     let root_relation = RootRelation::draw(prover_channel);
 
     let (offer_interaction, offer_claimed_sum) =
-        gen_poseidon_chain_interaction_trace(&offer_trace, &leaf_relation, log_size, 2);
+        gen_poseidon_chain_interaction_trace(&offer_trace, &leaf_relation, log_size, 2, N_OFFER_CHAIN_ROWS);
     let (merkle_interaction, merkle_claimed_sum) = gen_merkle_membership_interaction_trace(
         &merkle_trace,
         &leaf_relation,
@@ -310,8 +316,8 @@ pub fn verify_offer_accept(
     let commitment_scheme =
         &mut CommitmentSchemeVerifier::<KeccakMerkleChannel>::new(proof_data.proof.config);
 
-    commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     proof_data.public_inputs.mix_into(channel);
+    commitment_scheme.commit(proof_data.proof.commitments[0], &full_log_sizes[0], channel);
     commitment_scheme.commit(proof_data.proof.commitments[1], &full_log_sizes[1], channel);
 
     let leaf_relation = LeafRelation::draw(channel);
@@ -388,32 +394,47 @@ mod tests {
     use super::{OfferAcceptInputs, prove_offer_accept, verify_offer_accept};
     use crate::{
         offchain_merkle::OffchainMerkleTree,
-        privacy_pool::poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
+        privacy_pool::poseidon_chain::{OfferChainInputs, gen_offer_chain_trace},
     };
+
+    fn test_offer_chain_inputs(
+        offer_secret: BaseField,
+        offer_nullifier: BaseField,
+        offer_amount: BaseField,
+        token_address: BaseField,
+    ) -> OfferChainInputs {
+        OfferChainInputs {
+            offer_secret,
+            offer_nullifier,
+            offer_amount,
+            token_address,
+            fiat_amount: BaseField::from_u32_unchecked(100),
+            currency_hash: BaseField::from_u32_unchecked(111),
+            rev_tag_hash: BaseField::from_u32_unchecked(222),
+        }
+    }
 
     #[test]
     fn offer_accept_proof_roundtrip_succeeds() {
         let log_size = 8;
         let token_address = BaseField::from_u32_unchecked(12345);
         let offer_amount = BaseField::from_u32_unchecked(70);
+        let fiat_amount = BaseField::from_u32_unchecked(100);
+        let currency_hash = BaseField::from_u32_unchecked(111);
+        let rev_tag_hash = BaseField::from_u32_unchecked(222);
 
         let offer_secret = BaseField::from_u32_unchecked(5555);
         let offer_nullifier = BaseField::from_u32_unchecked(6666);
         let output_secret = BaseField::from_u32_unchecked(7777);
         let output_nullifier = BaseField::from_u32_unchecked(8888);
 
-        let offer_inputs = ChainInputs::for_deposit(
-            offer_secret,
-            offer_nullifier,
-            offer_amount,
-            token_address,
-        );
-        let (_, offer_outputs) = gen_poseidon_chain_trace(log_size, offer_inputs);
+        let chain_inputs = test_offer_chain_inputs(offer_secret, offer_nullifier, offer_amount, token_address);
+        let (_, offer_leaf) = gen_offer_chain_trace(log_size, chain_inputs);
 
         let mut offers_tree = OffchainMerkleTree::new(31);
         offers_tree.add_leaf(BaseField::from_u32_unchecked(11));
         offers_tree.add_leaf(BaseField::from_u32_unchecked(22));
-        let offers_merkle_index = offers_tree.add_leaf(offer_outputs.leaf) as u32;
+        let offers_merkle_index = offers_tree.add_leaf(offer_leaf) as u32;
         let (offers_merkle_siblings, _) = offers_tree.path(offers_merkle_index as usize);
         let offers_merkle_root = offers_tree.root();
 
@@ -422,6 +443,9 @@ mod tests {
             offer_nullifier,
             offer_amount,
             token_address,
+            fiat_amount,
+            currency_hash,
+            rev_tag_hash,
             offers_merkle_siblings,
             offers_merkle_index,
             offers_merkle_root,
@@ -439,22 +463,20 @@ mod tests {
         let log_size = 8;
         let token_address = BaseField::from_u32_unchecked(12345);
         let offer_amount = BaseField::from_u32_unchecked(70);
+        let fiat_amount = BaseField::from_u32_unchecked(100);
+        let currency_hash = BaseField::from_u32_unchecked(111);
+        let rev_tag_hash = BaseField::from_u32_unchecked(222);
 
         let offer_secret = BaseField::from_u32_unchecked(5555);
         let offer_nullifier = BaseField::from_u32_unchecked(6666);
         let output_secret = BaseField::from_u32_unchecked(7777);
         let output_nullifier = BaseField::from_u32_unchecked(8888);
 
-        let offer_inputs = ChainInputs::for_deposit(
-            offer_secret,
-            offer_nullifier,
-            offer_amount,
-            token_address,
-        );
-        let (_, offer_outputs) = gen_poseidon_chain_trace(log_size, offer_inputs);
+        let chain_inputs = test_offer_chain_inputs(offer_secret, offer_nullifier, offer_amount, token_address);
+        let (_, offer_leaf) = gen_offer_chain_trace(log_size, chain_inputs);
 
         let mut offers_tree = OffchainMerkleTree::new(31);
-        let offers_merkle_index = offers_tree.add_leaf(offer_outputs.leaf) as u32;
+        let offers_merkle_index = offers_tree.add_leaf(offer_leaf) as u32;
         let (offers_merkle_siblings, _) = offers_tree.path(offers_merkle_index as usize);
 
         let inputs = OfferAcceptInputs {
@@ -462,6 +484,9 @@ mod tests {
             offer_nullifier,
             offer_amount,
             token_address,
+            fiat_amount,
+            currency_hash,
+            rev_tag_hash,
             offers_merkle_siblings,
             offers_merkle_index,
             offers_merkle_root: BaseField::from_u32_unchecked(1),

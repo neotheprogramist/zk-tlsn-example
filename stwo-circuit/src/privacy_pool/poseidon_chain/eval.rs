@@ -264,3 +264,42 @@ pub fn is_last_column_id(log_size: u32, component_name: &str) -> PreProcessedCol
         id: format!("is_last_{}_{}", component_name, log_size),
     }
 }
+
+pub fn gen_is_active_column_n(
+    log_size: u32,
+    n_chain_rows: usize,
+) -> CircleEvaluation<SimdBackend, BaseField, BitReversedOrder> {
+    let n_rows = 1 << log_size;
+    let mut col = Col::<SimdBackend, BaseField>::zeros(n_rows);
+    for row in 0..n_chain_rows.min(n_rows) {
+        col.set(row, BaseField::one());
+    }
+    bit_reverse_coset_to_circle_domain_order(col.as_mut_slice());
+    CircleEvaluation::new(CanonicCoset::new(log_size).circle_domain(), col)
+}
+
+pub fn gen_is_step_column_n(
+    log_size: u32,
+    n_chain_rows: usize,
+) -> CircleEvaluation<SimdBackend, BaseField, BitReversedOrder> {
+    let n_rows = 1 << log_size;
+    let mut col = Col::<SimdBackend, BaseField>::zeros(n_rows);
+    for row in 0..(n_chain_rows.saturating_sub(1)).min(n_rows) {
+        col.set(row, BaseField::one());
+    }
+    bit_reverse_coset_to_circle_domain_order(col.as_mut_slice());
+    CircleEvaluation::new(CanonicCoset::new(log_size).circle_domain(), col)
+}
+
+pub fn gen_is_last_column_n(
+    log_size: u32,
+    n_chain_rows: usize,
+) -> CircleEvaluation<SimdBackend, BaseField, BitReversedOrder> {
+    let n_rows = 1 << log_size;
+    let mut col = Col::<SimdBackend, BaseField>::zeros(n_rows);
+    if n_chain_rows > 0 && n_chain_rows - 1 < n_rows {
+        col.set(n_chain_rows - 1, BaseField::one());
+    }
+    bit_reverse_coset_to_circle_domain_order(col.as_mut_slice());
+    CircleEvaluation::new(CanonicCoset::new(log_size).circle_domain(), col)
+}

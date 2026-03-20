@@ -9,7 +9,7 @@ use stwo_circuit::{
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
-use crate::e2e_withdraw::{AppState, chain};
+use crate::e2e_withdraw::{ANVIL_TOPUP_BALANCE_HEX, AppState};
 
 fn mock_tlsn(amount: u32) -> (Vec<u8>, [u8; 16], [u8; 32]) {
     let fragment = format!("{:012}", amount).into_bytes();
@@ -28,12 +28,19 @@ struct DepositResult {
 }
 
 async fn do_deposit(app: &AppState, secret_base: u32, nullifier_base: u32, amount: u32) -> DepositResult {
-    chain::ensure_owner_has_eth_for_gas(app).await;
+    crate::common_rpc::ensure_owner_has_eth_for_gas(
+        app.rpc_url.clone(),
+        app.owner_private_key.clone(),
+        ANVIL_TOPUP_BALANCE_HEX,
+    ).await;
 
-    let token_address = BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
+    let token_address = crate::common_rpc::address_to_m31(app.token_address);
     let commitment_amount = BaseField::from_u32_unchecked(amount);
 
-    let mut offchain_tree: OffchainMerkleTree = chain::build_offchain_merkle_tree(app).await;
+    let mut offchain_tree: OffchainMerkleTree = crate::common_rpc::build_offchain_merkle_tree(
+        app.rpc_url.clone(),
+        app.privacy_pool_address,
+    ).await;
     let merkle_index = u32::try_from(offchain_tree.leaf_count())
         .expect("leaf_count fits u32");
 
@@ -48,10 +55,29 @@ async fn do_deposit(app: &AppState, secret_base: u32, nullifier_base: u32, amoun
 
     let amount_u64 = amount as u64;
 
-    chain::send_approve_tx(app, U256::from(amount_u64))
+    crate::common_rpc::send_approve_tx(
+        app.rpc_url.clone(),
+        app.owner_private_key.clone(),
+        app.max_fee_per_gas,
+        app.max_priority_fee_per_gas,
+        app.gas_limit,
+        app.token_address,
+        app.privacy_pool_address,
+        U256::from(amount_u64),
+    )
         .await
         .expect("approve failed");
-    chain::send_deposit_tx(app, U256::from(deposit_outputs.secret_nullifier_hash.0), U256::from(amount_u64))
+    crate::common_rpc::send_deposit_tx(
+        app.rpc_url.clone(),
+        app.owner_private_key.clone(),
+        app.max_fee_per_gas,
+        app.max_priority_fee_per_gas,
+        app.gas_limit,
+        app.privacy_pool_address,
+        U256::from(deposit_outputs.secret_nullifier_hash.0),
+        U256::from(amount_u64),
+        app.token_address,
+    )
         .await
         .expect("deposit failed");
 
@@ -74,7 +100,7 @@ async fn build_and_submit_withdraw(
     override_contract_root: Option<BaseField>,
 ) -> Result<String, String> {
     let (balance_fragment, blinder, commitment_hash) = mock_tlsn(withdraw_amount);
-    let token_address = BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
+    let token_address = crate::common_rpc::address_to_m31(app.token_address);
 
     let commitment_amount = deposit.commitment_amount;
     let withdraw_amount_field = BaseField::from_u32_unchecked(withdraw_amount);
@@ -113,10 +139,10 @@ async fn build_and_submit_withdraw(
         &app.rpc_url,
         &app.owner_private_key,
         app.privacy_pool_address,
-        app.withdraw_gas_limit,
+        app.gas_limit,
         contract_root,
         U256::from(proof.public_inputs.nullifier.0),
-        app.withdraw_token,
+        app.token_address,
         U256::from(proof.public_inputs.amount.0),
         app.withdraw_recipient,
         U256::from(proof.public_inputs.refund_commitment_hash.0),

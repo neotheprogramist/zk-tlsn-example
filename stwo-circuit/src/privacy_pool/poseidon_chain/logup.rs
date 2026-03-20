@@ -14,7 +14,7 @@ use stwo::{
 };
 use stwo_constraint_framework::{LogupTraceGenerator, Relation};
 
-use super::trace::{ColumnVec, N_CHAIN_ROWS};
+use super::trace::ColumnVec;
 use crate::privacy_pool::relations::LeafRelation;
 const FINAL_STATE_0_COL: usize = 650;
 
@@ -23,16 +23,17 @@ pub fn gen_poseidon_chain_interaction_trace(
     leaf_relation: &LeafRelation,
     log_size: u32,
     leaf_multiplicity: u32,
+    n_chain_rows: usize,
 ) -> (
     ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
     SecureField,
 ) {
     let n_rows = 1 << log_size;
 
-    // Generate is_last selector column (1 only for row N_CHAIN_ROWS-1)
+    // Generate is_last selector column (1 only for row n_chain_rows-1)
     let mut is_last_col = Col::<SimdBackend, BaseField>::zeros(n_rows);
-    if N_CHAIN_ROWS > 0 && N_CHAIN_ROWS - 1 < n_rows {
-        is_last_col.set(N_CHAIN_ROWS - 1, BaseField::one());
+    if n_chain_rows > 0 && n_chain_rows - 1 < n_rows {
+        is_last_col.set(n_chain_rows - 1, BaseField::one());
     }
     bit_reverse_coset_to_circle_domain_order(is_last_col.as_mut_slice());
 

@@ -1,15 +1,11 @@
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
+use alloy::primitives::{Address, U256};
 use clap::Parser;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, verify_onchain_call, verify_withdraw
+    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, simulate_withdraw_with_proof_call, verify_onchain_call, verify_withdraw
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
-pub(crate) mod chain;
 mod tlsn;
 
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
@@ -24,7 +20,7 @@ pub struct AppState {
     #[arg(long, env = "PRIVACY_POOL_ADDRESS")]
     pub privacy_pool_address: Address,
     #[arg(long, env = "TOKEN_ADDRESS")]
-    pub withdraw_token: Address,
+    pub token_address: Address,
     #[arg(long, env = "TLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
     pub tlsn_verifier_addr: String,
     #[arg(long, env = "TLS_SERVER_ADDR", default_value = "localhost:8443")]
@@ -47,51 +43,17 @@ pub struct AppState {
     pub withdraw_nullifier: u32,
     #[arg(long, env = "DEPOSIT_AMOUNT", default_value_t = 100u32)]
     pub deposit_amount: u32,
-    #[arg(
-        long,
-        env = "WITHDRAW_GAS_LIMIT",
-        default_value_t = 12_000_000_000_000u64
-    )]
-    pub withdraw_gas_limit: u64,
-    #[arg(
-        long,
-        env = "WITHDRAW_MAX_FEE_PER_GAS",
-        default_value_t = 2_000_000_000u128
-    )]
-    pub withdraw_max_fee_per_gas: u128,
-    #[arg(
-        long,
-        env = "WITHDRAW_MAX_PRIORITY_FEE_PER_GAS",
-        default_value_t = 1_000_000_000u128
-    )]
-    pub withdraw_max_priority_fee_per_gas: u128,
+    #[arg(long, env = "GAS_LIMIT", default_value_t = 12_000_000_000_000u64)]
+    pub gas_limit: u64,
+    #[arg(long, env = "MAX_FEE_PER_GAS", default_value_t = 2_000_000_000u128)]
+    pub max_fee_per_gas: u128,
+    #[arg(long, env = "MAX_PRIORITY_FEE_PER_GAS", default_value_t = 1_000_000_000u128)]
+    pub max_priority_fee_per_gas: u128,
 }
 
 impl AppState {
     fn from_env() -> Self {
         Self::parse()
-    }
-}
-
-sol! {
-    interface IERC20 {
-        function approve(address spender, uint256 amount) external returns (bool);
-    }
-
-    interface IPrivacyPool {
-        function setVerifier(address verifier) external;
-        function deposit(uint256 secretNullifierHash, uint256 amount, address token) external;
-        function withdraw(
-            uint256 root,
-            uint256 nullifier,
-            address token,
-            uint256 amount,
-            address recipient,
-            uint256 refundCommitmentHash,
-            bytes calldata verifyCalldata
-        ) external;
-        function getNextLeafIndex() external view returns (uint64);
-        function getCurrentRoot() external view returns (uint256);
     }
 }
 
@@ -131,17 +93,23 @@ pub fn run() {
             refund_amount = refund_amount.0,
             "Resolved partial-withdraw amounts"
         );
-        let token_address =
-            BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
+        let token_address = crate::common_rpc::address_to_m31(app.token_address);
 
         tracing::info!("Step 2: Preparing pool state and performing real deposit");
 
-        chain::ensure_owner_has_eth_for_gas(&app).await;
+        crate::common_rpc::ensure_owner_has_eth_for_gas(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            ANVIL_TOPUP_BALANCE_HEX,
+        ).await;
 
-        let mut offchain_tree: OffchainMerkleTree = chain::build_offchain_merkle_tree(&app).await;
+        let mut offchain_tree: OffchainMerkleTree = crate::common_rpc::build_offchain_merkle_tree(
+            app.rpc_url.clone(),
+            app.privacy_pool_address,
+        ).await;
         let merkle_index = u32::try_from(offchain_tree.leaf_count())
             .unwrap_or_else(|_| panic!("Off-chain tree leaf_count does not fit u32"));
-        if let Some(merkle_index_onchain) = chain::try_call_next_leaf_index(&app).await {
+        if let Some(merkle_index_onchain) = crate::common_rpc::try_call_next_leaf_index(app.rpc_url.clone(), app.privacy_pool_address).await {
             assert_eq!(
                 merkle_index,
                 merkle_index_onchain as u32,
@@ -179,19 +147,34 @@ pub fn run() {
         let secret_nullifier_hash = deposit_outputs.secret_nullifier_hash;
         let deposit_amount_u64 = commitment_amount.0 as u64;
 
-        chain::send_approve_tx(&app, U256::from(deposit_amount_u64))
+        crate::common_rpc::send_approve_tx(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            app.max_fee_per_gas,
+            app.max_priority_fee_per_gas,
+            200_000u64,
+            app.token_address,
+            app.privacy_pool_address,
+            U256::from(deposit_amount_u64),
+        )
             .await
             .expect("Failed to send approve tx");
-        chain::send_deposit_tx(
-            &app,
+        crate::common_rpc::send_deposit_tx(
+            app.rpc_url.clone(),
+            app.owner_private_key.clone(),
+            app.max_fee_per_gas,
+            app.max_priority_fee_per_gas,
+            5_000_000u64,
+            app.privacy_pool_address,
             U256::from(secret_nullifier_hash.0),
             U256::from(deposit_amount_u64),
+            app.token_address,
         )
         .await
         .expect("Failed to send deposit tx");
 
         let merkle_root = expected_root;
-        if let Some(merkle_root_u256) = chain::try_call_current_root(&app).await {
+        if let Some(merkle_root_u256) = crate::common_rpc::try_call_current_root(app.rpc_url.clone(), app.privacy_pool_address).await {
             let merkle_root_u32 = u32::try_from(merkle_root_u256).unwrap_or_else(|_| {
                 panic!("Current root doesn't fit M31/u32: {merkle_root_u256}")
             });
@@ -245,25 +228,48 @@ pub fn run() {
         let verify_input =
             build_onchain_verification_input(&proof).expect("Failed to build onchain input");
 
-        tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
+        tracing::info!("Step 4.5: Calling verifier directly (diagnostic — bypasses PrivacyPool)");
+        match verify_onchain_call(&app.rpc_url, app.verifier_address, &verify_input).await {
+            Ok(true) => tracing::info!("✅ Step 4.5: Direct verifier returned true"),
+            Ok(false) => tracing::error!("❌ Step 4.5: Direct verifier returned false — proof is wrong"),
+            Err(e) => tracing::error!("❌ Step 4.5: Direct verifier call failed (revert): {e}"),
+        }
 
-        let tx_hash = send_withdraw_with_proof_tx(
+        tracing::info!("Step 4.75: Simulating PrivacyPool.withdraw via eth_call (no gas limit)");
+        match simulate_withdraw_with_proof_call(
             &app.rpc_url,
-            &app.owner_private_key,
             app.privacy_pool_address,
-            app.withdraw_gas_limit,
             U256::from(proof.public_inputs.merkle_root.0),
             U256::from(proof.public_inputs.nullifier.0),
-            app.withdraw_token,
+            app.token_address,
             U256::from(proof.public_inputs.amount.0),
             app.withdraw_recipient,
             U256::from(proof.public_inputs.refund_commitment_hash.0),
             &verify_input,
-        )
-        .await
-        .expect("Failed to send withdraw transaction");
-        tracing::info!(%tx_hash, "Withdraw tx sent");
+        ).await {
+            Ok(()) => tracing::info!("✅ Step 4.75: PrivacyPool.withdraw simulation passed — issue is gas in real tx"),
+            Err(e) => tracing::error!("❌ Step 4.75: PrivacyPool.withdraw simulation failed (not gas): {e}"),
+        }
 
-        tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
+        // tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
+
+        // let tx_hash = send_withdraw_with_proof_tx(
+        //     &app.rpc_url,
+        //     &app.owner_private_key,
+        //     app.privacy_pool_address,
+        //     app.gas_limit,
+        //     U256::from(proof.public_inputs.merkle_root.0),
+        //     U256::from(proof.public_inputs.nullifier.0),
+        //     app.token_address,
+        //     U256::from(proof.public_inputs.amount.0),
+        //     app.withdraw_recipient,
+        //     U256::from(proof.public_inputs.refund_commitment_hash.0),
+        //     &verify_input,
+        // )
+        // .await
+        // .expect("Failed to send withdraw transaction");
+        // tracing::info!(%tx_hash, "Withdraw tx sent");
+
+        // tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
     });
 }

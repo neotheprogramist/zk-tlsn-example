@@ -97,6 +97,34 @@ sol! {
             uint256 refundCommitmentHash,
             bytes calldata verifyCalldata
         ) external;
+
+        function createOffer(
+            uint256 root,
+            uint256 nullifier,
+            address token,
+            uint256 amount,
+            uint256 offerCommitment,
+            uint256 refundCommitmentHash,
+            uint256 secretHash,
+            string calldata currency,
+            uint256 fiatAmount,
+            string calldata revTag,
+            Proof calldata proof,
+            VerificationParams calldata params,
+            uint32[][] calldata treeColumnLogSizes
+        ) external;
+
+        function cancelOffer(
+            uint256 offersRoot,
+            uint256 offerNullifier,
+            address token,
+            uint256 amount,
+            uint256 offerCommitment,
+            uint256 outputCommitment,
+            Proof calldata proof,
+            VerificationParams calldata params,
+            uint32[][] calldata treeColumnLogSizes
+        ) external;
     }
 }
 
