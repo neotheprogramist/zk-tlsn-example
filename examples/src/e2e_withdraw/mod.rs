@@ -5,7 +5,7 @@ use alloy::{
 use clap::Parser;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, verify_onchain_call, verify_withdraw
+    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
@@ -76,6 +76,7 @@ impl AppState {
 sol! {
     interface IERC20 {
         function approve(address spender, uint256 amount) external returns (bool);
+        function balanceOf(address account) external view returns (uint256);
     }
 
     interface IPrivacyPool {
@@ -247,6 +248,14 @@ pub fn run() {
 
         tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
 
+        let recipient_balance_before =
+            chain::get_erc20_balance(&app, app.withdraw_recipient).await;
+        tracing::info!(
+            recipient = %app.withdraw_recipient,
+            balance_before = %recipient_balance_before,
+            "Recipient token balance before withdraw"
+        );
+
         let tx_hash = send_withdraw_with_proof_tx(
             &app.rpc_url,
             &app.owner_private_key,
@@ -263,6 +272,21 @@ pub fn run() {
         .await
         .expect("Failed to send withdraw transaction");
         tracing::info!(%tx_hash, "Withdraw tx sent");
+
+        let recipient_balance_after =
+            chain::get_erc20_balance(&app, app.withdraw_recipient).await;
+        let expected_delta = U256::from(proof.public_inputs.amount.0);
+        assert_eq!(
+            recipient_balance_after,
+            recipient_balance_before + expected_delta,
+            "Recipient balance did not increase by the expected withdraw amount: before={recipient_balance_before}, after={recipient_balance_after}, expected_delta={expected_delta}"
+        );
+        tracing::info!(
+            recipient = %app.withdraw_recipient,
+            balance_after = %recipient_balance_after,
+            delta = %expected_delta,
+            "Recipient token balance increased as expected"
+        );
 
         tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
     });

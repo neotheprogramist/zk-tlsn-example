@@ -166,6 +166,15 @@ pub async fn build_offchain_merkle_tree(app: &AppState) -> OffchainMerkleTree {
     tree
 }
 
+pub async fn get_erc20_balance(app: &AppState, account: Address) -> U256 {
+    let data = IERC20::balanceOfCall { account }.abi_encode();
+    let raw = common_rpc::run_eth_call(app.rpc_url.clone(), app.withdraw_token, data.into())
+        .await
+        .unwrap_or_else(|e| panic!("balanceOf eth_call failed: {e}"));
+    IERC20::balanceOfCall::abi_decode_returns(&raw)
+        .unwrap_or_else(|e| panic!("Failed to decode balanceOf return: {e}"))
+}
+
 pub async fn ensure_owner_has_eth_for_gas(app: &AppState) {
     common_rpc::ensure_owner_has_eth_for_gas(
         app.rpc_url.clone(),
