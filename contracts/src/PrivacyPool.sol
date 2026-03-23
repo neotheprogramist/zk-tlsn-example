@@ -2,7 +2,10 @@
 pragma solidity ^0.8.9;
 
 import "./MerkleTreeLibrary.sol";
+import "./IStwoVerifier.sol";
 import {Poseidon2} from "poseidon2-M31-solidity/src/Poseidon2.sol";
+
+uint256 constant M31_MODULUS = 2_147_483_647;
 
 interface IERC20 {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -36,8 +39,10 @@ contract PrivacyPool {
     uint256[] public activeOffers; // Array of active offer secretHashes for enumeration
 
     // Storage
-    MerkleTreeLib.Tree private tree;
+    MerkleTreeLib.Tree private tree;       // Deposits and refunds
+    MerkleTreeLib.Tree private offersTree; // Offer commitments
     mapping(uint256 => bool) public nullifierHashes;
+    mapping(uint256 => uint256) public offerCommitmentToSecretHash;
     address public owner;
     address public stwoVerifier;
 
@@ -56,6 +61,8 @@ contract PrivacyPool {
     event OfferCreated(
         uint256 indexed secretHash,
         string indexed offerType,
+        uint256 offerCommitment,
+        uint256 refundCommitment,
         uint256 cryptoAmount,
         uint256 fiatAmount,
         string currency,
@@ -88,6 +95,7 @@ contract PrivacyPool {
         owner = _owner;
         stwoVerifier = _stwoVerifier;
         tree.initialize();
+        offersTree.initialize();
     }
 
     /// @notice Hash two values using Poseidon2
@@ -136,7 +144,11 @@ contract PrivacyPool {
         uint256 amount,
         address recipient,
         uint256 refundCommitmentHash,
-        bytes calldata verifyCalldata
+        uint32 commitmentLogSize,
+        bytes32 committedHash,
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
     ) external {
         // Check if nullifier already used
         if (nullifierHashes[nullifier]) {
@@ -150,14 +162,32 @@ contract PrivacyPool {
 
         if (stwoVerifier == address(0)) revert VerifierNotSet();
 
-        // Verify STWO proof atomically in the same transaction.
-        // STWOVerifier.verify() is non-view and updates internal state, so staticcall reverts.
+        // Build publicInputs
+        //   [0]    commitmentLogSize
+        //   [1..4] committedHash split into 4 little-endian u64 chunks
+        //   [5]    merkle_root
+        //   [6]    nullifier
+        //   [7]    amount
+        //   [8]    refundCommitmentHash
+        //   [9]    token_address mod M31
+        uint64[] memory publicInputs = new uint64[](10);
+        publicInputs[0] = uint64(commitmentLogSize);
+        for (uint256 i = 0; i < 4; i++) {
+            uint64 chunk = 0;
+            for (uint256 j = 0; j < 8; j++) {
+                chunk |= uint64(uint8(committedHash[i * 8 + j])) << (j * 8);
+            }
+            publicInputs[1 + i] = chunk;
+        }
+        publicInputs[5] = uint64(root);
+        publicInputs[6] = uint64(nullifier);
+        publicInputs[7] = uint64(amount);
+        publicInputs[8] = uint64(refundCommitmentHash);
+        publicInputs[9] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
         uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
         uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
         emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
@@ -166,7 +196,9 @@ contract PrivacyPool {
 
         // For partial withdrawals, insert the change/refund commitment as a new leaf.
         if (refundCommitmentHash != 0) {
-            tree.addLeaf(refundCommitmentHash);
+            uint64 refundLeafIndex = tree.freeLeafIndex;
+            uint256 newRoot = tree.addLeaf(refundCommitmentHash);
+            emit Deposit(refundCommitmentHash, 0, token, refundLeafIndex, newRoot);
         }
 
         // Transfer tokens to recipient
@@ -183,12 +215,15 @@ contract PrivacyPool {
         uint256 nullifier,
         address token,
         uint256 amount,
+        uint256 offerCommitment,
         uint256 refundCommitmentHash,
         uint256 secretHash,
         string calldata currency,
         uint256 fiatAmount,
         string calldata revTag,
-        bytes calldata verifyCalldata
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
     ) external {
         // Check if nullifier already used
         if (nullifierHashes[nullifier]) {
@@ -202,13 +237,17 @@ contract PrivacyPool {
 
         if (stwoVerifier == address(0)) revert VerifierNotSet();
 
-        // Verify proof
+        uint64[] memory publicInputs = new uint64[](6);
+        publicInputs[0] = uint64(root);
+        publicInputs[1] = uint64(nullifier);
+        publicInputs[2] = uint64(amount);
+        publicInputs[3] = uint64(offerCommitment);
+        publicInputs[4] = uint64(refundCommitmentHash);
+        publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
         uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
         uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
         emit VerificationGasUsed(verificationGasUsed, isValid);
         if (!isValid) revert ProofVerificationFailed();
 
@@ -220,8 +259,18 @@ contract PrivacyPool {
         // Mark nullifier as used
         nullifierHashes[nullifier] = true;
 
-        // Add refund commitment to tree
-        tree.addLeaf(refundCommitmentHash);
+        // Add offer commitment to offers tree
+        offersTree.addLeaf(offerCommitment);
+
+        // Register reverse mapping so cancelOffer can find this offer by its commitment
+        offerCommitmentToSecretHash[offerCommitment] = secretHash;
+
+        // Add refund commitment to deposits tree
+        {
+            uint64 refundLeafIndex = tree.freeLeafIndex;
+            uint256 newRoot = tree.addLeaf(refundCommitmentHash);
+            emit Deposit(refundCommitmentHash, 0, token, refundLeafIndex, newRoot);
+        }
 
         // Determine offer type based on fiatAmount
         string memory offerType = fiatAmount > 0 ? "static" : "dynamic";
@@ -247,12 +296,73 @@ contract PrivacyPool {
         emit OfferCreated(
             secretHash,
             offerType,
+            offerCommitment,
+            refundCommitmentHash,
             amount,
             fiatAmount,
             currency,
             token,
             revTag
         );
+    }
+
+    /// @notice Cancel offer with ZK proof — proves membership in offersTree, creates new deposit
+    function cancelOffer(
+        uint256 offersRoot,
+        uint256 offerNullifier,
+        address token,
+        uint256 amount,
+        uint256 offerCommitment,
+        uint256 outputCommitment,
+        StwoProof calldata proof,
+        VerificationParams calldata params,
+        uint32[][] calldata treeColumnLogSizes
+    ) external {
+        if (nullifierHashes[offerNullifier]) {
+            revert NullifierAlreadyUsed();
+        }
+        if (!offersTree.isValidRoot(offersRoot)) {
+            revert InvalidRoot();
+        }
+
+        if (stwoVerifier == address(0)) revert VerifierNotSet();
+
+        uint64[] memory publicInputs = new uint64[](6);
+        publicInputs[0] = uint64(offersRoot);
+        publicInputs[1] = uint64(offerNullifier);
+        publicInputs[2] = uint64(amount);
+        publicInputs[3] = uint64(offerCommitment);
+        publicInputs[4] = uint64(outputCommitment);
+        publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
+
+        uint256 gasBeforeVerification = gasleft();
+        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
+        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
+        emit VerificationGasUsed(verificationGasUsed, isValid);
+        if (!isValid) revert ProofVerificationFailed();
+
+        nullifierHashes[offerNullifier] = true;
+
+        // Update offer status and remove from active offers if the commitment is known
+        uint256 secretHash = offerCommitmentToSecretHash[offerCommitment];
+        if (secretHash != 0) {
+            Offer storage offer = offers[secretHash];
+            offer.status = OfferStatus.CANCELLED;
+
+            for (uint256 i = 0; i < activeOffers.length; i++) {
+                if (activeOffers[i] == secretHash) {
+                    activeOffers[i] = activeOffers[activeOffers.length - 1];
+                    activeOffers.pop();
+                    break;
+                }
+            }
+
+            emit OfferCancelled(secretHash, 0);
+        }
+
+        uint64 leafIndex = tree.freeLeafIndex;
+        uint256 newRoot = tree.addLeaf(outputCommitment);
+        emit Deposit(outputCommitment, amount, token, leafIndex, newRoot);
     }
 
     /// @notice Cancel intent - reveals offer secret to prove ownership
@@ -338,6 +448,16 @@ contract PrivacyPool {
     /// @notice Check if a root is valid
     function isValidRoot(uint256 root) external view returns (bool) {
         return tree.isValidRoot(root);
+    }
+
+    /// @notice Get current root of offers tree
+    function getOffersTreeRoot() external view returns (uint256) {
+        return offersTree.currentRoot;
+    }
+
+    /// @notice Check if an offers tree root is valid
+    function isValidOffersTreeRoot(uint256 root) external view returns (bool) {
+        return offersTree.isValidRoot(root);
     }
 
     /// @notice Check if nullifier was used

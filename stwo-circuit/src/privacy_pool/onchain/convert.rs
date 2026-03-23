@@ -11,25 +11,6 @@ use super::types::{
     CM31, CompositionPoly, Config, Decommitment, FriConfig, FriLayerProof, FriProof, Proof, QM31,
 };
 
-pub(crate) fn extract_composition_oods_eval(
-    proof: &StarkProof<KeccakMerkleHasher>,
-) -> Option<SecureField> {
-    let [.., composition_mask] = &**proof.sampled_values else {
-        return None;
-    };
-    let coordinate_evals = composition_mask
-        .iter()
-        .map(|columns| {
-            let &[eval] = &columns[..] else {
-                return None;
-            };
-            Some(eval)
-        })
-        .collect::<Option<Vec<_>>>()?
-        .try_into()
-        .ok()?;
-    Some(SecureField::from_partial_evals(coordinate_evals))
-}
 
 pub(crate) fn qm31(value: SecureField) -> QM31 {
     QM31 {

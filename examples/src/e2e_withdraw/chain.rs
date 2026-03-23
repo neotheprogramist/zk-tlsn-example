@@ -55,10 +55,6 @@ async fn send_simple_tx(
     .await
 }
 
-pub fn address_to_m31(address: Address) -> u32 {
-    common_rpc::address_to_m31(address)
-}
-
 pub async fn try_call_next_leaf_index(app: &AppState) -> Option<u64> {
     let data = IPrivacyPool::getNextLeafIndexCall {}.abi_encode();
     let raw = match common_rpc::run_eth_call(app.rpc_url.clone(), app.privacy_pool_address, data.into()).await {
@@ -164,6 +160,15 @@ pub async fn build_offchain_merkle_tree(app: &AppState) -> OffchainMerkleTree {
         tree.add_leaf(BaseField::from_u32_unchecked(commitment_u32));
     }
     tree
+}
+
+pub async fn get_erc20_balance(app: &AppState, account: Address) -> U256 {
+    let data = IERC20::balanceOfCall { account }.abi_encode();
+    let raw = common_rpc::run_eth_call(app.rpc_url.clone(), app.withdraw_token, data.into())
+        .await
+        .unwrap_or_else(|e| panic!("balanceOf eth_call failed: {e}"));
+    IERC20::balanceOfCall::abi_decode_returns(&raw)
+        .unwrap_or_else(|e| panic!("Failed to decode balanceOf return: {e}"))
 }
 
 pub async fn ensure_owner_has_eth_for_gas(app: &AppState) {

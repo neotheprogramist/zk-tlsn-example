@@ -8,102 +8,91 @@ use alloy::{
 };
 use async_compat::Compat;
 
-use super::types::{IPrivacyPool, IStwoVerifier, OnchainVerificationInput};
+use super::types::{IPrivacyPool, OnchainVerificationInput};
 
-pub async fn verify_onchain_call(
-    rpc_url: &str,
-    verifier_address: Address,
-    input: &OnchainVerificationInput,
-) -> Result<bool, String> {
-    let rpc_url = rpc_url.to_string();
-    let call_data = IStwoVerifier::verifyCall {
-        proof: input.proof.clone(),
-        params: input.params.clone(),
-        treeRoots: input.tree_roots.clone(),
-        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
-        digest: input.digest,
-        nDraws: input.n_draws,
-    };
-    Compat::new(async move {
-        let provider = ProviderBuilder::new().connect_http(
-            rpc_url
-                .parse()
-                .map_err(|e| format!("Invalid RPC URL: {e}"))?,
-        );
-
-        let tx = TransactionRequest::default()
-            .to(verifier_address)
-            .input(call_data.abi_encode().into());
-
-        let raw = provider
-            .call(tx)
-            .await
-            .map_err(|err| format!("Verifier contract call reverted: {err}"))?;
-
-        let decoded = IStwoVerifier::verifyCall::abi_decode_returns(&raw)
-            .map_err(|e| format!("Failed to decode verify() return value: {e}"))?;
-
-        Ok(decoded)
-    })
-    .await
-}
-
-pub fn build_verify_calldata(input: &OnchainVerificationInput) -> Bytes {
-    IStwoVerifier::verifyCall {
-        proof: input.proof.clone(),
-        params: input.params.clone(),
-        treeRoots: input.tree_roots.clone(),
-        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
-        digest: input.digest,
-        nDraws: input.n_draws,
-    }
-    .abi_encode()
-    .into()
-}
-
-// TODO delete later
-pub async fn simulate_withdraw_with_proof_call(
-    rpc_url: &str,
-    pool_address: Address,
+pub fn build_withdraw_calldata(
     root: U256,
     nullifier: U256,
     token: Address,
     amount: U256,
     recipient: Address,
     refund_commitment_hash: U256,
-    verify_input: &OnchainVerificationInput,
-) -> Result<(), String> {
-    let verify_calldata = build_verify_calldata(verify_input);
-    let rpc_url = rpc_url.to_string();
-    Compat::new(async move {
-        let provider = ProviderBuilder::new().connect_http(
-            rpc_url
-                .parse()
-                .map_err(|e| format!("Invalid RPC URL: {e}"))?,
-        );
+    input: &OnchainVerificationInput,
+) -> Vec<u8> {
+    let commitment_log_size = input.public_inputs.first().copied().unwrap_or(0) as u32;
+    let mut hash_bytes = [0u8; 32];
+    for (i, chunk) in input.public_inputs.get(1..5).unwrap_or(&[]).iter().enumerate() {
+        let le = chunk.to_le_bytes();
+        hash_bytes[i * 8..(i + 1) * 8].copy_from_slice(&le);
+    }
+    IPrivacyPool::withdrawCall {
+        root,
+        nullifier,
+        token,
+        amount,
+        recipient,
+        refundCommitmentHash: refund_commitment_hash,
+        commitmentLogSize: commitment_log_size,
+        committedHash: hash_bytes.into(),
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
+    }
+    .abi_encode()
+}
 
-        let call_data = IPrivacyPool::withdrawCall {
-            root,
-            nullifier,
-            token,
-            amount,
-            recipient,
-            refundCommitmentHash: refund_commitment_hash,
-            verifyCalldata: verify_calldata,
-        };
+pub fn build_create_offer_calldata(
+    root: U256,
+    nullifier: U256,
+    token: Address,
+    amount: U256,
+    offer_commitment: U256,
+    refund_commitment_hash: U256,
+    secret_hash: U256,
+    currency: String,
+    fiat_amount: U256,
+    rev_tag: String,
+    input: &OnchainVerificationInput,
+) -> Vec<u8> {
+    IPrivacyPool::createOfferCall {
+        root,
+        nullifier,
+        token,
+        amount,
+        offerCommitment: offer_commitment,
+        refundCommitmentHash: refund_commitment_hash,
+        secretHash: secret_hash,
+        currency,
+        fiatAmount: fiat_amount,
+        revTag: rev_tag,
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
+    }
+    .abi_encode()
+}
 
-        let tx = TransactionRequest::default()
-            .to(pool_address)
-            .input(call_data.abi_encode().into());
-
-        provider
-            .call(tx)
-            .await
-            .map_err(|err| format!("PrivacyPool withdraw simulation reverted: {err}"))?;
-
-        Ok(())
-    })
-    .await
+pub fn build_cancel_offer_calldata(
+    offers_root: U256,
+    offer_nullifier: U256,
+    token: Address,
+    amount: U256,
+    offer_commitment: U256,
+    output_commitment: U256,
+    input: &OnchainVerificationInput,
+) -> Vec<u8> {
+    IPrivacyPool::cancelOfferCall {
+        offersRoot: offers_root,
+        offerNullifier: offer_nullifier,
+        token,
+        amount,
+        offerCommitment: offer_commitment,
+        outputCommitment: output_commitment,
+        proof: input.proof.clone(),
+        params: input.params.clone(),
+        treeColumnLogSizes: input.tree_column_log_sizes.clone(),
+    }
+    .abi_encode()
 }
 
 pub async fn send_withdraw_with_proof_tx(
@@ -119,7 +108,7 @@ pub async fn send_withdraw_with_proof_tx(
     refund_commitment_hash: U256,
     verify_input: &OnchainVerificationInput,
 ) -> Result<String, String> {
-    let verify_calldata = build_verify_calldata(verify_input);
+    let calldata = build_withdraw_calldata(root, nullifier, token, amount, recipient, refund_commitment_hash, verify_input);
     let rpc_url = rpc_url.to_string();
     let sender_private_key = sender_private_key.to_string();
     Compat::new(async move {
@@ -134,20 +123,19 @@ pub async fn send_withdraw_with_proof_tx(
                 .map_err(|e| format!("Invalid RPC URL: {e}"))?,
         );
 
-        let call_data = IPrivacyPool::withdrawCall {
-            root,
-            nullifier,
-            token,
-            amount,
-            recipient,
-            refundCommitmentHash: refund_commitment_hash,
-            verifyCalldata: verify_calldata,
-        };
+        // Preflight without gas limit — surfaces logic errors, not gas errors.
+        let preflight_tx = TransactionRequest::default()
+            .to(pool_address)
+            .input(calldata.clone().into());
+        provider
+            .call(preflight_tx)
+            .await
+            .map_err(|err| format!("withdraw preflight call reverted: {err}"))?;
 
         let tx = TransactionRequest::default()
             .to(pool_address)
             .gas_limit(gas_limit)
-            .input(call_data.abi_encode().into());
+            .input(calldata.into());
 
         let pending = provider
             .send_transaction(tx)

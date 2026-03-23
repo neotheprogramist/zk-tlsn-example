@@ -5,14 +5,13 @@ use alloy::{
 use clap::Parser;
 use stwo::core::fields::m31::BaseField;
 use stwo_circuit::{
-    WithdrawInputs, build_onchain_verification_input,
-    offchain_merkle::OffchainMerkleTree,
-    poseidon_chain::{ChainInputs, gen_poseidon_chain_trace},
-    prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw,
+    WithdrawInputs, build_onchain_verification_input, offchain_merkle::OffchainMerkleTree, poseidon_chain::{ChainInputs, gen_poseidon_chain_trace}, prove_withdraw, send_withdraw_with_proof_tx, verify_withdraw
 };
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
 
-mod chain;
+use crate::common_rpc;
+
+pub(crate) mod chain;
 mod tlsn;
 
 pub(crate) const ANVIL_TOPUP_BALANCE_HEX: &str = "0x3635C9ADC5DEA000000000";
@@ -26,7 +25,7 @@ pub struct AppState {
     pub verifier_address: Address,
     #[arg(long, env = "PRIVACY_POOL_ADDRESS")]
     pub privacy_pool_address: Address,
-    #[arg(long, env = "WITHDRAW_TOKEN")]
+    #[arg(long, env = "TOKEN_ADDRESS")]
     pub withdraw_token: Address,
     #[arg(long, env = "TLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
     pub tlsn_verifier_addr: String,
@@ -79,6 +78,7 @@ impl AppState {
 sol! {
     interface IERC20 {
         function approve(address spender, uint256 amount) external returns (bool);
+        function balanceOf(address account) external view returns (uint256);
     }
 
     interface IPrivacyPool {
@@ -134,8 +134,7 @@ pub fn run() {
             refund_amount = refund_amount.0,
             "Resolved partial-withdraw amounts"
         );
-        let token_address =
-            BaseField::from_u32_unchecked(chain::address_to_m31(app.withdraw_token));
+        let token_address = common_rpc::address_to_m31(app.withdraw_token);
 
         tracing::info!("Step 2: Preparing pool state and performing real deposit");
 
@@ -233,28 +232,62 @@ pub fn run() {
         let proof = prove_withdraw(inputs, 8).expect("Proof generation failed");
         verify_withdraw(proof.clone()).expect("Off-chain verification failed");
 
+        let proof_json =
+            serde_json::to_string_pretty(&proof.proof).expect("Failed to serialize proof to JSON");
+        let proof_line_count = proof_json.lines().count();
+        std::fs::write("withdraw_proof.json", &proof_json)
+            .expect("Failed to write proof JSON to file");
+        tracing::info!(
+            lines = proof_line_count,
+            bytes = proof_json.len(),
+            "Proof saved to withdraw_proof.json"
+        );
+
         tracing::info!("Step 4: Building on-chain verification payload");
         let verify_input =
             build_onchain_verification_input(&proof).expect("Failed to build onchain input");
 
         tracing::info!("Step 5: Calling real PrivacyPool.withdraw transaction");
 
+        let recipient_balance_before =
+            chain::get_erc20_balance(&app, app.withdraw_recipient).await;
+        tracing::info!(
+            recipient = %app.withdraw_recipient,
+            balance_before = %recipient_balance_before,
+            "Recipient token balance before withdraw"
+        );
+
         let tx_hash = send_withdraw_with_proof_tx(
             &app.rpc_url,
             &app.owner_private_key,
             app.privacy_pool_address,
             app.withdraw_gas_limit,
-            U256::from(proof.merkle_root.0),
-            U256::from(proof.nullifier.0),
+            U256::from(proof.public_inputs.merkle_root.0),
+            U256::from(proof.public_inputs.nullifier.0),
             app.withdraw_token,
-            U256::from(proof.amount.0),
+            U256::from(proof.public_inputs.amount.0),
             app.withdraw_recipient,
-            U256::from(proof.refund_commitment_hash.0),
+            U256::from(proof.public_inputs.refund_commitment_hash.0),
             &verify_input,
         )
         .await
         .expect("Failed to send withdraw transaction");
         tracing::info!(%tx_hash, "Withdraw tx sent");
+
+        let recipient_balance_after =
+            chain::get_erc20_balance(&app, app.withdraw_recipient).await;
+        let expected_delta = U256::from(proof.public_inputs.amount.0);
+        assert_eq!(
+            recipient_balance_after,
+            recipient_balance_before + expected_delta,
+            "Recipient balance did not increase by the expected withdraw amount: before={recipient_balance_before}, after={recipient_balance_after}, expected_delta={expected_delta}"
+        );
+        tracing::info!(
+            recipient = %app.withdraw_recipient,
+            balance_after = %recipient_balance_after,
+            delta = %expected_delta,
+            "Recipient token balance increased as expected"
+        );
 
         tracing::info!("✅ Full E2E passed: deposit -> server amount -> proof -> withdraw");
     });

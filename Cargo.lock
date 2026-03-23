@@ -2606,6 +2606,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "quinn",
+ "serde_json",
  "shared",
  "smol",
  "stwo",

@@ -13,6 +13,18 @@ pub struct ChainInputs {
     pub input3: BaseField,
 }
 
+#[derive(Clone, Debug)]
+pub struct OfferChainInputs {
+    pub offer_secret: BaseField,
+    pub offer_nullifier: BaseField,
+    pub offer_amount: BaseField,
+    pub token_address: BaseField,
+    pub fiat_amount: BaseField,
+    pub currency_hash: BaseField,
+    pub rev_tag_hash: BaseField,
+}
+
+
 impl ChainInputs {
     pub fn for_deposit(
         secret: BaseField,
