@@ -162,8 +162,7 @@ contract PrivacyPool {
 
         if (stwoVerifier == address(0)) revert VerifierNotSet();
 
-        // Build publicInputs on-chain so the caller cannot substitute them.
-        // Layout mirrors build_onchain_verification_input in Rust:
+        // Build publicInputs
         //   [0]    commitmentLogSize
         //   [1..4] committedHash split into 4 little-endian u64 chunks
         //   [5]    merkle_root

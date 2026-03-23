@@ -21,8 +21,14 @@ pub struct AppState {
     pub deposit_nullifier: u32,
     #[arg(long, env = "DEPOSIT_AMOUNT", default_value_t = 100u32)]
     pub deposit_amount: u32,
-    #[arg(long, env = "GAS_LIMIT", default_value_t = 12_000_000_000_000u64)]
+    #[arg(long, env = "GAS_LIMIT", default_value_t = 30_000_000u64)]
     pub gas_limit: u64,
+    #[arg(
+        long,
+        env = "WITHDRAW_RECIPIENT",
+        default_value = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"
+    )]
+    pub withdraw_recipient: Address,
     #[arg(long, env = "MAX_FEE_PER_GAS", default_value_t = 2_000_000_000u128)]
     pub max_fee_per_gas: u128,
     #[arg(
@@ -31,6 +37,10 @@ pub struct AppState {
         default_value_t = 1_000_000_000u128
     )]
     pub max_priority_fee_per_gas: u128,
+    #[arg(long, env = "TLSN_VERIFIER_ADDR", default_value = "[::1]:5000")]
+    pub tlsn_verifier_addr: String,
+    #[arg(long, env = "TLS_SERVER_ADDR", default_value = "localhost:8443")]
+    pub tls_server_addr: String,
 }
 
 impl AppState {

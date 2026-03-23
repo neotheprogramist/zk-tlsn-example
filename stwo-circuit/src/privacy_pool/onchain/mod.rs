@@ -9,8 +9,6 @@ pub use build::{
 };
 pub use convert::convert_to_solidity_proof;
 pub use rpc::{
-    build_cancel_offer_calldata, build_create_offer_calldata, build_verify_calldata,
-    send_withdraw_with_proof_tx, simulate_withdraw_with_proof_call,
-    verify_onchain_call,
+    build_cancel_offer_calldata, build_create_offer_calldata, send_withdraw_with_proof_tx,
 };
 pub use types::*;

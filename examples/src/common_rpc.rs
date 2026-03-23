@@ -9,11 +9,12 @@ use alloy::{
 };
 use async_compat::Compat;
 use stwo::core::fields::m31::BaseField;
-use stwo_circuit::offchain_merkle::{OffchainMerkleTree, poseidon_hash_pair};
+use stwo_circuit::offchain_merkle::OffchainMerkleTree;
 
 sol! {
     interface IERC20 {
         function approve(address spender, uint256 amount) external returns (bool);
+        function balanceOf(address account) external view returns (uint256);
     }
 
     interface IPrivacyPoolCommon {
@@ -81,25 +82,9 @@ pub fn address_to_m31(address: Address) -> BaseField {
 }
 
 pub fn string_to_m31(s: &str) -> BaseField {
-    let modulus = u64::from(M31_MODULUS);
-    let value = s.bytes().fold(0u64, |acc, byte| {
-        let mixed = acc
-            .checked_mul(31)
-            .and_then(|v| v.checked_add(u64::from(byte)))
-            .unwrap_or_else(|| panic!("rolling hash overflow for input length {}", s.len()));
-        mixed % modulus
-    });
-    let length = u64::try_from(s.len())
-        .unwrap_or_else(|_| panic!("String length does not fit u64: {}", s.len()))
-        % modulus;
-    let value_u32 = u32::try_from(value)
-        .unwrap_or_else(|_| panic!("Hashed value does not fit u32: {value}"));
-    let length_u32 = u32::try_from(length)
-        .unwrap_or_else(|_| panic!("Length modulo M31 does not fit u32: {length}"));
-    poseidon_hash_pair(
-        BaseField::from_u32_unchecked(value_u32),
-        BaseField::from_u32_unchecked(length_u32),
-    )
+    let hash = alloy::primitives::keccak256(s.as_bytes());
+    let value = u32::from_le_bytes(hash[..4].try_into().expect("4 bytes")) % M31_MODULUS;
+    BaseField::from_u32_unchecked(value)
 }
 
 pub async fn send_simple_tx(
@@ -166,6 +151,15 @@ pub async fn run_eth_call(rpc_url: String, to: Address, input: Bytes) -> Result<
             .map_err(|e| e.to_string())
     })
     .await
+}
+
+pub async fn get_erc20_balance(rpc_url: String, token: Address, account: Address) -> U256 {
+    let data = IERC20::balanceOfCall { account }.abi_encode();
+    let raw = run_eth_call(rpc_url, token, data.into())
+        .await
+        .unwrap_or_else(|e| panic!("balanceOf eth_call failed: {e}"));
+    IERC20::balanceOfCall::abi_decode_returns(&raw)
+        .unwrap_or_else(|e| panic!("Failed to decode balanceOf return: {e}"))
 }
 
 pub async fn send_approve_tx(
