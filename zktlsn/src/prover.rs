@@ -1,3 +1,4 @@
+use blake2::{Blake2s256, Digest};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use shared::{
@@ -220,7 +221,7 @@ fn prepare_proof_input(
     if commitment.direction != Direction::Received {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
-    if commitment.hash.alg != HashAlgId::BLAKE3 {
+    if commitment.hash.alg != HashAlgId::BLAKE3 && commitment.hash.alg != HashAlgId::BLAKE2S {
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
 
@@ -239,7 +240,7 @@ fn prepare_proof_input(
         })?
         .to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
-    let committed_hash = blake3_hash(&committed_data, &blinder);
+    let committed_hash = commitment_hash(commitment.hash.alg, &committed_data, &blinder)?;
     if commitment.hash.value.as_bytes() != committed_hash {
         return Err(ZkTlsnError::HashVerificationFailed);
     }
@@ -249,6 +250,14 @@ fn prepare_proof_input(
         committed_data,
         blinder,
     })
+}
+
+fn commitment_hash(alg: HashAlgId, data: &[u8], blinder: &[u8]) -> Result<[u8; 32]> {
+    match alg {
+        HashAlgId::BLAKE3 => Ok(blake3_hash(data, blinder)),
+        HashAlgId::BLAKE2S => Ok(blake2s_hash(data, blinder)),
+        _ => Err(ZkTlsnError::InvalidHashAlgorithm),
+    }
 }
 
 fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
@@ -276,6 +285,13 @@ fn blake3_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
     hasher.update(data);
     hasher.update(blinder);
     *hasher.finalize().as_bytes()
+}
+
+fn blake2s_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
+    let mut hasher = Blake2s256::new();
+    hasher.update(data);
+    hasher.update(blinder);
+    hasher.finalize().into()
 }
 
 fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8; N]> {

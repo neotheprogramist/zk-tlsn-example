@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["parser", "server", "shared", "tlsnotary", "verifier", "zktlsn"]
+members = ["circuits-stwo","parser", "server", "shared", "tlsnotary", "verifier", "zktlsn"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,7 +8,7 @@ edition = "2024"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
-alloy = { version = "1.0.41", features = ["full"] }
+alloy = { version = "0.4", features = ["full"] }
 alloy-primitives = "1.5.7"
 alloy-sol-types = "1.5.7"
 async-compat = "0.2.5"
@@ -44,7 +44,7 @@ server = { path = "./server" }
 shared = { path = "./shared" }
 smol = "2.0.2"
 thiserror = "2.0.18"
-tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.14" }
+tlsn = { git = "https://github.com/anhelinakruk/tlsn", branch = "feat/blake2s-hash"}
 tlsnotary = { path = "./tlsnotary" }
 tokio = { version = "1.50.0", default-features = false, features = ["io-util"] }
 tower = "0.5.3"
@@ -53,3 +53,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 verifier = { path = "./verifier" }
 zktlsn = { path = "./zktlsn" }
+circuits = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
+circuit-prover = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
+stwo = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c", features = ["parallel"], default-features = false }
+circuits-stwo = { path = "./circuits-stwo" }

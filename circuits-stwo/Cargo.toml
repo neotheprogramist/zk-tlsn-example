@@ -1,0 +1,11 @@
+[package]
+name = "circuits-stwo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake2 = "0.10.6"
+circuits.workspace = true
+circuit-prover.workspace = true
+serde.workspace = true
+stwo.workspace = true
