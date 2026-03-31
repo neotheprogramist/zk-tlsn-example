@@ -6,7 +6,6 @@ mod live_demo;
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, ensure};
-use circuits_stwo::prove_attestation;
 use clap::Parser;
 use quinn::Endpoint;
 use server::app::TransferRequest;
@@ -14,7 +13,7 @@ use shared::{TestQuicConfig, init_logging};
 use tracing::{error, info, instrument};
 
 use crate::{
-    attestation_proof_stwo::derive_stwo_inputs_from_tlsn,
+    attestation_proof_stwo::run_stwo_attestation_proof_flow,
     live_demo::{DemoConnectionConfig, create_transfer},
 };
 
@@ -80,56 +79,40 @@ async fn run(
     .await
     .context("failed to create transfer attestation")?;
 
-    let noir_inputs = connect_and_collect_inputs(verifier_addr, server_addr, &server_name, transfer.tx_id)
+    let flow = connect_and_run_flow(verifier_addr, server_addr, &server_name, transfer.tx_id)
         .await
-        .context("failed to derive STWO inputs from TLSN")?;
-
-    let attestation_bytes: [u8; shared::ATTESTATION_LEN] = noir_inputs
-        .attestation
-        .as_bytes()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("attestation should be exactly 32 bytes"))?;
-
-    let stwo_proof = prove_attestation(
-        &attestation_bytes,
-        &noir_inputs.attestation_blinder,
-        &noir_inputs.attestation_committed_hash,
-        noir_inputs.tx_id,
-        noir_inputs.to_user_id,
-        noir_inputs.amount,
-    )
-    .map_err(anyhow::Error::msg)
-    .context("failed to produce STWO attestation proof")?;
-
-    let _proof_hash = stwo_proof
-        .committed_hash()
-        .ok_or_else(|| anyhow::anyhow!("proof does not expose committed hash outputs"))?;
-    
-    info!("STWO circuit verified cryptographic binding: blake2s(attestation || blinder) == TLSN hash");
+        .context("failed to run STWO attestation proof flow")?;
 
     ensure!(
-        noir_inputs.tx_id == transfer.tx_id,
+        flow.inputs.tx_id == transfer.tx_id,
         "tx_id mismatch: TLSN extracted {} but transfer created {}",
-        noir_inputs.tx_id,
+        flow.inputs.tx_id,
         transfer.tx_id
     );
 
+    ensure!(
+        flow.verification.success,
+        "verifier rejected STWO proof: {}",
+        flow.verification.message
+    );
+
     info!(
-        tx_id = noir_inputs.tx_id,
-        to_user_id = noir_inputs.to_user_id,
-        amount = noir_inputs.amount,
-        "TLSN -> STWO local proof flow finished successfully"
+        tx_id = flow.inputs.tx_id,
+        to_user_id = flow.inputs.to_user_id,
+        amount = flow.inputs.amount,
+        signed_ticket = flow.verification.signed_ticket.is_some(),
+        "TLSN -> STWO proof flow finished successfully"
     );
 
     Ok(())
 }
 
-async fn connect_and_collect_inputs(
+async fn connect_and_run_flow(
     verifier_addr: SocketAddr,
     server_addr: SocketAddr,
     server_name: &str,
     tx_id: u64,
-) -> Result<zktlsn::NoirProverInputs> {
+) -> Result<attestation_proof_stwo::StwoAttestationProofFlow> {
     let TestQuicConfig { client_config, .. } = shared::get_or_create_test_quic_config(
         std::path::Path::new("cert.pem"),
         std::path::Path::new("key.pem"),
@@ -150,7 +133,7 @@ async fn connect_and_collect_inputs(
         .await
         .context("failed to open QUIC bidirectional stream")?;
 
-    derive_stwo_inputs_from_tlsn(
+    run_stwo_attestation_proof_flow(
         tokio::io::join(recv, send),
         server_addr,
         server_name,

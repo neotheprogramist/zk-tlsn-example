@@ -1880,6 +1880,8 @@ name = "circuits-stwo"
 version = "0.1.0"
 dependencies = [
  "blake2",
+ "circuit-air",
+ "circuit-common",
  "circuit-prover",
  "circuits",
  "serde",
@@ -6311,7 +6313,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "tlsn"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "aes 0.8.4",
  "ctr 0.9.2",
@@ -6357,7 +6359,7 @@ dependencies = [
 [[package]]
 name = "tlsn-attestation"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "bcs",
  "blake3",
@@ -6375,7 +6377,7 @@ dependencies = [
 [[package]]
 name = "tlsn-cipher"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -6388,7 +6390,7 @@ dependencies = [
 [[package]]
 name = "tlsn-core"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "bimap",
  "blake2",
@@ -6416,7 +6418,7 @@ dependencies = [
 [[package]]
 name = "tlsn-deap"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "async-trait",
  "futures",
@@ -6433,7 +6435,7 @@ dependencies = [
 [[package]]
 name = "tlsn-hmac-sha256"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "mpz-circuits",
  "mpz-core",
@@ -6447,7 +6449,7 @@ dependencies = [
 [[package]]
 name = "tlsn-key-exchange"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "async-trait",
  "derive_builder 0.12.0",
@@ -6470,7 +6472,7 @@ dependencies = [
 [[package]]
 name = "tlsn-mpc-tls"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",
@@ -6525,7 +6527,7 @@ dependencies = [
 [[package]]
 name = "tlsn-tls-client"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6551,7 +6553,7 @@ dependencies = [
 [[package]]
 name = "tlsn-tls-core"
 version = "0.1.0-alpha.14"
-source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#fca89087bfa8b459868e44c840656dc403455b5f"
+source = "git+https://github.com/anhelinakruk/tlsn?branch=feat%2Fblake2s-hash#c53d7c19044347b1b35b0fbed2163884bd9a60ac"
 dependencies = [
  "futures",
  "hmac",
@@ -7000,6 +7002,7 @@ dependencies = [
  "async-compat",
  "axum",
  "chrono",
+ "circuits-stwo",
  "futures",
  "futures-rustls",
  "hex",

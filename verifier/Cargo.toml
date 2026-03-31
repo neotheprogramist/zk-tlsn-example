@@ -30,6 +30,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 zktlsn.workspace = true
+circuits-stwo.workspace = true
 
 [dev-dependencies]
 rangeset.workspace = true

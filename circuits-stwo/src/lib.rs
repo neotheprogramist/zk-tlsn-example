@@ -1,14 +1,21 @@
-use circuit_prover::prover::{CircuitProof, prove_circuit};
+use circuit_air::components::prelude::Zero;
+use circuit_air::{CircuitClaim, CircuitInteractionClaim, CircuitInteractionElements};
+use circuit_air::components::{CircuitComponents, N_COMPONENTS};
+use circuit_common::preprocessed::PreprocessedCircuit;
+use circuit_air::{lookup_sum, statement::INTERACTION_POW_BITS};
+use circuit_prover::prover::{BaseColumnPool, CircuitProof, prove_circuit_assignment};
 use circuits::blake::{HashValue, blake, blake_qm31};
 use circuits::context::Context;
 use circuits::ivalue::qm31_from_u32s;
 use circuits::ops::{eq, guess, output};
 use serde::{Deserialize, Serialize};
+use stwo::core::air::Component;
+use stwo::core::channel::{Blake2sM31Channel, Channel};
 use stwo::core::fields::qm31::QM31;
-use stwo::core::pcs::PcsConfig;
+use stwo::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
 use stwo::core::proof::ExtendedStarkProof;
 use stwo::core::vcs::blake2_hash::reduce_to_m31;
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher;
+use stwo::core::vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher};
 
 pub const ATTESTATION_LEN: usize = 32;
 const TX_ID_WIDTH: usize = 10;
@@ -97,8 +104,15 @@ pub fn build_attestation_circuit(
     eq(&mut ctx, hash_out.0, tlsn_hash0);
     eq(&mut ctx, hash_out.1, tlsn_hash1);
 
+    let tx_id_var = ctx.constant(qm31_from_u32s(tx_id as u32, 0, 0, 0));
+    let to_user_id_var = ctx.constant(qm31_from_u32s(to_user_id as u32, 0, 0, 0));
+    let amount_var = ctx.constant(qm31_from_u32s(amount as u32, 0, 0, 0));
+
     output(&mut ctx, tlsn_hash0);
     output(&mut ctx, tlsn_hash1);
+    output(&mut ctx, tx_id_var);
+    output(&mut ctx, to_user_id_var);
+    output(&mut ctx, amount_var);
 
     ctx.finalize_guessed_vars();
     ctx
@@ -108,17 +122,26 @@ pub fn build_attestation_circuit(
 pub struct AttestationStwoProof {
     pub stark_proof: ExtendedStarkProof<Blake2sM31MerkleHasher>,
     pub pcs_config: PcsConfig,
-    /// `CircuitClaim.log_sizes` - component trace sizes.
     pub claim_log_sizes: Vec<u32>,
-    /// `CircuitClaim.output_values` - public outputs of the circuit (committed_hash as 2 x QM31).
     pub claim_output_values: Vec<QM31>,
-    /// `CircuitInteractionClaim.claimed_sums` - logup interaction sums.
     pub interaction_claim_sums: Vec<QM31>,
     pub interaction_pow_nonce: u64,
     pub channel_salt: u32,
+    pub output_addresses: Vec<usize>,
+    pub n_blake_gates: usize,
 }
 
 impl AttestationStwoProof {
+    pub fn transfer_fields(&self) -> Option<(u64, u64, u64)> {
+        if self.claim_output_values.len() < 5 {
+            return None;
+        }
+        let tx_id = self.claim_output_values[2].0.0.0 as u64;
+        let to_user_id = self.claim_output_values[3].0.0.0 as u64;
+        let amount = self.claim_output_values[4].0.0.0 as u64;
+        Some((tx_id, to_user_id, amount))
+    }
+
     pub fn committed_hash(&self) -> Option<[u8; 32]> {
         if self.claim_output_values.len() < 2 {
             return None;
@@ -135,7 +158,11 @@ impl AttestationStwoProof {
     }
 }
 
-fn circuit_proof_to_attestation(cp: CircuitProof) -> Result<AttestationStwoProof, String> {
+fn circuit_proof_to_attestation(
+    cp: CircuitProof,
+    output_addresses: Vec<usize>,
+    n_blake_gates: usize,
+) -> Result<AttestationStwoProof, String> {
     let stark_proof = cp
         .stark_proof
         .map_err(|e| format!("proving failed: {e:?}"))?;
@@ -147,6 +174,8 @@ fn circuit_proof_to_attestation(cp: CircuitProof) -> Result<AttestationStwoProof
         interaction_claim_sums: cp.interaction_claim.claimed_sums.to_vec(),
         interaction_pow_nonce: cp.interaction_pow_nonce,
         channel_salt: cp.channel_salt,
+        output_addresses,
+        n_blake_gates,
     })
 }
 
@@ -161,8 +190,111 @@ pub fn prove_attestation(
     let tlsn_hash_qm31 = bytes_to_hash_value(*tlsn_hash);
     let mut ctx =
         build_attestation_circuit(attestation, blinder, tlsn_hash_qm31, tx_id, to_user_id, amount);
-    let circuit_proof = prove_circuit(&mut ctx);
-    circuit_proof_to_attestation(circuit_proof)
+    let preprocessed = PreprocessedCircuit::preprocess_circuit(&mut ctx);
+    let output_addresses = preprocessed.params.output_addresses.clone();
+    let n_blake_gates = preprocessed.params.n_blake_gates;
+    let circuit_proof = prove_circuit_assignment(
+        ctx.values(),
+        &preprocessed,
+        &BaseColumnPool::new(),
+    );
+    circuit_proof_to_attestation(circuit_proof, output_addresses, n_blake_gates)
+}
+
+pub fn verify_attestation(
+    proof: &AttestationStwoProof
+) -> Result<(), String> {
+    let dummy_attestation = attestation_bytes(1, 2, 3);
+    let dummy_hash = HashValue(qm31_from_u32s(1, 2, 3, 4), qm31_from_u32s(5, 6, 7, 8));
+    let mut ctx = build_attestation_circuit(
+        &dummy_attestation,
+        &[1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        dummy_hash,
+        1u64,
+        2u64,
+        3u64,
+    );
+
+    let preprocessed_circuit = PreprocessedCircuit::preprocess_circuit(&mut ctx);
+
+    let log_sizes: [u32; N_COMPONENTS] = proof.claim_log_sizes.as_slice().try_into().map_err(|_| format!(
+        "claim_log_sizes length mismatch: expected {N_COMPONENTS}, got {}",
+        proof.claim_log_sizes.len()
+    ))?;
+
+    let claim = CircuitClaim {
+        log_sizes,
+        output_values: proof.claim_output_values.clone()
+    };
+
+    let claimed_sums: [QM31; N_COMPONENTS] = proof.interaction_claim_sums
+        .as_slice()
+        .try_into()
+        .map_err(|_| format!(
+            "interaction_claim_sums length mismatch: expected {N_COMPONENTS}, got {}",
+            proof.interaction_claim_sums.len()
+        ))?;
+
+    let interaction_claim = CircuitInteractionClaim { claimed_sums };
+
+    let dummy_ie = CircuitInteractionElements::draw(&mut Blake2sM31Channel::default());
+    let dummy_components = CircuitComponents::new(
+        &claim,
+        &dummy_ie,
+        &interaction_claim,
+        &preprocessed_circuit.preprocessed_trace.ids(),
+    );
+    let sizes = TreeVec::concat_cols(
+        dummy_components.components().iter().map(|c| c.trace_log_degree_bounds())
+    );
+
+    let channel = &mut Blake2sM31Channel::default();
+    channel.mix_felts(&[proof.channel_salt.into()]);
+    proof.pcs_config.mix_into(channel);
+    let commitment_scheme =
+        &mut CommitmentSchemeVerifier::<Blake2sM31MerkleChannel>::new(proof.pcs_config);
+
+    commitment_scheme.commit(
+        proof.stark_proof.proof.commitments[0],
+        &preprocessed_circuit.preprocessed_trace.log_sizes(),
+        channel,
+    );
+    claim.mix_into(channel);
+    commitment_scheme.commit(proof.stark_proof.proof.commitments[1], &sizes[1], channel);
+    channel.verify_pow_nonce(INTERACTION_POW_BITS, proof.interaction_pow_nonce);
+    channel.mix_u64(proof.interaction_pow_nonce);
+    let interaction_elements = CircuitInteractionElements::draw(channel);
+
+    let components = CircuitComponents::new(
+        &claim,
+        &interaction_elements,
+        &interaction_claim,
+        &preprocessed_circuit.preprocessed_trace.ids(),
+    );
+
+    interaction_claim.mix_into(channel);
+    commitment_scheme.commit(proof.stark_proof.proof.commitments[2], &sizes[2], channel);
+
+    stwo::core::verifier::verify_ex(
+        &components.components().iter().map(|c| c.as_ref()).collect::<Vec<&dyn Component>>(),
+        channel,
+        commitment_scheme,
+        proof.stark_proof.proof.clone(),
+        true,
+    )
+    .map_err(|e| format!("STARK verification failed: {e:?}"))?;
+
+    if lookup_sum(
+        &claim,
+        &interaction_claim,
+        &interaction_elements,
+        &proof.output_addresses,
+        proof.n_blake_gates,
+    ) != QM31::zero() {
+        return Err("lookup sum check failed".to_string());
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -219,6 +351,27 @@ mod tests {
 
         let normalized = normalize_digest_for_stwo(tlsn_hash);
         assert_eq!(proof_hash, normalized);
+    }
+
+    #[test]
+    fn test_verify_attestation() {
+        use blake2::{Blake2s256, Digest};
+
+        let tx_id = 1u64;
+        let to_user_id = 3u64;
+        let amount = 25u64;
+        let blinder = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let attestation = attestation_bytes(tx_id, to_user_id, amount);
+
+        let mut hasher = Blake2s256::new();
+        hasher.update(&attestation);
+        hasher.update(&blinder);
+        let tlsn_hash: [u8; 32] = hasher.finalize().into();
+
+        let proof = prove_attestation(&attestation, &blinder, &tlsn_hash, tx_id, to_user_id, amount)
+            .expect("proving should succeed");
+
+        verify_attestation(&proof).expect("verification should succeed");
     }
 
     #[test]

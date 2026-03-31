@@ -7,5 +7,7 @@ edition.workspace = true
 blake2 = "0.10.6"
 circuits.workspace = true
 circuit-prover.workspace = true
+circuit-common.workspace = true
+circuit-air.workspace = true
 serde.workspace = true
 stwo.workspace = true

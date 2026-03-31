@@ -55,5 +55,7 @@ verifier = { path = "./verifier" }
 zktlsn = { path = "./zktlsn" }
 circuits = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
 circuit-prover = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
+circuit-common = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
+circuit-air = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/merkle-membership" }
 stwo = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c", features = ["parallel"], default-features = false }
 circuits-stwo = { path = "./circuits-stwo" }

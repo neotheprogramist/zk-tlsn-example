@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result, ensure};
 use async_compat::Compat;
+use circuits_stwo::{AttestationStwoProof, prove_attestation};
+use futures::AsyncWriteExt;
 use http_body_util::BodyExt;
 use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
@@ -11,6 +13,7 @@ use tlsnotary::{
     TranscriptCommitmentKind,
     prover::{reveal_request, reveal_response},
 };
+use verifier::{StwoProofMessage, VerificationOutcome};
 use zktlsn::{NoirProverInputs, PaddingConfig, derive_noir_prover_inputs};
 
 use crate::live_demo::{
@@ -18,12 +21,18 @@ use crate::live_demo::{
     create_tlsn_request, load_tls_materials,
 };
 
-pub async fn derive_stwo_inputs_from_tlsn<IO>(
+pub struct StwoAttestationProofFlow {
+    pub inputs: NoirProverInputs,
+    pub proof: AttestationStwoProof,
+    pub verification: VerificationOutcome,
+}
+
+pub async fn run_stwo_attestation_proof_flow<IO>(
     stream: IO,
     server_addr: SocketAddr,
     server_name: &str,
     tx_id: u64,
-) -> Result<NoirProverInputs>
+) -> Result<StwoAttestationProofFlow>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
@@ -125,13 +134,45 @@ where
         .context("failed to generate TLSNotary proof")?;
     prover.close().await.context("failed to close prover")?;
     handle.close();
-    let _ = driver_task.await.context("TLSNotary driver failed")?;
+    let mut verifier_stream = driver_task.await.context("TLSNotary driver failed")?;
 
-    derive_noir_prover_inputs(
+    let inputs = derive_noir_prover_inputs(
         &prover_output.transcript_commitments,
         &prover_output.transcript_secrets,
         &received_transcript,
         PaddingConfig::new(shared::ATTESTATION_LEN),
     )
-    .context("failed to derive proof inputs from TLS transcript")
+    .context("failed to derive proof inputs from TLS transcript")?;
+
+    let attestation_bytes: [u8; shared::ATTESTATION_LEN] = inputs
+        .attestation
+        .as_bytes()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("attestation should be exactly 32 bytes"))?;
+
+    let proof = prove_attestation(
+        &attestation_bytes,
+        &inputs.attestation_blinder,
+        &inputs.attestation_committed_hash,
+        inputs.tx_id,
+        inputs.to_user_id,
+        inputs.amount,
+    )
+    .map_err(|e| anyhow::anyhow!("STWO proving failed: {e}"))?;
+
+    StwoProofMessage::new(proof.clone())
+        .write_to(&mut verifier_stream)
+        .await
+        .context("failed to write STWO proof to verifier")?;
+
+    let verification = VerificationOutcome::read_from(&mut verifier_stream)
+        .await
+        .context("failed to read verification outcome")?;
+
+    verifier_stream
+        .close()
+        .await
+        .context("failed to close verifier stream")?;
+
+    Ok(StwoAttestationProofFlow { inputs, proof, verification })
 }
