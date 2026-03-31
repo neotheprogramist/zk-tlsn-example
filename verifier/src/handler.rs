@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::io::join;
 use tracing::{error, info, warn};
 
-use crate::protocol::run_notarize_and_verify_stream;
+use crate::protocol::run_notarize_and_verify_stwo_stream;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -30,7 +30,7 @@ pub async fn handle(incoming: quinn::Incoming) -> Result<(), HandlerError> {
         let stream = join(recv, send);
         smol::spawn(async move {
             info!(%stream_id, "Starting notarize+verify pipeline on stream");
-            let pipeline = run_notarize_and_verify_stream(stream);
+            let pipeline = run_notarize_and_verify_stwo_stream(stream);
             match smol::future::or(pipeline, async {
                 smol::Timer::after(SESSION_TIMEOUT).await;
                 Err(crate::ProtocolError::Io(std::io::Error::new(

@@ -11,7 +11,7 @@ pub const MAX_SENT_DATA: usize = 1 << 12;
 pub const MAX_RECV_DATA: usize = 1 << 14;
 
 pub use errors::ProtocolError;
-pub use protocol::{ProofMessage, VerificationOutcome};
+pub use protocol::{ProofMessage, StwoProofMessage, VerificationOutcome};
 
 pub async fn serve(endpoint: Endpoint) {
     info!("Verifier service ready, waiting for QUIC connections");

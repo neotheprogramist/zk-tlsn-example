@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+blake2 = "0.10.6"
 blake3.workspace = true
 flate2.workspace = true
 hex.workspace = true
@@ -17,6 +18,7 @@ tlsnotary.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+circuits-stwo.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true

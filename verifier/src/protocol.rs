@@ -9,6 +9,7 @@ use tlsnotary::{
     TranscriptCommitment, VerifierConfig,
 };
 use tracing::{debug, info, instrument, warn};
+use circuits_stwo::{AttestationStwoProof, normalize_digest_for_stwo, verify_attestation};
 use zktlsn::{
     Proof, SignedTransferTicket, TicketSigner, bind_commitments_to_keys,
     extract_committed_hash_from_proof, extract_transfer_fields_from_proof,
@@ -335,6 +336,149 @@ fn verify_proof_message(
     let signed_ticket = TicketSigner::from_env_or_default()
         .map_err(|error| ProtocolError::InvalidConfig(error.to_string()))?
         .sign_ticket(transfer.tx_id, transfer.to_user_id, transfer.amount)
+        .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
+
+    Ok((vec![matched_field], signed_ticket))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StwoProofMessage {
+    pub proof: AttestationStwoProof,
+}
+
+impl StwoProofMessage {
+    pub fn new(proof: AttestationStwoProof) -> Self {
+        Self { proof }
+    }
+
+    pub async fn read_from<IO>(io: &mut IO) -> Result<Self, ProtocolError>
+    where
+        IO: AsyncRead + Unpin + Send,
+    {
+        read_json_frame(io).await
+    }
+
+    pub async fn write_to<IO>(&self, io: &mut IO) -> Result<(), ProtocolError>
+    where
+        IO: AsyncWrite + Unpin + Send,
+    {
+        write_json_frame(io, self).await
+    }
+}
+
+#[instrument(skip(stream), fields(phase = "notarize+verify-stwo"))]
+pub async fn run_notarize_and_verify_stwo_stream<IO>(stream: IO) -> Result<(), ProtocolError>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let mut progress = StepProgress::new(6);
+    progress.tick("starting pipeline");
+    let (mut io, notarized_transcript) = run_notarization(stream).await?;
+    progress.tick("notarization finished");
+    log_notarized_transcript(&notarized_transcript)?;
+    info!(
+        server_name = %notarized_transcript.server_name,
+        commitments = notarized_transcript.transcript_commitments.len(),
+        "Notarization complete"
+    );
+
+    let proof_message = StwoProofMessage::read_from(&mut io).await.map_err(|e| {
+        warn!(error = %e, "Failed during STWO proof reception phase");
+        e
+    })?;
+    progress.tick("received STWO proof payload");
+
+    let (verified_fields, signed_ticket) =
+        match verify_stwo_proof_message(&notarized_transcript, proof_message) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, "STWO proof verification failed");
+                progress.tick("proof verification finished");
+                send_verification_outcome_and_close(
+                    &mut io,
+                    &VerificationOutcome::failure(
+                        notarized_transcript.server_name.clone(),
+                        error.to_string(),
+                    ),
+                )
+                .await?;
+                progress.tick("sent verification result");
+                progress.tick("stream closed");
+                return Err(error);
+            }
+        };
+    progress.tick("proof verification finished");
+
+    let verification_outcome = VerificationOutcome::success(
+        notarized_transcript.server_name.clone(),
+        verified_fields,
+        "STWO ZK proof verified successfully".to_string(),
+        signed_ticket,
+    );
+    send_verification_outcome_and_close(&mut io, &verification_outcome).await?;
+    progress.tick("sent verification result");
+    progress.tick("stream closed");
+    Ok(())
+}
+
+fn verify_stwo_proof_message(
+    notarized_transcript: &NotarizedTranscript,
+    proof_message: StwoProofMessage,
+) -> Result<(Vec<String>, SignedTransferTicket), ProtocolError> {
+    let parsed_response = parser::redacted::Response::from_str(&notarized_transcript.response)
+        .map_err(|error| ProtocolError::ResponseParse(format!("{error:?}")))?;
+    let bindings = bind_commitments_to_keys(
+        &parsed_response,
+        &notarized_transcript.transcript_commitments,
+    )
+    .map_err(|error| ProtocolError::CommitmentBindingFailed(error.to_string()))?;
+
+    if bindings.is_empty() {
+        return Err(ProtocolError::NoCommitmentsFound);
+    }
+
+    let proof_committed_hash = proof_message
+        .proof
+        .committed_hash()
+        .ok_or_else(|| ProtocolError::ProofVerificationFailed(
+            "STWO proof missing committed hash outputs".to_string()
+        ))?;
+    info!(
+        proof_committed_hash = %hex_preview(&proof_committed_hash, proof_committed_hash.len()),
+        "Extracted public committed hash from STWO proof"
+    );
+
+    let matched_field = bindings
+        .iter()
+        .find(|(_, b)| {
+            b.hash.hash.value.as_bytes()
+                .try_into()
+                .map(|raw| normalize_digest_for_stwo(raw) == proof_committed_hash)
+                .unwrap_or(false)
+        })
+        .map(|(f, _)| f.clone())
+        .ok_or_else(|| ProtocolError::CommitmentBindingFailed(
+            "proof committed hash does not match any bound transcript commitment".to_string(),
+        ))?;
+
+    verify_attestation(&proof_message.proof)
+        .map_err(|e| ProtocolError::ProofVerificationFailed(e))?;
+    info!(
+        field = %matched_field,
+        "STWO proof cryptographically bound to transcript commitment"
+    );
+
+    let (tx_id, to_user_id, amount) = proof_message
+        .proof
+        .transfer_fields()
+        .ok_or_else(|| ProtocolError::ProofVerificationFailed(
+            "STWO proof missing transfer field outputs".to_string()
+        ))?;
+
+    let signed_ticket = TicketSigner::from_env_or_default()
+        .map_err(|error| ProtocolError::InvalidConfig(error.to_string()))?
+        .sign_ticket(tx_id, to_user_id, amount)
         .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
 
     Ok((vec![matched_field], signed_ticket))
