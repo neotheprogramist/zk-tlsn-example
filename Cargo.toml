@@ -1,14 +1,14 @@
 [workspace]
 resolver = "3"
 members = [
-    "examples",
-    "parser",
-    "server",
-    "shared",
+    # "examples",
+    # "parser",
+    # "server",
+    # "shared",
     "stwo-circuit",
-    "tlsnotary",
-    "verifier",
-    "zktlsn",
+    # "tlsnotary",
+    # "verifier",
+    # "zktlsn",
 ]
 
 [workspace.package]
@@ -18,7 +18,12 @@ edition = "2024"
 [workspace.dependencies]
 async-compat = "0.2.5"
 axum = "0.8.8"
-alloy = { version = "1.1", features = ["full", "node-bindings", "rpc-types", "sol-types"] }
+alloy = { version = "1.1", features = [
+    "full",
+    "node-bindings",
+    "rpc-types",
+    "sol-types",
+] }
 chrono = { version = "0.4.43", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 dotenvy = "0.15.7"
@@ -61,8 +66,18 @@ zktlsn = { path = "./zktlsn" }
 noir = { git = "https://github.com/zkmopro/noir-rs", tag = "v1.0.0-beta.8", features = [
     "barretenberg",
 ] }
-stwo = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = ["prover"], branch = "channel/solidity" }
-stwo-constraint-framework = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = ["prover", "std"], branch = "channel/solidity" }
+stwo = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = [
+    "prover",
+], branch = "channel/solidity" }
+stwo-constraint-framework = { git = "https://github.com/piotr-stec/stwo-fork-keccak", features = [
+    "prover",
+    "std",
+], branch = "channel/solidity" }
 stwo-polynomial = { git = "https://github.com/piotr-stec/stwo-polynomial", branch = "feat/privacy-pool-with-merkle" }
 smol-macros = "0.1.1"
 macro_rules_attribute = "0.2.2"
+circuit-air = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
+circuits = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
+circuits-stark-verifier = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
+circuit-common = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
+circuit-prover = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }

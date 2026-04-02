@@ -9,14 +9,25 @@ async-compat.workspace = true
 itertools.workspace = true
 num-traits.workspace = true
 serde.workspace = true
-stwo-constraint-framework.workspace = true
-stwo-polynomial.workspace = true
-stwo.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 thiserror.workspace = true
+circuit-air.workspace = true
+circuits.workspace = true
+circuits-stark-verifier.workspace = true
+circuit-common.workspace = true
+circuit-prover.workspace = true
+# stwo
+stwo = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c", features = [
+    "parallel",
+], default-features = false }
+stwo-constraint-framework = {  git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c", features = [
+    "parallel",
+] }
+stwo-air-utils-derive = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c" }
+stwo-air-utils = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c" }
 
 [dev-dependencies]
 axum.workspace = true

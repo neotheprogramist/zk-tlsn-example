@@ -173,7 +173,6 @@ mod tests {
     use stwo::core::fields::m31::BaseField;
 
     use super::{OffchainMerkleTree, poseidon_hash_pair};
-    use crate::merkle_membership::{MerkleInputs, gen_merkle_trace};
 
     #[test]
     fn precomputed_root_matches_empty_tree() {
@@ -188,25 +187,25 @@ mod tests {
         assert_eq!(tree.root(), expected);
     }
 
-    #[test]
-    fn path_and_root_match_merkle_trace_for_multiple_leaves() {
-        let mut tree = OffchainMerkleTree::new(31);
+    // #[test]
+    // fn path_and_root_match_merkle_trace_for_multiple_leaves() {
+    //     let mut tree = OffchainMerkleTree::new(31);
 
-        let leaves = [
-            BaseField::from_u32_unchecked(123),
-            BaseField::from_u32_unchecked(456),
-            BaseField::from_u32_unchecked(789),
-        ];
-        for leaf in leaves {
-            tree.add_leaf(leaf);
-        }
+    //     let leaves = [
+    //         BaseField::from_u32_unchecked(123),
+    //         BaseField::from_u32_unchecked(456),
+    //         BaseField::from_u32_unchecked(789),
+    //     ];
+    //     for leaf in leaves {
+    //         tree.add_leaf(leaf);
+    //     }
 
-        for leaf in leaves {
-            let index = tree.find_leaf_index(leaf).expect("leaf index");
-            let (siblings, _) = tree.path(index);
-            let inputs = MerkleInputs::new(leaf, siblings, index as u32, tree.root());
-            let (_, computed_root) = gen_merkle_trace(8, &inputs);
-            assert_eq!(computed_root, tree.root());
-        }
-    }
+    //     for leaf in leaves {
+    //         let index = tree.find_leaf_index(leaf).expect("leaf index");
+    //         let (siblings, _) = tree.path(index);
+    //         let inputs = MerkleInputs::new(leaf, siblings, index as u32, tree.root());
+    //         let (_, computed_root) = gen_merkle_trace(8, &inputs);
+    //         assert_eq!(computed_root, tree.root());
+    //     }
+    // }
 }

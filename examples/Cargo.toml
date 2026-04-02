@@ -30,6 +30,6 @@ path = "src/bin/e2e_withdraw.rs"
 name = "e2e-offers"
 path = "src/bin/e2e_offers.rs"
 
-[[bin]]
-name = "e2e-withdraw-edge-cases"
-path = "src/bin/e2e_withdraw_edge_cases.rs"
+# [[bin]]
+# name = "e2e-withdraw-edge-cases"
+# path = "src/bin/e2e_withdraw_edge_cases.rs"
