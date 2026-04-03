@@ -59,3 +59,4 @@ Temporary Items
 /contracts/broadcast/*/31337/
 /contracts/broadcast/**/dry-run/
 !/contracts/broadcast
+.cargo

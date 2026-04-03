@@ -31,14 +31,22 @@ stwo-air-utils = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb7
 
 [dev-dependencies]
 axum.workspace = true
+base64 = "0.22.1"
+bincode = "1.3.3"
 futures.workspace = true
+hex = "0.4.3"
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 quinn.workspace = true
+reqwest.workspace = true
+secp256k1 = { version = "0.29.1", features = ["recovery"] }
 serde_json.workspace = true
 shared.workspace = true
 smol.workspace = true
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 tlsnotary.workspace = true
-tokio = { workspace = true, features = ["io-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "time", "rt-multi-thread", "macros"] }
+tower.workspace = true
+trusted-stwo-server = { path = "../trusted-stwo-server" }
 zkhash = { git = "https://github.com/AntoineFONDEUR/poseidon2.git", branch = "poseidon2-M31" }
