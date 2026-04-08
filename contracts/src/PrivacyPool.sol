@@ -2,7 +2,6 @@
 pragma solidity ^0.8.9;
 
 import "./MerkleTreeLibrary.sol";
-import "./IStwoVerifier.sol";
 import {Poseidon2} from "poseidon2-M31-solidity/src/Poseidon2.sol";
 
 uint256 constant M31_MODULUS = 2_147_483_647;
@@ -44,7 +43,6 @@ contract PrivacyPool {
     mapping(uint256 => bool) public nullifierHashes;
     mapping(uint256 => uint256) public offerCommitmentToSecretHash;
     address public owner;
-    address public stwoVerifier;
 
     // Events
     event Deposit(
@@ -88,12 +86,20 @@ contract PrivacyPool {
     error ProofVerificationFailed();
     error InvalidCancelSecret();
 
+    /// @dev Trusted secp256k1 public key coordinates 
+    ///      pubkey = 0x04 || X || Y
+    bytes32 public constant TRUSTED_PUBKEY_X =
+        hex"43cf97685663fe2de67edcb1b9a11aa183459fba4023c9f3b0d05904c505ed86";
+    bytes32 public constant TRUSTED_PUBKEY_Y =
+        hex"a98616e698ec854b24e7d76a30fdb8c9fb6953ca5028924e2d128f1feb2ad064";
+
+    bytes constant CLAIM_PREFIX = "trusted-stwo-claim-v1";
+    bytes constant MESSAGE_PREFIX = "trusted-stwo-message-v1";
+
     constructor(
-        address _owner,
-        address _stwoVerifier
+        address _owner
     ) {
         owner = _owner;
-        stwoVerifier = _stwoVerifier;
         tree.initialize();
         offersTree.initialize();
     }
@@ -138,14 +144,29 @@ contract PrivacyPool {
 
     /// @notice Withdraw tokens from the privacy pool with in-contract proof verification
     function withdraw(
-        uint256 root,
-        uint256 nullifier,
+        bytes32 proofHash,
+        uint32[] calldata claimLogSizes,
+        uint32[4][] calldata claimOutputValues,
+        bytes calldata signature,
         address token,
-        uint256 amount,
-        address recipient,
-        uint256 refundCommitmentHash,
-        bytes calldata verifyCalldata
+        address recipient
     ) external {
+        bool verifed = verifyProofAndClaim(proofHash, claimLogSizes, claimOutputValues, signature);
+        if (!verifed) revert ProofVerificationFailed();
+
+        if (claimOutputValues.length < 6) revert InvalidVerifierResponse();
+
+        uint256 root = _qm31ToM31(claimOutputValues[0]);
+        uint256 nullifier = _qm31ToM31(claimOutputValues[1]);
+        uint256 tokenM31 = _qm31ToM31(claimOutputValues[2]);
+        uint256 amount = _qm31ToM31(claimOutputValues[3]);
+        uint256 refundCommitmentHash = _qm31ToM31(claimOutputValues[4]);
+        uint256 recipientM31 = _qm31ToM31(claimOutputValues[5]);
+
+        // Bind explicit addresses to claim values via modulo-M31 reduction (same as circuit side).
+        if (tokenM31 != _addressToM31(token)) revert InvalidVerifierResponse();
+        if (recipientM31 != _addressToM31(recipient)) revert InvalidVerifierResponse();
+        
         // Check if nullifier already used
         if (nullifierHashes[nullifier]) {
             revert NullifierAlreadyUsed();
@@ -155,19 +176,6 @@ contract PrivacyPool {
         if (!tree.isValidRoot(root)) {
             revert InvalidRoot();
         }
-
-        if (stwoVerifier == address(0)) revert VerifierNotSet();
-
-        // Verify STWO proof atomically in the same transaction.
-        // STWOVerifier.verify() is non-view and updates internal state, so staticcall reverts.
-        uint256 gasBeforeVerification = gasleft();
-        (bool callSuccess, bytes memory returndata) = stwoVerifier.call(verifyCalldata);
-        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        if (!callSuccess) revert VerifierCallFailed();
-        if (returndata.length != 32) revert InvalidVerifierResponse();
-        bool isValid = abi.decode(returndata, (bool));
-        emit VerificationGasUsed(verificationGasUsed, isValid);
-        if (!isValid) revert ProofVerificationFailed();
 
         // Mark nullifier as used
         nullifierHashes[nullifier] = true;
@@ -187,6 +195,75 @@ contract PrivacyPool {
         emit Withdraw(nullifier, recipient, token, amount);
     }
 
+        function claimHash(
+        uint32[] calldata claimLogSizes,
+        uint32[4][] calldata claimOutputValues
+    ) public pure returns (bytes32) {
+        bytes memory data = abi.encodePacked(CLAIM_PREFIX, _u32be(uint32(claimLogSizes.length)));
+
+        for (uint256 i = 0; i < claimLogSizes.length; i++) {
+            data = abi.encodePacked(data, _u32be(claimLogSizes[i]));
+        }
+
+        data = abi.encodePacked(data, _u32be(uint32(claimOutputValues.length)));
+
+        for (uint256 i = 0; i < claimOutputValues.length; i++) {
+            data = abi.encodePacked(
+                data,
+                _u32be(claimOutputValues[i][0]),
+                _u32be(claimOutputValues[i][1]),
+                _u32be(claimOutputValues[i][2]),
+                _u32be(claimOutputValues[i][3])
+            );
+        }
+
+        return keccak256(data);
+    }
+
+    function messageHash(bytes32 proofHash, bytes32 claimHash_) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(MESSAGE_PREFIX, proofHash, claimHash_));
+    }
+
+    function recoverSigner(bytes32 digest, bytes calldata signature) public pure returns (address) {
+        if (signature.length != 65) return address(0);
+
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+
+        assembly {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+
+        if (v < 27) v += 27;
+        if (v != 27 && v != 28) return address(0);
+
+        return ecrecover(digest, v, r, s);
+    }
+
+    function verifyProofAndClaim(
+        bytes32 proofHash,
+        uint32[] calldata claimLogSizes,
+        uint32[4][] calldata claimOutputValues,
+        bytes calldata signature
+    ) internal pure returns (bool) {
+        bytes32 cHash = claimHash(claimLogSizes, claimOutputValues);
+        bytes32 mHash = messageHash(proofHash, cHash);
+        return recoverSigner(mHash, signature) == trustedSignerAddress();
+    }
+
+    /// @dev Ethereum address derived from trusted public key: last 20 bytes of keccak256(X || Y).
+    function trustedSignerAddress() public pure returns (address) {
+        bytes32 h = keccak256(abi.encodePacked(TRUSTED_PUBKEY_X, TRUSTED_PUBKEY_Y));
+        return address(uint160(uint256(h)));
+    }
+
+    function _u32be(uint32 x) private pure returns (bytes4) {
+        return bytes4(x);
+    }
+
     // Paymoney offer Functions
     function createOffer(
         uint256 root,
@@ -199,8 +276,6 @@ contract PrivacyPool {
         string calldata currency,
         uint256 fiatAmount,
         string calldata revTag,
-        StwoProof calldata proof,
-        VerificationParams calldata params,
         uint32[][] calldata treeColumnLogSizes
     ) external {
         // Check if nullifier already used
@@ -213,8 +288,6 @@ contract PrivacyPool {
             revert InvalidRoot();
         }
 
-        if (stwoVerifier == address(0)) revert VerifierNotSet();
-
         uint64[] memory publicInputs = new uint64[](6);
         publicInputs[0] = uint64(root);
         publicInputs[1] = uint64(nullifier);
@@ -222,12 +295,6 @@ contract PrivacyPool {
         publicInputs[3] = uint64(offerCommitment);
         publicInputs[4] = uint64(refundCommitmentHash);
         publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
-
-        uint256 gasBeforeVerification = gasleft();
-        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
-        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        emit VerificationGasUsed(verificationGasUsed, isValid);
-        if (!isValid) revert ProofVerificationFailed();
 
         // Check if offer already exists
         if (offers[secretHash].timestamp != 0) {
@@ -292,8 +359,6 @@ contract PrivacyPool {
         uint256 amount,
         uint256 offerCommitment,
         uint256 outputCommitment,
-        StwoProof calldata proof,
-        VerificationParams calldata params,
         uint32[][] calldata treeColumnLogSizes
     ) external {
         if (nullifierHashes[offerNullifier]) {
@@ -303,7 +368,6 @@ contract PrivacyPool {
             revert InvalidRoot();
         }
 
-        if (stwoVerifier == address(0)) revert VerifierNotSet();
 
         uint64[] memory publicInputs = new uint64[](6);
         publicInputs[0] = uint64(offersRoot);
@@ -313,11 +377,7 @@ contract PrivacyPool {
         publicInputs[4] = uint64(outputCommitment);
         publicInputs[5] = uint64(uint256(uint160(token)) % M31_MODULUS);
 
-        uint256 gasBeforeVerification = gasleft();
-        bool isValid = IStwoVerifier(stwoVerifier).verify(proof, params, treeColumnLogSizes, publicInputs);
-        uint256 verificationGasUsed = gasBeforeVerification - gasleft();
-        emit VerificationGasUsed(verificationGasUsed, isValid);
-        if (!isValid) revert ProofVerificationFailed();
+
 
         nullifierHashes[offerNullifier] = true;
 
@@ -416,6 +476,15 @@ contract PrivacyPool {
             tree.freeLeafIndex - 1,
             tree.currentRoot
         );
+    }
+
+    function _qm31ToM31(uint32[4] calldata x) internal pure returns (uint256) {
+        require(x[1] == 0 && x[2] == 0 && x[3] == 0, "non-scalar QM31");
+        return uint256(x[0]);
+    }
+
+    function _addressToM31(address a) internal pure returns (uint256) {
+        return uint256(uint160(a)) % M31_MODULUS;
     }
 
     /// @notice Get current merkle root
