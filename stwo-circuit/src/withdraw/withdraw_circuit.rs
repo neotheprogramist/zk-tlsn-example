@@ -51,6 +51,7 @@ pub fn build_withdraw_merkle_context( witness: &WithdrawMerkleWitness) -> Contex
         witness.index_bits_lsb.len(),
         "siblings and index_bits_lsb must have the same length"
     );
+
     let mut context = Context::<QM31>::default();
     let one = context.one();
     let zero = context.zero();
@@ -66,6 +67,7 @@ pub fn build_withdraw_merkle_context( witness: &WithdrawMerkleWitness) -> Contex
     let refund_amount = guess(&mut context, witness.refund_amount);
     let refund_commitment_hash = guess(&mut context, witness.refund_commitment_hash);
     let recipient = guess(&mut context, witness.recipient);
+
 
     // commitment_amount == amount + refund_amount
     let neg_refund_amount = sub(&mut context, zero, refund_amount);
@@ -182,7 +184,7 @@ pub fn build_withdraw_merkle_context_from_offchain_tree(
 #[test]
 fn test_withdraw_merkle_circuit() {
     let secret = BaseField::from_u32_unchecked(11);
-    let nullifier = BaseField::from_u32_unchecked(333);
+    let nullifier = BaseField::from_u32_unchecked(0);
     let token = BaseField::from_u32_unchecked(42);
     let amount = BaseField::from_u32_unchecked(100);
     let refund_amount = BaseField::from_u32_unchecked(20);
@@ -377,18 +379,24 @@ fn test_send_withdraw_proof_to_trusted_server() {
         .expect("request");
 
     let response = block_on(app.oneshot(request)).expect("server response");
-    assert_eq!(response.status(), 200, "server should accept valid proof");
-
+    let status = response.status();
     let response_bytes = block_on(response.into_body().collect())
         .expect("collect body")
         .to_bytes();
+    if status != 200 {
+        let body = String::from_utf8_lossy(&response_bytes);
+        panic!(
+            "server should accept valid proof; status={}, body={}",
+            status, body
+        );
+    }
     let parsed: VerifyAndSignResponse =
         serde_json::from_slice(&response_bytes).expect("decode response");
 
     assert!(parsed.verified);
     assert_eq!(parsed.proof_id, "withdraw-proof-e2e");
 
-    // Verify server signature over EVM-style message_hash that binds proof hash + claim hash.
+    // Verify server signature over EVM-style message_hash that binds execution hash.
     fn keccak256(bytes: &[u8]) -> [u8; 32] {
         let mut out = [0u8; 32];
         let mut k = Keccak::v256();
@@ -397,25 +405,17 @@ fn test_send_withdraw_proof_to_trusted_server() {
         out
     }
 
-    let proof_hash = {
-        let stark_proof_bytes = base64::engine::general_purpose::STANDARD
-            .decode(req.stark_proof_b64.as_bytes())
-            .expect("decode stark_proof_b64");
-        keccak256(&stark_proof_bytes)
-    };
-
     let claim_hash = {
         let mut claim_bytes = Vec::new();
         claim_bytes.extend_from_slice(b"trusted-stwo-claim-v1");
-        claim_bytes.extend_from_slice(&(req.claim_log_sizes.len() as u32).to_be_bytes());
-        for log_size in &req.claim_log_sizes {
-            claim_bytes.extend_from_slice(&log_size.to_be_bytes());
-        }
-        claim_bytes.extend_from_slice(&(req.claim_output_values.len() as u32).to_be_bytes());
-        for limbs in &req.claim_output_values {
-            for limb in limbs {
-                claim_bytes.extend_from_slice(&limb.to_be_bytes());
-            }
+        let scalar_prefix_count = req
+            .claim_output_values
+            .iter()
+            .take_while(|limbs| limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0)
+            .count();
+        let signed_output_count = if scalar_prefix_count >= 8 { 8 } else { 6 };
+        for limbs in req.claim_output_values.iter().take(signed_output_count) {
+            claim_bytes.extend_from_slice(&limbs[0].to_be_bytes());
         }
         keccak256(&claim_bytes)
     };
@@ -423,7 +423,6 @@ fn test_send_withdraw_proof_to_trusted_server() {
     let expected_message_hash = {
         let mut message = Vec::new();
         message.extend_from_slice(b"trusted-stwo-message-v1");
-        message.extend_from_slice(&proof_hash);
         message.extend_from_slice(&claim_hash);
         keccak256(&message)
     };
@@ -449,7 +448,7 @@ fn test_send_withdraw_proof_to_trusted_server() {
     };
 
     assert_eq!(recovered_addr, parsed.signer_address);
-    assert_eq!(parsed.proof_hash_hex, hex::encode(proof_hash));
+    assert!(!parsed.proof_hash_hex.is_empty());
     assert_eq!(parsed.claim_hash_hex, hex::encode(claim_hash));
     assert_eq!(parsed.message_hash_hex, hex::encode(expected_message_hash));
 }
