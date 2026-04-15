@@ -56,3 +56,79 @@ pub struct PublicKeyResponse {
 pub struct HealthResponse {
     pub status: &'static str,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignTransactionSettlementRequest {
+    pub transaction_id_hex: String,
+    pub fiat_amount: u64,
+    pub crypto_amount: u64,
+    pub secret_nullifier_hash: u64,
+    pub buyer_address: String,
+    pub token_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignTransactionSettlementResponse {
+    pub transaction_id_hex: String,
+    pub claim_hash_hex: String,
+    pub message_hash_hex: String,
+    pub signature_hex: String,
+    pub signature_r_hex: String,
+    pub signature_s_hex: String,
+    pub signature_v: u8,
+    pub signer_address: String,
+    pub signer_public_key_hex: String,
+    pub signed_at_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyTlsnAndSignSettlementRequest {
+    pub transcript_response: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyTlsnAndSignSettlementResponse {
+    pub verified: bool,
+    pub comment_data: String,
+    pub rev_tag: String,
+    pub fiat_amount: u64,
+    pub claim_hash_hex: String,
+    pub message_hash_hex: String,
+    pub signature_hex: String,
+    pub signature_r_hex: String,
+    pub signature_s_hex: String,
+    pub signature_v: u8,
+    pub signer_address: String,
+    pub signer_public_key_hex: String,
+    pub signed_at_unix: i64,
+}
+
+/// Verifies a TLSN HTTP transcript (Revolut-mock) and signs a on-chain settlement claim.
+/// The TLSN proof attests the fiat payment; the remaining fields bind the on-chain transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyTlsnAndSignTransactionSettlementRequest {
+    pub transcript_response: String,
+    pub transaction_id_hex: String,
+    pub crypto_amount: u64,
+    pub secret_nullifier_hash: u64,
+    pub buyer_address: String,
+    pub token_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyTlsnAndSignTransactionSettlementResponse {
+    pub verified: bool,
+    pub comment_data: String,
+    pub rev_tag: String,
+    pub fiat_amount: u64,
+    pub transaction_id_hex: String,
+    pub claim_hash_hex: String,
+    pub message_hash_hex: String,
+    pub signature_hex: String,
+    pub signature_r_hex: String,
+    pub signature_s_hex: String,
+    pub signature_v: u8,
+    pub signer_address: String,
+    pub signer_public_key_hex: String,
+    pub signed_at_unix: i64,
+}

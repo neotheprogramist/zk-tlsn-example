@@ -24,7 +24,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr: SocketAddr = config.trusted_server_addr.parse()?;
 
-    info!(address = %addr, pubkey = %signer.public_key_hex(), "trusted stwo server started");
+    info!(
+        address = %addr,
+        pubkey = %signer.public_key_hex(),
+        "trusted stwo server started"
+    );
 
     let listener = TcpListener::bind(addr).await?;
     serve(listener, app).await?;
