@@ -25,7 +25,7 @@ contract MockERC20 {
         name = _name;
         symbol = _symbol;
         totalSupply = _totalSupply;
-        balanceOf[msg.sender] = _totalSupply; // Deployer dostaje wszystkie tokeny
+        balanceOf[msg.sender] = _totalSupply; 
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {

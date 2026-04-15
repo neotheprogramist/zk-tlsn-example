@@ -9,12 +9,9 @@ contract DeployScript is Script {
     function run() external {
         vm.startBroadcast();
         
-        // Get verifier address from environment
-        address stwoVerifier = vm.envAddress("STWO_VERIFIER_ADDRESS");
-        console.log("Using StwoVerifier at:", stwoVerifier);
         
         // Deploy PrivacyPool
-        PrivacyPool pool = new PrivacyPool(msg.sender, stwoVerifier);
+        PrivacyPool pool = new PrivacyPool(msg.sender);
         console.log("PrivacyPool deployed at:", address(pool));
         
         // Deploy MockERC20 for testing (1 million tokens with 6 decimals)
@@ -28,7 +25,6 @@ contract DeployScript is Script {
         vm.stopBroadcast();
         
         console.log("\n=== Deployment Summary ===");
-        console.log("StwoVerifier:", stwoVerifier);
         console.log("PrivacyPool:", address(pool));
         console.log("MockERC20:", address(mockToken));
         console.log("Owner:", msg.sender);
