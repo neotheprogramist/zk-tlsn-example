@@ -76,19 +76,34 @@ impl ProofMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TlsnSettlementData {
+    pub comment_data: String,
+    pub rev_tag: String,
+    pub fiat_amount: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VerificationOutcome {
     pub success: bool,
     pub server_name: String,
     pub verified_fields: Vec<String>,
+    pub tlsn_settlement: Option<TlsnSettlementData>,
     pub message: String,
 }
 
 impl VerificationOutcome {
-    pub fn success(server_name: String, verified_fields: Vec<String>, message: String) -> Self {
+    pub fn success(
+        server_name: String,
+        verified_fields: Vec<String>,
+        tlsn_settlement: Option<TlsnSettlementData>,
+        message: String,
+    ) -> Self {
         Self {
             success: true,
             server_name,
             verified_fields,
+            tlsn_settlement,
             message,
         }
     }
@@ -98,6 +113,7 @@ impl VerificationOutcome {
             success: false,
             server_name,
             verified_fields: Vec::new(),
+            tlsn_settlement: None,
             message,
         }
     }
@@ -176,6 +192,7 @@ where
     let verification_outcome = VerificationOutcome::success(
         notarized_transcript.server_name.clone(),
         verified_fields,
+        extract_tlsn_settlement_from_response(&notarized_transcript.response),
         "ZK proof verified successfully".to_string(),
     );
     send_verification_outcome_and_close(&mut io, &verification_outcome).await?;
@@ -752,4 +769,34 @@ fn hex_preview(bytes: &[u8], max_len: usize) -> String {
         .take(max_len)
         .map(|b| format!("{b:02x}"))
         .collect::<String>()
+}
+
+fn extract_tlsn_settlement_from_response(response: &str) -> Option<TlsnSettlementData> {
+    let parsed = parser::redacted::Response::from_str(response).ok()?;
+
+    let comment_data = extract_body_string(&parsed, response, ".commentData")?;
+    let rev_tag = extract_body_string(&parsed, response, ".revTag")?;
+    let fiat_amount_raw = extract_body_string(&parsed, response, ".fiatAmount")?;
+    let fiat_amount = fiat_amount_raw.parse::<u64>().ok()?;
+
+    Some(TlsnSettlementData {
+        comment_data,
+        rev_tag,
+        fiat_amount,
+    })
+}
+
+fn extract_body_string(
+    parsed: &parser::redacted::Response,
+    source: &str,
+    keypath: &str,
+) -> Option<String> {
+    match parsed.body.get(keypath)? {
+        parser::redacted::Body::KeyValue {
+            key: _,
+            value: Some(range),
+        }
+        | parser::redacted::Body::Value(range) => source.get(range.clone()).map(ToString::to_string),
+        _ => None,
+    }
 }
