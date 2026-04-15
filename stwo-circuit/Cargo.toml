@@ -42,6 +42,7 @@ quinn.workspace = true
 reqwest.workspace = true
 secp256k1 = { version = "0.29.1", features = ["recovery"] }
 serde_json.workspace = true
+server.workspace = true
 shared.workspace = true
 smol.workspace = true
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }

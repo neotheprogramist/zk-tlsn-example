@@ -34,7 +34,11 @@ pub struct OfferMerkleWitness {
     pub rev_tag_hash: QM31,
     pub offer_commitment_hash: QM31,
 
-    // refund data
+    // post-use seller refund key: H(refund_secret, refund_nullifier)
+    // embedded as 7th step in offer_commitment so only the seller can claim the refund
+    pub offer_refund_sn_hash: QM31,
+
+    // initial change from deposit split (deposit_amount - offer_amount)
     pub refund_secret: QM31,
     pub refund_nullifier: QM31,
     pub refund_amount: QM31,
@@ -59,7 +63,7 @@ fn compute_commitment_offchain(
     poseidon_hash_pair(sna, token)
 }
 
-fn compute_offer_commitment_offchain(
+pub fn compute_offer_commitment_offchain(
     offer_secret: BaseField,
     offer_nullifier: BaseField,
     amount: BaseField,
@@ -67,13 +71,15 @@ fn compute_offer_commitment_offchain(
     fiat_amount: BaseField,
     currency_hash: BaseField,
     rev_tag_hash: BaseField,
+    offer_refund_sn_hash: BaseField,
 ) -> BaseField {
     let h0 = poseidon_hash_pair(offer_secret, offer_nullifier);
     let h1 = poseidon_hash_pair(h0, amount);
     let h2 = poseidon_hash_pair(h1, token);
     let h3 = poseidon_hash_pair(h2, fiat_amount);
     let h4 = poseidon_hash_pair(h3, currency_hash);
-    poseidon_hash_pair(h4, rev_tag_hash)
+    let h5 = poseidon_hash_pair(h4, rev_tag_hash);
+    poseidon_hash_pair(h5, offer_refund_sn_hash)
 }
 
 pub fn build_offer_merkle_context(witness: &OfferMerkleWitness) -> Context<QM31> {
@@ -100,6 +106,7 @@ pub fn build_offer_merkle_context(witness: &OfferMerkleWitness) -> Context<QM31>
     let currency_hash = guess(&mut context, witness.currency_hash);
     let rev_tag_hash = guess(&mut context, witness.rev_tag_hash);
     let offer_commitment_hash = guess(&mut context, witness.offer_commitment_hash);
+    let offer_refund_sn_hash = guess(&mut context, witness.offer_refund_sn_hash);
 
     let refund_secret = guess(&mut context, witness.refund_secret);
     let refund_nullifier = guess(&mut context, witness.refund_nullifier);
@@ -143,27 +150,30 @@ pub fn build_offer_merkle_context(witness: &OfferMerkleWitness) -> Context<QM31>
     let refund_computed = poseidon2::poseidon2_hash_two(&mut context, refund_sna_hash, token);
     eq(&mut context, refund_commitment_hash, refund_computed);
 
-    // offer commitment hash
+    // offer commitment hash (7-step chain ending with offer_refund_sn_hash)
     let offer_h0 = poseidon2::poseidon2_hash_two(&mut context, offer_secret, offer_nullifier);
     let offer_h1 = poseidon2::poseidon2_hash_two(&mut context, offer_h0, amount);
     let offer_h2 = poseidon2::poseidon2_hash_two(&mut context, offer_h1, token);
     let offer_h3 = poseidon2::poseidon2_hash_two(&mut context, offer_h2, fiat_amount);
     let offer_h4 = poseidon2::poseidon2_hash_two(&mut context, offer_h3, currency_hash);
-    let offer_computed = poseidon2::poseidon2_hash_two(&mut context, offer_h4, rev_tag_hash);
+    let offer_h5 = poseidon2::poseidon2_hash_two(&mut context, offer_h4, rev_tag_hash);
+    let offer_computed = poseidon2::poseidon2_hash_two(&mut context, offer_h5, offer_refund_sn_hash);
     eq(&mut context, offer_commitment_hash, offer_computed);
 
     // optional binding: secret_hash == H(secret, secret)
     let computed_secret_hash = poseidon2::poseidon2_hash_two(&mut context, secret, secret);
     eq(&mut context, secret_hash, computed_secret_hash);
 
-
-    // Public outputs expected by contract/server.
+    // Public outputs expected by contract/server:
+    //   [0] root, [1] nullifier, [2] token, [3] amount,
+    //   [4] offerCommitment, [5] initialRefundCommitment, [6] offerRefundSnHash
     output(&mut context, root);
     output(&mut context, nullifier);
     output(&mut context, token);
     output(&mut context, amount);
     output(&mut context, offer_commitment_hash);
     output(&mut context, refund_commitment_hash);
+    output(&mut context, offer_refund_sn_hash);
 
 
     context
@@ -182,6 +192,10 @@ pub fn build_offer_merkle_context_from_offchain_tree(
     fiat_amount: BaseField,
     currency_hash: BaseField,
     rev_tag_hash: BaseField,
+    // post-use seller refund: only H(secret, nullifier) is embedded in the offer commitment
+    offer_refund_secret: BaseField,
+    offer_refund_nullifier: BaseField,
+    // initial change commitment (deposit_amount - offer_amount)
     refund_secret: BaseField,
     refund_nullifier: BaseField,
     refund_amount: BaseField,
@@ -192,6 +206,7 @@ pub fn build_offer_merkle_context_from_offchain_tree(
         .ok_or_else(|| format!("Leaf {} not found in offchain tree", leaf.0))?;
     let (siblings, is_right_bits) = tree.path(index);
 
+    let offer_refund_sn_hash = poseidon_hash_pair(offer_refund_secret, offer_refund_nullifier);
     let refund_commitment_hash =
         compute_commitment_offchain(refund_secret, refund_nullifier, refund_amount, token);
     let offer_commitment_hash = compute_offer_commitment_offchain(
@@ -202,6 +217,7 @@ pub fn build_offer_merkle_context_from_offchain_tree(
         fiat_amount,
         currency_hash,
         rev_tag_hash,
+        offer_refund_sn_hash,
     );
 
     let secret_hash = poseidon_hash_pair(secret, secret);
@@ -224,6 +240,7 @@ pub fn build_offer_merkle_context_from_offchain_tree(
         currency_hash: m31_to_qm31(currency_hash),
         rev_tag_hash: m31_to_qm31(rev_tag_hash),
         offer_commitment_hash: m31_to_qm31(offer_commitment_hash),
+        offer_refund_sn_hash: m31_to_qm31(offer_refund_sn_hash),
         refund_secret: m31_to_qm31(refund_secret),
         refund_nullifier: m31_to_qm31(refund_nullifier),
         refund_amount: m31_to_qm31(refund_amount),
@@ -252,6 +269,8 @@ fn test_offer_merkle_circuit_with_offchain_tree() {
     let fiat_amount = BaseField::from_u32_unchecked(1000);
     let currency_hash = BaseField::from_u32_unchecked(777);
     let rev_tag_hash = BaseField::from_u32_unchecked(888);
+    let offer_refund_secret = BaseField::from_u32_unchecked(991);
+    let offer_refund_nullifier = BaseField::from_u32_unchecked(992);
 
     let refund_secret = BaseField::from_u32_unchecked(555);
     let refund_nullifier = BaseField::from_u32_unchecked(666);
@@ -271,6 +290,8 @@ fn test_offer_merkle_circuit_with_offchain_tree() {
         fiat_amount,
         currency_hash,
         rev_tag_hash,
+        offer_refund_secret,
+        offer_refund_nullifier,
         refund_secret,
         refund_nullifier,
         refund_amount,
