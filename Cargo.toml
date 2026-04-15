@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["parser", "server", "shared", "tlsnotary", "verifier", "zktlsn"]
+members = ["parser", "server", "shared", "stwo-circuits", "tlsnotary", "verifier", "zktlsn"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,6 +25,7 @@ hyper = "1.8.1"
 hyper-util = { version = "0.1.20", features = ["client", "http2"] }
 k256 = { version = "0.13.4", features = ["ecdsa"] }
 parser = { path = "./parser" }
+poseidon-m31 = { git = "https://github.com/anhelinakruk/poseidon-m31", branch = "main" }
 pem = "3.0.4"
 pest = "2.8.6"
 pest_derive = "2.8.6"
@@ -44,7 +45,7 @@ server = { path = "./server" }
 shared = { path = "./shared" }
 smol = "2.0.2"
 thiserror = "2.0.18"
-tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.14" }
+tlsn = { git = "https://github.com/neotheprogramist/tlsn", branch = "feat/posiedon-m31" }
 tlsnotary = { path = "./tlsnotary" }
 tokio = { version = "1.50.0", default-features = false, features = ["io-util"] }
 tower = "0.5.3"

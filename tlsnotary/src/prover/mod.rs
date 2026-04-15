@@ -113,7 +113,7 @@ impl Prover {
         smol::spawn(driver).detach();
 
         let prover = prover.commit(tls_commit_config).await?;
-        let (connection, prover_future) = prover.connect(tls_client_config, server_socket).await?;
+        let (connection, prover_future) = prover.connect(tls_client_config, server_socket)?;
         Ok((connection, prover_future, handle))
     }
 

@@ -16,7 +16,7 @@ pub use tlsn::{
         verifier::VerifierConfig,
     },
     connection::ServerName,
-    hash::HashAlgId,
+    hash::{HashAlgId, HashAlgorithm},
     transcript::{
         Direction, PartialTranscript, TranscriptCommitConfig, TranscriptCommitment,
         TranscriptCommitmentKind, TranscriptSecret,

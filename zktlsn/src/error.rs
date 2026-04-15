@@ -11,7 +11,7 @@ pub enum ZkTlsnError {
     #[error("Invalid commitment direction, expected Received")]
     InvalidCommitmentDirection,
 
-    #[error("Invalid hash algorithm, expected BLAKE3")]
+    #[error("Invalid hash algorithm, expected POSEIDON2")]
     InvalidHashAlgorithm,
 
     #[error("Hash verification failed: computed hash does not match committed hash")]

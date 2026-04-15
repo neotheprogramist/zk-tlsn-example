@@ -12,26 +12,23 @@ use tlsnotary::{
     TranscriptCommitmentKind,
     prover::{reveal_request, reveal_response},
 };
-use verifier::{ProofMessage, VerificationOutcome};
-use zktlsn::{PaddingConfig, SettlementBundle, generate_settlement_bundle};
+use zktlsn::{NoirProverInputs, PaddingConfig, derive_noir_prover_inputs};
 
 use crate::live_demo::{
     create_prover_config, create_request_reveal_config, create_response_reveal_config,
     create_tlsn_request, load_tls_materials,
 };
 
-pub struct AttestationProofFlow {
-    #[allow(dead_code)]
-    pub bundle: SettlementBundle,
-    pub verification: VerificationOutcome,
+pub struct StwoProofFlow {
+    pub attestation: NoirProverInputs,
 }
 
-pub async fn run_attestation_proof_flow<IO>(
+pub async fn run_stwo_proof_flow<IO>(
     stream: IO,
     server_addr: SocketAddr,
     server_name: &str,
     tx_id: u64,
-) -> Result<AttestationProofFlow>
+) -> Result<StwoProofFlow>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
@@ -134,29 +131,18 @@ where
     prover.close().await.context("failed to close prover")?;
     handle.close();
     let mut verifier_stream = driver_task.await.context("TLSNotary driver failed")?;
-
-    let bundle = generate_settlement_bundle(
-        &prover_output.transcript_commitments,
-        &prover_output.transcript_secrets,
-        &received_transcript,
-        PaddingConfig::new(shared::ATTESTATION_LEN),
-    )
-    .context("failed to build settlement bundle")?;
-
-    ProofMessage::new(bundle.native_proof.clone())
-        .write_to(&mut verifier_stream)
-        .await
-        .context("failed to write proof to verifier")?;
-    let verification = VerificationOutcome::read_from(&mut verifier_stream)
-        .await
-        .context("failed to read verification outcome")?;
     verifier_stream
         .close()
         .await
         .context("failed to close verifier stream")?;
 
-    Ok(AttestationProofFlow {
-        bundle,
-        verification,
-    })
+    let attestation = derive_noir_prover_inputs(
+        &prover_output.transcript_commitments,
+        &prover_output.transcript_secrets,
+        &received_transcript,
+        PaddingConfig::new(shared::ATTESTATION_LEN),
+    )
+    .context("failed to derive attestation inputs")?;
+
+    Ok(StwoProofFlow { attestation })
 }
