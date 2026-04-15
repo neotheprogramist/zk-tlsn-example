@@ -292,7 +292,7 @@ mod integration {
 
         let validator = Validator::builder()
             .expected_server_name("localhost")
-            .expected_hash_alg(HashAlgId::BLAKE3)
+            .expected_hash_alg(HashAlgId::POSEIDON2)
             .request_header_equals("content-type", "application/json")
             .response_body_field_equals(
                 ".toUsername",

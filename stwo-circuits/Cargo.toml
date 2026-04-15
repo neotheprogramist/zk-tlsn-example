@@ -1,0 +1,6 @@
+[package]
+name = "stwo-circuits"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

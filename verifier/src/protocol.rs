@@ -135,6 +135,21 @@ struct NotarizedTranscript {
     transcript_commitments: Vec<TranscriptCommitment>,
 }
 
+#[instrument(skip(stream), fields(phase = "notarize-only"))]
+pub async fn run_notarize_only_stream<IO>(stream: IO) -> Result<(), ProtocolError>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let (mut io, notarized_transcript) = run_notarization(stream).await?;
+    info!(
+        server_name = %notarized_transcript.server_name,
+        commitments = notarized_transcript.transcript_commitments.len(),
+        "Notarization complete"
+    );
+    io.close().await.map_err(ProtocolError::Io)?;
+    Ok(())
+}
+
 #[instrument(skip(stream), fields(phase = "notarize+verify"))]
 pub async fn run_notarize_and_verify_stream<IO>(stream: IO) -> Result<(), ProtocolError>
 where
@@ -1027,7 +1042,7 @@ mod tests {
                     direction: Direction::Received,
                     idx: RangeSet::from(body_value_range(&parsed, keypath)),
                     hash: TypedHash {
-                        alg: HashAlgId::BLAKE3,
+                        alg: HashAlgId::POSEIDON2,
                         value: Hash::try_from(hash.to_vec()).expect("hash length"),
                     },
                 })

@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 blake3.workspace = true
+poseidon-m31.workspace = true
 flate2.workspace = true
 hex.workspace = true
 k256.workspace = true

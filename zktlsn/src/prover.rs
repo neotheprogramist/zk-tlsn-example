@@ -1,9 +1,9 @@
-use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use shared::{
     ATTESTATION_LEN, FiatTransferAttestation, encode_transfer_attestation,
     parse_transfer_attestation,
 };
+use poseidon_m31::PoseidonHasher;
 use tlsnotary::{
     Direction, HashAlgId, PlaintextHash, PlaintextHashSecret, TranscriptCommitment,
     TranscriptSecret,
@@ -84,7 +84,7 @@ impl NoirProverInputs {
             )));
         }
 
-        let committed_hash = blake3_hash(attestation_bytes, &attestation_blinder);
+        let committed_hash = poseidon2_hash(attestation_bytes, &attestation_blinder);
         Ok(Self {
             attestation_committed_hash: committed_hash,
             tx_id: parsed.tx_id,
@@ -220,7 +220,7 @@ fn prepare_proof_input(
     if commitment.direction != Direction::Received {
         return Err(ZkTlsnError::InvalidCommitmentDirection);
     }
-    if commitment.hash.alg != HashAlgId::BLAKE3 {
+    if commitment.hash.alg != HashAlgId::POSEIDON2 {
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
 
@@ -239,7 +239,7 @@ fn prepare_proof_input(
         })?
         .to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
-    let committed_hash = blake3_hash(&committed_data, &blinder);
+    let committed_hash = poseidon2_hash(&committed_data, &blinder);
     if commitment.hash.value.as_bytes() != committed_hash {
         return Err(ZkTlsnError::HashVerificationFailed);
     }
@@ -271,11 +271,11 @@ fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
     })
 }
 
-fn blake3_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
-    let mut hasher = Hasher::new();
+fn poseidon2_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
+    let mut hasher = PoseidonHasher::new();
     hasher.update(data);
     hasher.update(blinder);
-    *hasher.finalize().as_bytes()
+    hasher.finalize()
 }
 
 fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8; N]> {
