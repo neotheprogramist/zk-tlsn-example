@@ -3,12 +3,12 @@ resolver = "3"
 members = [
     # "examples",
     # "parser",
-    # "server",
+    "server",
     # "shared",
     "stwo-circuit",
     "trusted-stwo-server",
-    # "tlsnotary",
-    # "verifier",
+    "tlsnotary",
+    "verifier",
     # "zktlsn",
 ]
 

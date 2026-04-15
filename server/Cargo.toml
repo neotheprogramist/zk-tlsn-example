@@ -20,3 +20,5 @@ smol.workspace = true
 thiserror.workspace = true
 tower.workspace = true
 tracing.workspace = true
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+hex = "0.4.3"
