@@ -4,7 +4,7 @@ use quinn::Endpoint;
 use shared::{TestQuicConfig, get_or_create_test_quic_config, init_logging};
 use tokio::io::join;
 use tracing::{error, info, warn};
-use verifier::protocol::run_notarize_only_stream;
+use verifier::protocol::run_notarize_and_verify_stwo_stream;
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -51,22 +51,22 @@ async fn run() -> ExampleResult<()> {
                 };
                 let stream_id = send.id();
                 smol::spawn(async move {
-                    info!(%stream_id, "Starting notarization on stream");
-                    let pipeline = run_notarize_only_stream(join(recv, send));
+                    info!(%stream_id, "Starting notarize+verify STWO pipeline on stream");
+                    let pipeline = run_notarize_and_verify_stwo_stream(join(recv, send));
                     match smol::future::or(pipeline, async {
                         smol::Timer::after(SESSION_TIMEOUT).await;
                         Err(verifier::ProtocolError::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
-                            "notarization session timed out",
+                            "STWO verification session timed out",
                         )))
                     })
                     .await
                     {
-                        Ok(()) => info!(%stream_id, "Notarization complete"),
+                        Ok(()) => info!(%stream_id, "STWO pipeline complete"),
                         Err(e) if e.to_string().contains("timed out") => {
                             warn!(%stream_id, "Session timed out");
                         }
-                        Err(e) => error!(%stream_id, error = %e, "Notarization failed"),
+                        Err(e) => error!(%stream_id, error = %e, "STWO pipeline failed"),
                     }
                 })
                 .detach();

@@ -5,7 +5,7 @@ mod stwo_proof;
 
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use quinn::Endpoint;
 use server::app::TransferRequest;
@@ -65,10 +65,16 @@ async fn run(cli: Cli) -> Result<()> {
         .await
         .context("failed to complete TLSN proof flow")?;
 
-    info!(
-        tx_id = flow.attestation.tx_id,
-        to_user_id = flow.attestation.to_user_id,
-        amount = flow.attestation.amount,
+    ensure!(
+        flow.verification.success,
+        "STWO verification failed: {}",
+        flow.verification.message
+    );
+
+        info!(
+            tx_id = flow.noir_inputs.tx_id,
+            to_user_id = flow.noir_inputs.to_user_id,
+            amount = flow.noir_inputs.amount,
         "TLSN attestation verified"
     );
     Ok(())

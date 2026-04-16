@@ -40,3 +40,4 @@ tokio.workspace = true
 tower.workspace = true
 tracing-subscriber.workspace = true
 verifier.workspace = true
+stwo-circuits.workspace = true

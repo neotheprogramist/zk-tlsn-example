@@ -7,11 +7,13 @@ use http_body_util::BodyExt;
 use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use smol::net::TcpStream;
+use stwo_circuits::attestation::{ATTESTATION_LEN, prove_attestation};
 use tlsnotary::{
     HashAlgId, ProveConfig, ProverConfig, Session, TranscriptCommitConfig,
     TranscriptCommitmentKind,
     prover::{reveal_request, reveal_response},
 };
+use verifier::{StwoProofMessage, VerificationOutcome};
 use zktlsn::{NoirProverInputs, PaddingConfig, derive_noir_prover_inputs};
 
 use crate::live_demo::{
@@ -20,7 +22,8 @@ use crate::live_demo::{
 };
 
 pub struct StwoProofFlow {
-    pub attestation: NoirProverInputs,
+    pub noir_inputs: NoirProverInputs,
+    pub verification: VerificationOutcome,
 }
 
 pub async fn run_stwo_proof_flow<IO>(
@@ -144,5 +147,37 @@ where
     )
     .context("failed to derive attestation inputs")?;
 
-    Ok(StwoProofFlow { attestation })
+    let attestation_bytes: [u8; ATTESTATION_LEN] = attestation
+        .attestation
+        .as_bytes()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("attestation must be 32 bytes"))?;
+    let native_proof = prove_attestation(
+        &attestation_bytes,
+        &attestation.attestation_blinder,
+        attestation.tx_id,
+        attestation.to_user_id,
+        attestation.amount,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to generate STWO proof: {e}"))?;
+
+    StwoProofMessage::new(
+        native_proof,
+        attestation.attestation_committed_hash,
+    )
+        .write_to(&mut verifier_stream)
+        .await
+        .context("failed to send STWO proof payload")?;
+    let verification = VerificationOutcome::read_from(&mut verifier_stream)
+        .await
+        .context("failed to receive STWO verification outcome")?;
+    verifier_stream
+        .close()
+        .await
+        .context("failed to close verifier stream")?;
+
+    Ok(StwoProofFlow {
+        noir_inputs: attestation,
+        verification,
+    })
 }

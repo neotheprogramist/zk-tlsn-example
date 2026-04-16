@@ -4,6 +4,7 @@ use async_compat::Compat;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use shared::{TestTlsConfig, get_or_create_test_tls_config};
+use stwo_circuits::attestation::{AttestationStwoProof, verify_attestation};
 use tlsnotary::{
     CertificateDer, Direction, RootCertStore, Session, TlsCommitProtocolConfig,
     TranscriptCommitment, VerifierConfig,
@@ -59,6 +60,36 @@ pub struct ProofMessage {
 impl ProofMessage {
     pub fn new(proof: Proof) -> Self {
         Self { proof }
+    }
+
+    pub async fn read_from<IO>(io: &mut IO) -> Result<Self, ProtocolError>
+    where
+        IO: AsyncRead + Unpin + Send,
+    {
+        read_json_frame(io).await
+    }
+
+    pub async fn write_to<IO>(&self, io: &mut IO) -> Result<(), ProtocolError>
+    where
+        IO: AsyncWrite + Unpin + Send,
+    {
+        write_json_frame(io, self).await
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StwoProofMessage {
+    pub proof: AttestationStwoProof,
+    pub attestation_committed_hash: [u8; 32],
+}
+
+impl StwoProofMessage {
+    pub fn new(proof: AttestationStwoProof, attestation_committed_hash: [u8; 32]) -> Self {
+        Self {
+            proof,
+            attestation_committed_hash,
+        }
     }
 
     pub async fn read_from<IO>(io: &mut IO) -> Result<Self, ProtocolError>
@@ -217,6 +248,55 @@ where
     Ok(())
 }
 
+#[instrument(skip(stream), fields(phase = "notarize+verify-stwo"))]
+pub async fn run_notarize_and_verify_stwo_stream<IO>(stream: IO) -> Result<(), ProtocolError>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let mut progress = StepProgress::new(6);
+    progress.tick("starting STWO pipeline");
+    let (mut io, notarized_transcript) = run_notarization(stream).await?;
+    progress.tick("notarization finished");
+    log_notarized_transcript(&notarized_transcript)?;
+
+    let proof_message = StwoProofMessage::read_from(&mut io).await.map_err(|e| {
+        warn!(error = %e, "Failed during STWO proof reception phase");
+        e
+    })?;
+    progress.tick("received STWO proof payload");
+
+    let (verified_fields, signed_ticket) =
+        match verify_stwo_proof_message(&notarized_transcript, proof_message) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(error = %error, "STWO proof verification failed");
+                progress.tick("STWO proof verification finished");
+                send_verification_outcome_and_close(
+                    &mut io,
+                    &VerificationOutcome::failure(
+                        notarized_transcript.server_name.clone(),
+                        error.to_string(),
+                    ),
+                )
+                .await?;
+                progress.tick("sent STWO verification result");
+                progress.tick("stream closed");
+                return Err(error);
+            }
+        };
+
+    let verification_outcome = VerificationOutcome::success(
+        notarized_transcript.server_name.clone(),
+        verified_fields,
+        "STWO proof verified successfully".to_string(),
+        signed_ticket,
+    );
+    send_verification_outcome_and_close(&mut io, &verification_outcome).await?;
+    progress.tick("sent STWO verification result");
+    progress.tick("stream closed");
+    Ok(())
+}
+
 #[instrument(skip(stream), fields(phase = "notarize"))]
 async fn run_notarization<IO>(
     stream: IO,
@@ -350,6 +430,41 @@ fn verify_proof_message(
     let signed_ticket = TicketSigner::from_env_or_default()
         .map_err(|error| ProtocolError::InvalidConfig(error.to_string()))?
         .sign_ticket(transfer.tx_id, transfer.to_user_id, transfer.amount)
+        .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
+
+    Ok((vec![matched_field], signed_ticket))
+}
+
+fn verify_stwo_proof_message(
+    notarized_transcript: &NotarizedTranscript,
+    proof_message: StwoProofMessage,
+) -> Result<(Vec<String>, SignedTransferTicket), ProtocolError> {
+    verify_attestation(&proof_message.proof)
+        .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
+
+    let parsed_response = parser::redacted::Response::from_str(&notarized_transcript.response)
+        .map_err(|error| ProtocolError::ResponseParse(format!("{error:?}")))?;
+    let bindings = bind_commitments_to_keys(
+        &parsed_response,
+        &notarized_transcript.transcript_commitments,
+    )
+    .map_err(|error| ProtocolError::CommitmentBindingFailed(error.to_string()))?;
+    if bindings.is_empty() {
+        return Err(ProtocolError::NoCommitmentsFound);
+    }
+
+    let (matched_field, _) = select_unique_bound_field_for_hash(
+        &bindings,
+        &proof_message.attestation_committed_hash,
+    )?;
+
+    let (tx_id, to_user_id, amount) = proof_message
+        .proof
+        .transfer_fields()
+        .ok_or_else(|| ProtocolError::ProofVerificationFailed("missing STWO transfer fields".to_string()))?;
+    let signed_ticket = TicketSigner::from_env_or_default()
+        .map_err(|error| ProtocolError::InvalidConfig(error.to_string()))?
+        .sign_ticket(tx_id, to_user_id, amount)
         .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
 
     Ok((vec![matched_field], signed_ticket))
