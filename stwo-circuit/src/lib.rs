@@ -2,7 +2,7 @@
 #![feature(iter_array_chunks)]
 #![feature(array_chunks)]
 
-pub mod withdraw;
+pub mod paymoney_circuits;
 pub mod offchain_merkle;
 pub mod poseidon_hash;
 // pub mod blake3;

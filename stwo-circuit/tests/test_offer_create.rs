@@ -18,7 +18,7 @@ use stwo::{
 };
 use stwo_circuit::{
     offchain_merkle::{OffchainMerkleTree, poseidon_hash_pair},
-    withdraw::offer_circuit::build_offer_merkle_context_from_offchain_tree,
+    paymoney_circuits::offer_circuit::build_offer_merkle_context_from_offchain_tree,
 };
 use trusted_stwo_server::types::{VerifyAndSignRequest, VerifyAndSignResponse};
 

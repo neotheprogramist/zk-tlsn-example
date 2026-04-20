@@ -9,7 +9,7 @@ use stwo::core::fields::qm31::QM31;
 use circuits::poseidon2;
 
 use crate::offchain_merkle::{OffchainMerkleTree, poseidon_hash_pair};
-use crate::withdraw::offer_circuit::compute_offer_commitment_offchain;
+use crate::paymoney_circuits::offer_circuit::compute_offer_commitment_offchain;
 
 /// Witness for the offer-spend/cancel circuit.
 ///
