@@ -90,6 +90,12 @@ contract PrivacyPool {
     );
     event TransactionVerified(bytes32 indexed transactionId, uint256 cryptoAmount);
     event OfferCancelled(uint256 indexed offerNullifierHash, uint256 indexed offerCommitment);
+    event RecursiveWithdraw(
+        address indexed recipient,
+        address indexed token,
+        uint256 totalAmount,
+        uint256 batchSize
+    );
 
     error TransferFailed();
     error NullifierAlreadyUsed();
@@ -115,6 +121,7 @@ contract PrivacyPool {
 
     bytes constant CLAIM_PREFIX = "trusted-stwo-claim-v1";
     bytes constant MESSAGE_PREFIX = "trusted-stwo-message-v1";
+    bytes constant RECURSIVE_WITHDRAW_PREFIX = "trusted-stwo-recursive-withdraw-v1";
 
     constructor(address _owner) {
         owner = _owner;
@@ -272,6 +279,58 @@ contract PrivacyPool {
         bool success = IERC20(token).transfer(recipient, amount);
         if (!success) revert TransferFailed();
         emit Withdraw(nullifier, recipient, token, amount);
+    }
+    /// @notice Batch withdrawal backed by a recursive ZK proof verified off-chain by the trusted server.
+    /// Claim layout must match trusted-stwo-server verify.rs exactly:
+    /// keccak256(RECURSIVE_WITHDRAW_PREFIX || proofHash || n_nullifiers || nullifiers[] || n_roots || roots[] || tokenM31 || amountM31 || recipientM31)
+    function recursiveWithdraw(
+        bytes32 proofHash,
+        uint32[] calldata batchNullifiers,
+        uint32[] calldata batchRoots,
+        uint256 totalAmount,
+        address token,
+        address recipient,
+        bytes calldata signature
+    ) external {
+        if (batchNullifiers.length == 0) revert InvalidVerifierResponse();
+        if (batchNullifiers.length != batchRoots.length) revert InvalidVerifierResponse();
+
+        uint32 tokenM31     = _m31ToU32(_addressToM31(token));
+        uint32 recipientM31 = _m31ToU32(_addressToM31(recipient));
+        uint32 amountU32    = _m31ToU32(totalAmount);
+
+        bytes memory claimBytes = abi.encodePacked(
+            RECURSIVE_WITHDRAW_PREFIX,
+            proofHash,
+            uint32(batchNullifiers.length)
+        );
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            claimBytes = abi.encodePacked(claimBytes, batchNullifiers[i]);
+        }
+        claimBytes = abi.encodePacked(claimBytes, uint32(batchRoots.length));
+        for (uint256 i = 0; i < batchRoots.length; i++) {
+            claimBytes = abi.encodePacked(claimBytes, batchRoots[i]);
+        }
+        claimBytes = abi.encodePacked(claimBytes, tokenM31, amountU32, recipientM31);
+
+        if (recoverSigner(messageHash(keccak256(claimBytes)), signature) != trustedSignerAddress()) {
+            revert ProofVerificationFailed();
+        }
+
+        for (uint256 i = 0; i < batchRoots.length; i++) {
+            if (!tree.isValidRoot(uint256(batchRoots[i]))) revert InvalidRoot();
+        }
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            if (nullifiers[uint256(batchNullifiers[i])]) revert NullifierAlreadyUsed();
+        }
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            nullifiers[uint256(batchNullifiers[i])] = true;
+        }
+
+        bool success = IERC20(token).transfer(recipient, totalAmount);
+        if (!success) revert TransferFailed();
+
+        emit RecursiveWithdraw(recipient, token, totalAmount, batchNullifiers.length);
     }
 
     /// @notice Create an offer from a ZK proof.
