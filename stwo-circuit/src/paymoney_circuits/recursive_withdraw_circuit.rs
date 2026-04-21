@@ -11,6 +11,8 @@ use circuits_stark_verifier::{proof::ProofConfig, verify::verify};
 use stwo::core::fields::qm31::QM31;
 
 // Output indices shared by null, withdraw, and recursive circuits.
+// IDX_ROOT: in null circuit = 0, in withdraw circuit = Merkle root,
+// in recursive circuit = poseidon hash chain of all roots accumulated so far.
 const IDX_ROOT: usize = 0;
 const IDX_NULLIFIER_ACC: usize = 1;
 const IDX_TOKEN: usize = 2;
@@ -21,20 +23,20 @@ const IDX_RECIPIENT: usize = 5;
 /// Null (identity) circuit for recursive withdrawal aggregation.
 ///
 /// Outputs the same 6-value structure as `build_withdraw_merkle_context`:
-///   [root, nullifier_acc=0, token, amount=0, refund_commitment_hash=0, recipient]
+///   [root_acc=0, nullifier_acc=0, token, amount=0, refund_commitment_hash=0, recipient]
 ///
 /// `recipient` is anchored here so the recursive verifier can enforce that all
 /// subsequent withdrawals in the batch go to the same address.
-/// `nullifier_acc` starts at 0; each recursive step hashes it with the new nullifier.
-pub fn build_null_context(token: QM31, root: QM31, recipient: QM31) -> Context<QM31> {
+/// Both `root_acc` and `nullifier_acc` start at 0; each recursive step extends them
+/// via poseidon hash chains.
+pub fn build_null_context(token: QM31, recipient: QM31) -> Context<QM31> {
     let mut context = Context::<QM31>::default();
 
     let zero = context.zero();
-    let root_v = guess(&mut context, root);
     let token_v = guess(&mut context, token);
     let recipient_v = guess(&mut context, recipient);
 
-    output(&mut context, root_v);
+    output(&mut context, zero); // root_acc = 0
     output(&mut context, zero); // nullifier_acc = 0
     output(&mut context, token_v);
     output(&mut context, zero); // amount = 0
@@ -82,23 +84,24 @@ pub fn verify_recursive_proof(
 /// - `proof_b`: a new withdraw proof
 ///
 /// **Enforced constraints:**
-/// - `root_a == root_b`      — both proofs reference the same Merkle tree
 /// - `token_a == token_b`    — same token type
 /// - `recipient_a == recipient_b` — all withdrawals in the batch go to the same address
 ///
 /// **Aggregated outputs** (same 6-value layout as null/withdraw):
-/// - `root`           = root from proof_a (== root_b after constraint)
+/// - `root_acc`       = poseidon(root_acc_a, root_b)  ← hash chain of Merkle roots
 /// - `nullifier_acc`  = poseidon(nullifier_acc_a, nullifier_b)  ← hash chain
 /// - `token`          = token_a
 /// - `total`          = amount_a + amount_b
 /// - `refund_commitment_hash` = 0 (per-deposit value, not aggregated)
 /// - `recipient`      = recipient_a
 ///
-/// **Nullifier aggregation strategy:** poseidon hash chain.
-/// The final proof carries a single `nullifier_acc` that commits to the ordered
-/// list of all nullifiers. To verify on-chain, supply the nullifier list; the
-/// smart contract recomputes `poseidon(poseidon(... poseidon(0, n1) ..., nk-1), nk)`
-/// and checks it equals `nullifier_acc`, then marks each nullifier as spent.
+/// **Root aggregation strategy:** poseidon hash chain.
+/// Different deposits may use different Merkle roots (the tree grows over time).
+/// The final proof carries `root_acc = poseidon(...poseidon(0, r0)..., rk)`.
+/// The trusted server receives the root list, recomputes the chain, and verifies
+/// each root is in the contract's accepted historical root set.
+///
+/// **Nullifier aggregation strategy:** same poseidon hash chain pattern.
 pub fn build_recursive_context(
     preprocessed_proof_a: &PreprocessedCircuit,
     circuit_proof_proof_a: CircuitProof,
@@ -110,10 +113,12 @@ pub fn build_recursive_context(
     let a = verify_recursive_proof(&mut ctx, preprocessed_proof_a, circuit_proof_proof_a);
     let b = verify_recursive_proof(&mut ctx, preprocessed_proof_b, circuit_proof_proof_b);
 
-    // Consistency constraints.
-    eq(&mut ctx, a[IDX_ROOT], b[IDX_ROOT]);
+    // Consistency constraints (roots may differ between deposits as tree grows).
     eq(&mut ctx, a[IDX_TOKEN], b[IDX_TOKEN]);
     eq(&mut ctx, a[IDX_RECIPIENT], b[IDX_RECIPIENT]);
+
+    // Chain roots: root_acc_new = poseidon(root_acc_a, root_b).
+    let root_acc = poseidon2::poseidon2_hash_two(&mut ctx, a[IDX_ROOT], b[IDX_ROOT]);
 
     // Aggregate amount.
     let total = eval!(&mut ctx, (a[IDX_AMOUNT]) + (b[IDX_AMOUNT]));
@@ -124,7 +129,7 @@ pub fn build_recursive_context(
 
     let zero = ctx.zero();
 
-    output(&mut ctx, a[IDX_ROOT]);
+    output(&mut ctx, root_acc);
     output(&mut ctx, nullifier_acc);
     output(&mut ctx, a[IDX_TOKEN]);
     output(&mut ctx, total);
@@ -205,6 +210,18 @@ mod tests {
             .iter()
             .fold(BaseField::from_u32_unchecked(0), |acc, &n| {
                 poseidon_hash_pair(acc, n)
+            })
+    }
+
+    /// Replicates the in-circuit root hash chain using off-chain poseidon.
+    /// Starts from 0 and folds each Merkle root: acc = poseidon(acc, root).
+    /// The trusted server runs this and then verifies each root is in the
+    /// contract's accepted historical root set.
+    fn compute_root_chain(roots: &[BaseField]) -> BaseField {
+        roots
+            .iter()
+            .fold(BaseField::from_u32_unchecked(0), |acc, &r| {
+                poseidon_hash_pair(acc, r)
             })
     }
 
@@ -362,11 +379,7 @@ mod tests {
             withdraw_bundles.try_into().expect("4 deposit proofs");
 
         // ── null accumulator ───────────────────────────────────────────────
-        let null_bundle = make_bundle(build_null_context(
-            m31(token_bf),
-            m31(tree.root()),
-            m31(recipient_bf),
-        ));
+        let null_bundle = make_bundle(build_null_context(m31(token_bf), m31(recipient_bf)));
 
         println!("[roots] null circuit:     {:?}", null_bundle.preprocessed_root);
         println!("[roots] withdraw circuit: {:?}", w0.preprocessed_root);
@@ -435,13 +448,22 @@ mod tests {
             "final accumulated amount must equal 100+200+150+50 = 500"
         );
 
-        // Context fields are preserved.
-        assert_eq!(out[IDX_ROOT], m31(tree.root()), "root must be unchanged");
+        // Context fields.
         assert_eq!(out[IDX_TOKEN], m31(token_bf), "token must be unchanged");
         assert_eq!(
             out[IDX_RECIPIENT],
             m31(recipient_bf),
             "recipient must be unchanged"
+        );
+
+        // Root accumulator: poseidon chain over all deposit Merkle roots.
+        // All 4 deposits share the same tree root here, but the design handles differing roots.
+        let roots: Vec<BaseField> = deposits.iter().map(|_| tree.root()).collect();
+        let expected_root_acc = compute_root_chain(&roots);
+        assert_eq!(
+            out[IDX_ROOT],
+            m31(expected_root_acc),
+            "root_acc must match off-chain poseidon chain over deposit roots"
         );
 
         // Nullifier accumulator: trusted-server POC.
@@ -482,9 +504,7 @@ mod tests {
             &tree, amount_bf, refund_bf, secret_bf, nullifier_bf,
             bf(21), bf(31), token_bf, recipient_bf,
         );
-        let null_bundle = make_bundle(build_null_context(
-            m31(token_bf), m31(tree.root()), m31(recipient_bf),
-        ));
+        let null_bundle = make_bundle(build_null_context(m31(token_bf), m31(recipient_bf)));
 
         println!("[1-deposit] null circuit root:    {:?}", null_bundle.preprocessed_root);
         println!("[1-deposit] withdraw circuit root: {:?}", w0.preprocessed_root);
@@ -498,6 +518,13 @@ mod tests {
 
         let out = &final_bundle.proof.claim.output_values;
         assert_eq!(out[IDX_AMOUNT], QM31::from(100u32), "amount must be 100");
+
+        let expected_root_acc = compute_root_chain(&[tree.root()]);
+        assert_eq!(
+            out[IDX_ROOT],
+            m31(expected_root_acc),
+            "root_acc must match poseidon(0, r0)"
+        );
 
         let expected_nullifier_acc = compute_nullifier_chain(&[nullifier_bf]);
         assert_eq!(
@@ -536,9 +563,7 @@ mod tests {
             .collect();
         let [w0, w1]: [ProofBundle; 2] = withdraw_bundles.try_into().expect("2 proofs");
 
-        let null_bundle = make_bundle(build_null_context(
-            m31(token_bf), m31(tree.root()), m31(recipient_bf),
-        ));
+        let null_bundle = make_bundle(build_null_context(m31(token_bf), m31(recipient_bf)));
 
         let rec_0 = make_bundle(build_recursive_context(
             &null_bundle.preprocessed, null_bundle.proof,
@@ -558,6 +583,13 @@ mod tests {
 
         let out = &final_bundle.proof.claim.output_values;
         assert_eq!(out[IDX_AMOUNT], QM31::from(expected_total), "amount must be 300");
+
+        let roots: Vec<BaseField> = deposits.iter().map(|_| tree.root()).collect();
+        assert_eq!(
+            out[IDX_ROOT],
+            m31(compute_root_chain(&roots)),
+            "root_acc must match poseidon(poseidon(0, r0), r1)"
+        );
 
         let nullifiers: Vec<BaseField> = deposits.iter().map(|&(_, _, _, n, ..)| n).collect();
         let expected_nullifier_acc = compute_nullifier_chain(&nullifiers);
@@ -602,9 +634,7 @@ mod tests {
             .collect();
         let [w0, w1, w2, w3]: [ProofBundle; 4] = bundles.try_into().expect("4 proofs");
 
-        let null_bundle = make_bundle(build_null_context(
-            m31(token_bf), m31(tree.root()), m31(recipient_bf),
-        ));
+        let null_bundle = make_bundle(build_null_context(m31(token_bf), m31(recipient_bf)));
 
         let rec_0 = make_bundle(build_recursive_context(
             &null_bundle.preprocessed, null_bundle.proof,
@@ -641,6 +671,9 @@ mod tests {
 
         let out = &final_bundle.proof.claim.output_values;
         assert_eq!(out[IDX_AMOUNT], QM31::from(expected_total));
+
+        let roots: Vec<BaseField> = deposits.iter().map(|_| tree.root()).collect();
+        assert_eq!(out[IDX_ROOT], m31(compute_root_chain(&roots)));
 
         let nullifiers: Vec<BaseField> = deposits.iter().map(|&(_, _, _, n, ..)| n).collect();
         assert_eq!(out[IDX_NULLIFIER_ACC], m31(compute_nullifier_chain(&nullifiers)));
