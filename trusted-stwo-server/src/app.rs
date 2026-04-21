@@ -13,11 +13,12 @@ use crate::{
     types::{
         HealthResponse, PublicKeyResponse, SignTransactionSettlementRequest,
         SignTransactionSettlementResponse, VerifyAndSignRequest, VerifyAndSignResponse,
+        VerifyAndSignRecursiveWithdrawRequest, VerifyAndSignRecursiveWithdrawResponse,
         VerifyTlsnAndSignSettlementRequest, VerifyTlsnAndSignSettlementResponse,
         VerifyTlsnAndSignTransactionSettlementRequest,
         VerifyTlsnAndSignTransactionSettlementResponse,
     },
-    verify::verify_raw_stwo_proof,
+    verify::{verify_raw_stwo_proof, verify_recursive_withdraw},
 };
 
 
@@ -33,6 +34,10 @@ pub fn router(signer: Arc<Signer>) -> Router {
         .route("/health", get(health))
         .route("/public-key", get(public_key))
         .route("/verify-and-sign", post(verify_and_sign))
+        .route(
+            "/verify-and-sign-recursive-withdraw",
+            post(verify_and_sign_recursive_withdraw),
+        )
         .route(
             "/verify-tlsn-and-sign-settlement",
             post(verify_tlsn_and_sign_settlement),
@@ -92,6 +97,42 @@ async fn verify_and_sign(
     };
 
     Ok(Json(response))
+}
+
+async fn verify_and_sign_recursive_withdraw(
+    State(state): State<AppState>,
+    Json(req): Json<VerifyAndSignRecursiveWithdrawRequest>,
+) -> Result<Json<VerifyAndSignRecursiveWithdrawResponse>, ApiError> {
+    let verified = verify_recursive_withdraw(&req)?;
+
+    let msg_hash_vec = hex::decode(&verified.message_hash_hex)
+        .map_err(|e| ApiError::Internal(format!("invalid message hash hex: {e}")))?;
+    let mut msg_hash = [0u8; 32];
+    msg_hash.copy_from_slice(&msg_hash_vec);
+    let sig = state
+        .signer
+        .sign_digest(msg_hash)
+        .map_err(ApiError::Internal)?;
+
+    Ok(Json(VerifyAndSignRecursiveWithdrawResponse {
+        proof_id: req.proof_id,
+        verified: true,
+        proof_hash_hex: verified.proof_hash_hex,
+        claim_hash_hex: format!("0x{}", verified.claim_hash_hex),
+        message_hash_hex: format!("0x{}", verified.message_hash_hex),
+        signature_hex: format!("0x{}", hex::encode(sig.signature_65)),
+        signature_r_hex: format!("0x{}", hex::encode(sig.r)),
+        signature_s_hex: format!("0x{}", hex::encode(sig.s)),
+        signature_v: sig.v,
+        signer_address: state.signer.address_hex(),
+        signer_public_key_hex: state.signer.public_key_hex(),
+        signed_at_unix: Utc::now().timestamp(),
+        nullifiers: verified.nullifiers,
+        merkle_roots: verified.merkle_roots,
+        token: verified.token,
+        total_amount: verified.total_amount,
+        recipient: verified.recipient,
+    }))
 }
 
 async fn sign_transaction_settlement(

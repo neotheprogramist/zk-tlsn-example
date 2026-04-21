@@ -18,6 +18,7 @@ circuit-air.workspace = true
 circuit-common.workspace = true
 circuit-prover.workspace = true
 circuits.workspace = true
+stwo-circuit.workspace = true
 stwo = { git = "https://github.com/starkware-libs/stwo", rev = "aeceb74c", default-features = false, features = ["parallel"] }
 
 base64 = "0.22.1"

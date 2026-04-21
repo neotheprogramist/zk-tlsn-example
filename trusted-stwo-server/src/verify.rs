@@ -1,4 +1,6 @@
 use base64::Engine;
+use stwo::core::fields::m31::BaseField;
+use stwo_circuit::offchain_merkle::poseidon_hash_pair;
 use circuit_air::{
     CircuitClaim, CircuitInteractionClaim, CircuitInteractionElements, lookup_sum,
     components::{CircuitComponents, N_COMPONENTS},
@@ -10,7 +12,14 @@ use stwo::core::{
     air::Component, channel::{Blake2sM31Channel, Channel}, fields::qm31::QM31, pcs::{CommitmentSchemeVerifier, PcsConfig}, proof::ExtendedStarkProof, vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher}
 };
 
-use crate::{error::ApiError, types::VerifyAndSignRequest};
+use crate::{error::ApiError, types::{VerifyAndSignRequest, VerifyAndSignRecursiveWithdrawRequest}};
+
+// Output indices — must match recursive_withdraw_circuit.rs constants.
+const IDX_ROOT_ACC: usize = 0;
+const IDX_NULLIFIER_ACC: usize = 1;
+const IDX_TOKEN: usize = 2;
+const IDX_AMOUNT: usize = 3;
+const IDX_RECIPIENT: usize = 5;
 const WITHDRAW_CIRCUIT_ROOT_U32: [u32; 8] =
     [652536158, 1858539233, 59812728, 107606911, 121169370, 567731177, 498092224, 1678070508];
 const OFFER_CIRCUIT_ROOT_U32: [u32; 8] =
@@ -18,6 +27,13 @@ const OFFER_CIRCUIT_ROOT_U32: [u32; 8] =
 
 const OFFER_SPEND_CANCEL_CIRCUIT_ROOT_U32: [u32; 8] =
     [228289986, 724834124, 320566596, 1181551808, 1139858737, 1093925691, 977744636, 212433008];
+
+const RECURSIVE_STEP1_ROOT_U32: [u32; 8] =
+    [1754113036, 1826477655, 1206977738, 950444227, 2075168426, 1808668797, 2085858017, 954426740];
+const RECURSIVE_STEP2_ROOT_U32: [u32; 8] =
+    [1155964987, 933233646, 528970039, 1582259721, 1555438329, 144756265, 1155259030, 1008049394];
+const RECURSIVE_STABLE_ROOT_U32: [u32; 8] =
+    [1541694134, 290880061, 1909421654, 822925969, 734728419, 1288299412, 886742156, 972296609];
 
 
 pub struct VerifiedProof {
@@ -38,6 +54,9 @@ pub fn verify_raw_stwo_proof(req: &VerifyAndSignRequest) -> Result<VerifiedProof
         root_from_u32s(WITHDRAW_CIRCUIT_ROOT_U32),
         root_from_u32s(OFFER_CIRCUIT_ROOT_U32),
         root_from_u32s(OFFER_SPEND_CANCEL_CIRCUIT_ROOT_U32),
+        root_from_u32s(RECURSIVE_STEP1_ROOT_U32),
+        root_from_u32s(RECURSIVE_STEP2_ROOT_U32),
+        root_from_u32s(RECURSIVE_STABLE_ROOT_U32),
     ];
     println!("Verifying proof with proof_id: {}", req.proof_id);
     if req.claim_log_sizes.len() != N_COMPONENTS {
@@ -265,4 +284,135 @@ fn keccak256(bytes: &[u8]) -> [u8; 32] {
     k.update(bytes);
     k.finalize(&mut out);
     out
+}
+
+pub struct VerifiedRecursiveWithdraw {
+    pub proof_hash_hex: String,
+    pub claim_hash_hex: String,
+    pub message_hash_hex: String,
+    pub nullifiers: Vec<u32>,
+    pub merkle_roots: Vec<u32>,
+    pub token: u32,
+    pub total_amount: u32,
+    pub recipient: u32,
+}
+
+/// Verifies a recursive batch-withdrawal proof and validates the nullifier/root lists.
+///
+/// Steps:
+///   1. STARK proof verification (preprocessed root must be in the recursive allowlist).
+///   2. Reconstruct nullifier_acc = poseidon(poseidon(...0, n0...), nk) and assert it
+///      matches claim_output_values[IDX_NULLIFIER_ACC].
+///   3. Reconstruct root_acc = poseidon(poseidon(...0, r0...), rk) and assert it
+///      matches claim_output_values[IDX_ROOT_ACC].
+///   4. Build a claim that commits to the full nullifier list, root list, token,
+///      amount, and recipient — so the contract can verify the same signature.
+pub fn verify_recursive_withdraw(
+    req: &VerifyAndSignRecursiveWithdrawRequest,
+) -> Result<VerifiedRecursiveWithdraw, ApiError> {
+    let as_verify_req = VerifyAndSignRequest {
+        proof_id: req.proof_id.clone(),
+        pcs_config_b64: req.pcs_config_b64.clone(),
+        stark_proof_b64: req.stark_proof_b64.clone(),
+        channel_salt: req.channel_salt,
+        interaction_pow_nonce: req.interaction_pow_nonce,
+        claim_log_sizes: req.claim_log_sizes.clone(),
+        claim_output_values: req.claim_output_values.clone(),
+        interaction_claimed_sums: req.interaction_claimed_sums.clone(),
+        stage1_trace_log_sizes: req.stage1_trace_log_sizes.clone(),
+        stage2_trace_log_sizes: req.stage2_trace_log_sizes.clone(),
+        preprocessed_trace_log_sizes: req.preprocessed_trace_log_sizes.clone(),
+        preprocessed_column_ids: req.preprocessed_column_ids.clone(),
+        output_addresses: req.output_addresses.clone(),
+        n_blake_gates: req.n_blake_gates,
+    };
+
+    let verified = verify_raw_stwo_proof(&as_verify_req)?;
+
+    if req.nullifiers.is_empty() {
+        return Err(ApiError::InvalidInput("nullifiers must not be empty".to_string()));
+    }
+    if req.merkle_roots.is_empty() {
+        return Err(ApiError::InvalidInput("merkle_roots must not be empty".to_string()));
+    }
+    if req.nullifiers.len() != req.merkle_roots.len() {
+        return Err(ApiError::InvalidInput(
+            "nullifiers and merkle_roots must have the same length".to_string(),
+        ));
+    }
+
+    let outputs = &req.claim_output_values;
+    if outputs.len() <= IDX_RECIPIENT {
+        return Err(ApiError::InvalidInput(format!(
+            "claim_output_values must have at least {} entries",
+            IDX_RECIPIENT + 1
+        )));
+    }
+
+    // Reconstruct nullifier_acc off-chain and compare to circuit output.
+    let expected_nullifier_acc = req.nullifiers.iter().fold(
+        BaseField::from_u32_unchecked(0),
+        |acc, &n| poseidon_hash_pair(acc, BaseField::from_u32_unchecked(n)),
+    );
+    let circuit_nullifier_acc = outputs[IDX_NULLIFIER_ACC][0];
+    if expected_nullifier_acc.0 != circuit_nullifier_acc {
+        return Err(ApiError::Verification(format!(
+            "nullifier_acc mismatch: recomputed {}, circuit output {}",
+            expected_nullifier_acc.0, circuit_nullifier_acc
+        )));
+    }
+
+    // Reconstruct root_acc off-chain and compare to circuit output.
+    let expected_root_acc = req.merkle_roots.iter().fold(
+        BaseField::from_u32_unchecked(0),
+        |acc, &r| poseidon_hash_pair(acc, BaseField::from_u32_unchecked(r)),
+    );
+    let circuit_root_acc = outputs[IDX_ROOT_ACC][0];
+    if expected_root_acc.0 != circuit_root_acc {
+        return Err(ApiError::Verification(format!(
+            "root_acc mismatch: recomputed {}, circuit output {}",
+            expected_root_acc.0, circuit_root_acc
+        )));
+    }
+
+    let token = outputs[IDX_TOKEN][0];
+    let total_amount = outputs[IDX_AMOUNT][0];
+    let recipient = outputs[IDX_RECIPIENT][0];
+
+    // Compute claim hash committing to the full signed payload.
+    // Layout: prefix | n_nullifiers(4) | nullifiers... | n_roots(4) | roots... | token(4) | amount(4) | recipient(4)
+    let proof_hash_bytes = hex::decode(&verified.proof_hash_hex)
+        .map_err(|e| ApiError::Internal(format!("hex decode proof_hash: {e}")))?;
+
+    let mut claim_bytes = Vec::new();
+    claim_bytes.extend_from_slice(b"trusted-stwo-recursive-withdraw-v1");
+    claim_bytes.extend_from_slice(&proof_hash_bytes);
+    claim_bytes.extend_from_slice(&(req.nullifiers.len() as u32).to_be_bytes());
+    for &n in &req.nullifiers {
+        claim_bytes.extend_from_slice(&n.to_be_bytes());
+    }
+    claim_bytes.extend_from_slice(&(req.merkle_roots.len() as u32).to_be_bytes());
+    for &r in &req.merkle_roots {
+        claim_bytes.extend_from_slice(&r.to_be_bytes());
+    }
+    claim_bytes.extend_from_slice(&token.to_be_bytes());
+    claim_bytes.extend_from_slice(&total_amount.to_be_bytes());
+    claim_bytes.extend_from_slice(&recipient.to_be_bytes());
+    let claim_hash = keccak256(&claim_bytes);
+
+    let mut message_bytes = Vec::new();
+    message_bytes.extend_from_slice(b"trusted-stwo-message-v1");
+    message_bytes.extend_from_slice(&claim_hash);
+    let message_hash = keccak256(&message_bytes);
+
+    Ok(VerifiedRecursiveWithdraw {
+        proof_hash_hex: verified.proof_hash_hex,
+        claim_hash_hex: hex::encode(claim_hash),
+        message_hash_hex: hex::encode(message_hash),
+        nullifiers: req.nullifiers.clone(),
+        merkle_roots: req.merkle_roots.clone(),
+        token,
+        total_amount,
+        recipient,
+    })
 }
