@@ -132,6 +132,56 @@ pub struct VerifyAndSignRecursiveWithdrawResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyAndSignRecursiveCreateOfferRequest {
+    pub proof_id: String,
+    pub pcs_config_b64: String,
+    pub stark_proof_b64: String,
+    pub channel_salt: u32,
+    pub interaction_pow_nonce: u64,
+    pub claim_log_sizes: Vec<u32>,
+    /// 7 public outputs from the terminal offer circuit:
+    /// [0] root_acc, [1] nullifier_acc, [2] token, [3] total_amount,
+    /// [4] offerCommitment (PROVEN in circuit), [5] 0, [6] offerRefundSnHash (PROVEN)
+    pub claim_output_values: Vec<[u32; 4]>,
+    pub interaction_claimed_sums: Vec<[u32; 4]>,
+    pub stage1_trace_log_sizes: Vec<u32>,
+    pub stage2_trace_log_sizes: Vec<u32>,
+    pub preprocessed_trace_log_sizes: Vec<u32>,
+    pub preprocessed_column_ids: Vec<String>,
+    pub output_addresses: Vec<usize>,
+    pub n_blake_gates: usize,
+    pub nullifiers: Vec<u32>,
+    pub merkle_roots: Vec<u32>,
+    /// H(offer_secret, offer_secret) — offer identifier on-chain (not in circuit output).
+    pub secret_hash: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyAndSignRecursiveCreateOfferResponse {
+    pub proof_id: String,
+    pub verified: bool,
+    pub proof_hash_hex: String,
+    pub claim_hash_hex: String,
+    pub message_hash_hex: String,
+    pub signature_hex: String,
+    pub signature_r_hex: String,
+    pub signature_s_hex: String,
+    pub signature_v: u8,
+    pub signer_address: String,
+    pub signer_public_key_hex: String,
+    pub signed_at_unix: i64,
+    pub nullifiers: Vec<u32>,
+    pub merkle_roots: Vec<u32>,
+    pub token: u32,
+    pub total_amount: u32,
+    /// offerCommitment extracted from circuit output[4] — proven in ZK, not server-computed.
+    pub offer_commitment: u32,
+    /// offerRefundSnHash extracted from circuit output[6] — proven in ZK.
+    pub offer_refund_sn_hash: u32,
+    pub secret_hash: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicKeyResponse {
     pub signer_public_key_hex: String,
     pub signer_address: String,

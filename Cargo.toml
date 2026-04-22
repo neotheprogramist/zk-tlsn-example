@@ -83,3 +83,4 @@ circuits = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat
 circuits-stark-verifier = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
 circuit-common = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
 circuit-prover = { git = "https://github.com/piotr-stec/stwo-circuits", branch = "feat/merkle-membership" }
+stwo-circuit = { path = "./stwo-circuit" }

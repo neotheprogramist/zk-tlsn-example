@@ -14,11 +14,12 @@ use crate::{
         HealthResponse, PublicKeyResponse, SignTransactionSettlementRequest,
         SignTransactionSettlementResponse, VerifyAndSignRequest, VerifyAndSignResponse,
         VerifyAndSignRecursiveWithdrawRequest, VerifyAndSignRecursiveWithdrawResponse,
+        VerifyAndSignRecursiveCreateOfferRequest, VerifyAndSignRecursiveCreateOfferResponse,
         VerifyTlsnAndSignSettlementRequest, VerifyTlsnAndSignSettlementResponse,
         VerifyTlsnAndSignTransactionSettlementRequest,
         VerifyTlsnAndSignTransactionSettlementResponse,
     },
-    verify::{verify_raw_stwo_proof, verify_recursive_withdraw},
+    verify::{verify_raw_stwo_proof, verify_recursive_withdraw, verify_recursive_create_offer},
 };
 
 
@@ -37,6 +38,10 @@ pub fn router(signer: Arc<Signer>) -> Router {
         .route(
             "/verify-and-sign-recursive-withdraw",
             post(verify_and_sign_recursive_withdraw),
+        )
+        .route(
+            "/verify-and-sign-recursive-create-offer",
+            post(verify_and_sign_recursive_create_offer),
         )
         .route(
             "/verify-tlsn-and-sign-settlement",
@@ -132,6 +137,44 @@ async fn verify_and_sign_recursive_withdraw(
         token: verified.token,
         total_amount: verified.total_amount,
         recipient: verified.recipient,
+    }))
+}
+
+async fn verify_and_sign_recursive_create_offer(
+    State(state): State<AppState>,
+    Json(req): Json<VerifyAndSignRecursiveCreateOfferRequest>,
+) -> Result<Json<VerifyAndSignRecursiveCreateOfferResponse>, ApiError> {
+    let verified = verify_recursive_create_offer(&req)?;
+
+    let msg_hash_vec = hex::decode(&verified.message_hash_hex)
+        .map_err(|e| ApiError::Internal(format!("invalid message hash hex: {e}")))?;
+    let mut msg_hash = [0u8; 32];
+    msg_hash.copy_from_slice(&msg_hash_vec);
+    let sig = state
+        .signer
+        .sign_digest(msg_hash)
+        .map_err(ApiError::Internal)?;
+
+    Ok(Json(VerifyAndSignRecursiveCreateOfferResponse {
+        proof_id: req.proof_id,
+        verified: true,
+        proof_hash_hex: verified.proof_hash_hex,
+        claim_hash_hex: format!("0x{}", verified.claim_hash_hex),
+        message_hash_hex: format!("0x{}", verified.message_hash_hex),
+        signature_hex: format!("0x{}", hex::encode(sig.signature_65)),
+        signature_r_hex: format!("0x{}", hex::encode(sig.r)),
+        signature_s_hex: format!("0x{}", hex::encode(sig.s)),
+        signature_v: sig.v,
+        signer_address: state.signer.address_hex(),
+        signer_public_key_hex: state.signer.public_key_hex(),
+        signed_at_unix: Utc::now().timestamp(),
+        nullifiers: verified.nullifiers,
+        merkle_roots: verified.merkle_roots,
+        token: verified.token,
+        total_amount: verified.total_amount,
+        offer_commitment: verified.offer_commitment,
+        offer_refund_sn_hash: verified.offer_refund_sn_hash,
+        secret_hash: verified.secret_hash,
     }))
 }
 
