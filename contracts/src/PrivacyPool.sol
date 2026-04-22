@@ -96,6 +96,13 @@ contract PrivacyPool {
         uint256 totalAmount,
         uint256 batchSize
     );
+    event RecursiveOfferCreated(
+        uint256 indexed offerCommitment,
+        uint256 indexed secretHash,
+        address indexed token,
+        uint256 totalAmount,
+        uint256 batchSize
+    );
 
     error TransferFailed();
     error NullifierAlreadyUsed();
@@ -122,6 +129,7 @@ contract PrivacyPool {
     bytes constant CLAIM_PREFIX = "trusted-stwo-claim-v1";
     bytes constant MESSAGE_PREFIX = "trusted-stwo-message-v1";
     bytes constant RECURSIVE_WITHDRAW_PREFIX = "trusted-stwo-recursive-withdraw-v1";
+    bytes constant RECURSIVE_CREATE_OFFER_PREFIX = "trusted-stwo-recursive-create-offer-v1";
 
     constructor(address _owner) {
         owner = _owner;
@@ -601,6 +609,79 @@ contract PrivacyPool {
         uint256 newRoot = tree.addLeaf(outputCommitment);
         emit Deposit(outputCommitment, amount, token, leafIndex, newRoot);
         emit OfferCancelled(offerNullifier, offerCommitment);
+    }
+
+    /// @notice Create an offer from a recursive batch deposit proof.
+    /// offerCommitment and offerRefundSnHash are ZK-proven public outputs from the terminal circuit —
+    /// the contract trusts the server signature which binds to these proven values.
+    /// Claim layout: keccak256(RECURSIVE_CREATE_OFFER_PREFIX || proofHash || n_nullifiers || nullifiers[]
+    ///               || n_roots || roots[] || tokenM31 || totalAmount || offerCommitment
+    ///               || offerRefundSnHash || secretHash)
+    function recursiveCreateOffer(
+        bytes32 proofHash,
+        uint32[] calldata batchNullifiers,
+        uint32[] calldata batchRoots,
+        uint256 totalAmount,
+        address token,
+        uint32 offerCommitment,
+        uint32 offerRefundSnHash,
+        uint32 secretHash,
+        bytes calldata signature
+    ) external {
+        if (batchNullifiers.length == 0) revert InvalidVerifierResponse();
+        if (batchNullifiers.length != batchRoots.length) revert InvalidVerifierResponse();
+        if (offers[secretHash].timestamp != 0) revert OfferAlreadyExists();
+
+        uint32 tokenM31 = _m31ToU32(_addressToM31(token));
+        uint32 amountU32 = _m31ToU32(totalAmount);
+
+        bytes memory claimBytes = abi.encodePacked(
+            RECURSIVE_CREATE_OFFER_PREFIX,
+            proofHash,
+            uint32(batchNullifiers.length)
+        );
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            claimBytes = abi.encodePacked(claimBytes, batchNullifiers[i]);
+        }
+        claimBytes = abi.encodePacked(claimBytes, uint32(batchRoots.length));
+        for (uint256 i = 0; i < batchRoots.length; i++) {
+            claimBytes = abi.encodePacked(claimBytes, batchRoots[i]);
+        }
+        claimBytes = abi.encodePacked(
+            claimBytes,
+            tokenM31, amountU32,
+            offerCommitment, offerRefundSnHash,
+            secretHash
+        );
+
+        if (recoverSigner(messageHash(keccak256(claimBytes)), signature) != trustedSignerAddress()) {
+            revert ProofVerificationFailed();
+        }
+
+        for (uint256 i = 0; i < batchRoots.length; i++) {
+            if (!tree.isValidRoot(uint256(batchRoots[i]))) revert InvalidRoot();
+        }
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            if (nullifiers[uint256(batchNullifiers[i])]) revert NullifierAlreadyUsed();
+        }
+        for (uint256 i = 0; i < batchNullifiers.length; i++) {
+            nullifiers[uint256(batchNullifiers[i])] = true;
+        }
+
+        offersTree.addLeaf(uint256(offerCommitment));
+        offerCommitmentToSecretHash[uint256(offerCommitment)] = uint256(secretHash);
+
+        offers[uint256(secretHash)] = Offer({
+            tokenAddress: token,
+            status: OfferStatus.CREATED,
+            cryptoAmount: totalAmount,
+            timestamp: block.timestamp,
+            offerRefundSecretNullifierHash: uint256(offerRefundSnHash)
+        });
+
+        activeOffers.push(uint256(secretHash));
+
+        emit RecursiveOfferCreated(uint256(offerCommitment), uint256(secretHash), token, totalAmount, batchNullifiers.length);
     }
 
     // ── View helpers ──────────────────────────────────────────────────────────
