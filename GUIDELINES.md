@@ -1,217 +1,140 @@
-# CLAUDE.md
+# GUIDELINES.md
 
-Declarative functional programming standards with monadic patterns for Rust.
+Engineering standards for this repository.
 
----
-
-## Core Principles
-
-### Declarative Over Imperative
-
-Describe **what** you want, not **how** to compute it. Use transformation pipelines (`map`, `filter`, `fold`, `flat_map`) instead of loops with mutation. Start declarative; go imperative only when profiling proves necessity.
-
-### Simplest Abstraction
-
-Over-engineering is the primary risk in FP adoption. Always choose the minimal abstraction:
-
-| Need                             | Abstraction | Operation  |
-| -------------------------------- | ----------- | ---------- |
-| Transform value                  | Functor     | `map`      |
-| Combine independent computations | Applicative | `zip`      |
-| Sequence dependent computations  | Monad       | `and_then` |
-
-If your chain only uses `map`, you need a Functor—not a Monad. If computations are independent, use `zip` for parallelism—Monads serialize by design.
-
-### Railway-Oriented Programming
-
-Values flow along the happy path until an error diverts to the failure track. Tracks never merge implicitly—handle both paths explicitly via pattern matching or `map_err`/`unwrap_or_else`.
-
-### Errors Are Values
-
-Never panic for expected failures. Panics are for bugs and unrecoverable states only. Design domain errors as closed enum hierarchies with specific variants for programmatic handling.
-
-### Immutability
-
-Prefer immutable bindings and owned data. Rust's ownership provides stronger guarantees than runtime immutability. Use explicit immutable collections (`im`, `rpds`) only when you need cheap snapshots, structural sharing, or concurrent read access. Otherwise rely on ownership and borrowing.
-
-### Canonical State
-
-Persist only **irreducible source data**. Derive everything else on demand. Derived values cannot drift from their source when computed on demand.
-
-### Pure vs Effectful
-
-Pure functions are deterministic with no side effects—testable with simple input/output assertions, composable, cacheable, parallelizable. Side effects (I/O, network, time, randomness) belong in dedicated types that make the effect explicit in the return type.
-
-### Composition Over Nesting
-
-Replace nested conditionals with flat transformation chains. Pipelines read linearly; nested structures require mental stack management.
-
-### Exhaustive Matching
-
-All variant handling must use exhaustive pattern matching. The compiler verifies every case is handled. No default catch-alls—when you add a variant, the compiler shows every location that needs updating.
-
-### Coalgebraic State Machines
-
-Each state variant determines valid observations and transitions. The state type encodes what operations are valid. Invalid transitions should be unrepresentable in the type system where possible. Use exhaustive `match` on enums for runtime-validated transitions. Use typestate pattern (states as types) when invalid transitions must be compile errors—reserve for public APIs with serious misuse consequences.
-
-### Property-Based Testing
-
-Verify properties that hold for all valid inputs—not just specific examples: roundtrip invariants, algebraic laws, idempotence. Cover all state variants, success and error paths, boundary conditions.
-
-### Collections Are Never Optional
-
-Never wrap collections in `Option`. Empty collection already represents absence—`Option<Vec<T>>` is redundant since `vec![]` conveys "no items."
-
-| Scenario                               | Use                     |
-| -------------------------------------- | ----------------------- |
-| Success always returns a collection    | `Vec<T>` (empty = none) |
-| Need to distinguish failure from empty | `Result<Vec<T>, E>`     |
-| Single value that may be absent        | `Option<T>`             |
-
-This applies to all collection types: vectors, sets, maps, iterators.
-
-### No Hidden Runtime Failures
-
-Never use operators that can panic at runtime. All fallible operations must return `Result` or `Option` to make failure explicit in the type system.
-
-### Code Style
-
-- Declarative pipelines over imperative steps
-- Short, focused functions named for what they return
-- No comments unless code truly needs explanation
-- No docstrings on self-explanatory code
+This file is authoritative for active development. If another doc conflicts with this file, follow `GUIDELINES.md`.
 
 ---
 
-## Dependencies
+## Core Rules
 
-| Crate                  | Purpose                                 |
-| ---------------------- | --------------------------------------- |
-| `smol`                 | Primary async runtime                   |
-| `tokio`                | IO adapters only (not the executor)     |
-| `quinn`                | QUIC transport (`runtime-smol` feature) |
-| `axum` / `hyper`       | HTTP server and client                  |
-| `rustls`               | TLS implementation                      |
-| `noir`                 | ZK proof generation (Barretenberg)      |
-| `tlsn`                 | TLS notarization protocol               |
-| `pest` / `pest_derive` | PEG parser for HTTP messages            |
-| `thiserror`            | Typed error enums                       |
-| `serde` / `serde_json` | Serialization                           |
-| `tracing`              | Structured logging                      |
-| `futures`              | Async combinators and utilities         |
-| `proptest`             | Property-based testing                  |
+### 1) One Happy Path, Fail Fast
 
----
+- Implement one clear happy path per operation.
+- Remove unnecessary alternate code paths, legacy compatibility branches, and silent fallbacks.
+- Fail early with descriptive errors at the point of failure.
 
-## Error Handling
+### 2) Declarative and Monadic
 
-Use `thiserror` for typed error enums with specific variants for programmatic handling. Use `anyhow` in binary/CLI code where error context matters more than programmatic matching. The `?` operator is Rust's native monadic bind with early return—prefer over explicit `match` unless branch-specific logic needed.
+- Prefer linear, composable flow over deeply nested imperative branching.
+- Use monadic composition (map, flatMap, bind, and_then) to chain operations on wrapped values — errors, optionals, futures, collections.
+- Keep functions small, deterministic where possible, and named by outcome.
+- Use pure helpers for transformation and validation; isolate effects at boundaries.
 
-No `unwrap()`/`expect()` in library code. Return `Result`, let caller decide.
+### 3) Monadic Error Propagation
 
-### Provably Infallible Operations
+- Errors are values, not exceptions. Model fallible operations as monadic types (Result, Option, Either) and compose them through bind/flatMap/and_then.
+- Every failure must be handled or propagated — never silently ignored.
+- Convert unknown failures into the project's error model at system boundaries with operation context.
+- Define a single error type per boundary with automatic conversion from source errors. Source errors are wrapped transparently — the type system performs conversion during monadic composition, not the programmer at each call site.
 
-Library code may use `expect("proof")` or `as` casts for operations **mathematically provable** to never fail. Each usage MUST include a comment proving infallibility (e.g., compile-time constants, bounded inputs, prior validation). Without proof comment, the pattern is forbidden.
+### 4) Exhaustive Modeling
 
-### Test Code Exception
+- Use closed type hierarchies for finite domain, state, and error sets.
+- Use exhaustive handling for closed sets — the compiler must enforce that every variant is addressed.
+- If a state can be represented, it must be valid. If it shouldn't exist, make it unrepresentable.
 
-Test code (`tests/`, `examples/`, `#[test]` functions) may use `expect()` with descriptive messages for clearer test failures. Never use bare `unwrap()` in tests—always prefer `expect("context")` to explain what failed.
+### 5) Ownership and Lifecycle
 
-| Context      | Allowed         | Forbidden              |
-| ------------ | --------------- | ---------------------- |
-| Library code | `?`, `Result`   | `unwrap()`, `expect()` |
-| Test code    | `expect("msg")` | `unwrap()`             |
-| Examples     | `expect("msg")` | `unwrap()`             |
+- Every resource has exactly one owner responsible for its lifecycle.
+- Shared access is explicit — prefer borrowing over cloning, references over copies.
+- Cleanup is structural, not ad-hoc. Resources are released when their owner goes out of scope.
+- Long-lived resources are owned by long-lived scopes. Short-lived consumers borrow, never own.
 
----
+### 6) Valid By Construction
 
-## No Hidden Panics
-
-Never use operators that can panic at runtime. All fallible operations must return `Result` or `Option` to make failure explicit in the type system.
-
-| Forbidden             | Required                                          |
-| --------------------- | ------------------------------------------------- |
-| `x as T`              | `T::from(x)` or `T::try_from(x)?`                 |
-| `slice[i]`            | `slice.get(i)` → `Option`                         |
-| `slice[a..b]`         | `slice.get(a..b)` → `Option`                      |
-| `a + b`, `a * b`, etc | `a.checked_add(b)`, `a.checked_mul(b)` → `Option` |
-| `a / b`, `a % b`      | `a.checked_div(b)`, `a.checked_rem(b)` → `Option` |
-| `HashMap[key]`        | `map.get(&key)` → `Option`                        |
+- Runtime objects must be representable only in valid states.
+- Required fields are non-optional and enforced at construction.
+- Incomplete input exists only in explicitly typed intermediate states (builders, drafts, forms) — never in persisted or runtime models.
+- Convert intermediate input into runtime models at boundaries with validation errors.
 
 ---
 
-## Async
+## Derived Principles
 
-Use `smol` as the primary async runtime. `tokio` is used only for IO adapters (`TokioIo`), not as the executor. Quinn is configured with `runtime-smol` (not tokio). Use `TryFutureExt` combinators (`map_ok`, `and_then`, `or_else`) for railway-oriented async composition.
+### No Hidden Traps
 
-## Clippy
+- Do not assert invariants the compiler cannot verify without documenting the proof.
+- Panics in request-handling or concurrent code are bugs — propagate errors instead.
+- Panics at startup for provably infallible setup are acceptable with a proof message.
+- Infallible operations verified by the compiler (e.g., compile-time template checking) may use forceful unwrapping with a descriptive message.
 
-Run `cargo +nightly clippy --workspace --all-features --all-targets` and fix all warnings before committing.
+### Immutability and Canonical State
+
+- Prefer immutable data. Mutation is explicit and scoped.
+- Persist only irreducible source data.
+- Derive secondary/computed values on read — do not store them redundantly.
+
+### Boundaries Own Conversion
+
+- External input enters the system as untyped/untrusted data.
+- Validation and conversion happen once, at the boundary, producing typed domain objects.
+- Code inside the boundary operates on validated types only — no re-validation deeper in the stack.
+
+### Prefer Type Inference
+
+- Function arguments should be typed.
+- Return types should be inferred from typed arguments and the function's internal transformations.
+- Add explicit non-argument type annotations only when inference is insufficient, ambiguous, or needed to enforce an important boundary.
+- Do not duplicate types that the compiler or checker can already derive from inputs, local values, and implementation.
+
+### Composition Over Abstraction
+
+- Three similar lines are better than a premature abstraction.
+- Introduce abstractions only when a pattern is stable and repeated.
+- Flat composition of small functions over deep inheritance or trait hierarchies.
+
+### Self-Descriptive Code Over Comments
+
+- Default to no comments.
+- Express intent through meaningful names, precise types, and small focused functions.
+- Comment only the WHY when it is non-obvious. Never comment the WHAT — that is already in the code.
 
 ---
 
 ## Anti-Patterns
 
-| Forbidden                        | Required                                  |
-| -------------------------------- | ----------------------------------------- |
-| `unwrap()`/`expect()` in lib     | Return `Result`                           |
-| `unwrap()` in tests              | `expect("descriptive message")`           |
-| `Box<dyn Error>` in public API   | Typed error enum                          |
-| `clone()` to avoid borrow issues | Restructure ownership                     |
-| Panic for expected errors        | Return `Result`                           |
-| `as` for type conversion         | `T::from(x)` or `T::try_from(x)?`         |
-| `[]` indexing                    | `.get()` returning `Option`               |
-| Unchecked arithmetic             | `.checked_*()` methods returning `Option` |
-| `Option<Vec<T>>`                 | `Vec<T>` or `Result<Vec<T>, E>`           |
-| Default case in match            | Explicit variant handling                 |
+| Forbidden                                             | Required                                         |
+| ----------------------------------------------------- | ------------------------------------------------ |
+| Silent defaulting on invalid config/state             | Return an error                                  |
+| Catch-and-ignore on critical flow                     | Propagate with context                           |
+| Multiple fallback branches for same action            | One happy path + fail-fast                       |
+| Asserting invariants without compiler proof           | Typed validation or `// PROOF:` comment          |
+| Shared mutable state without explicit synchronization | Owned state or explicit shared-access primitives |
+| Cleanup via manual discipline                         | Structural cleanup tied to scope/ownership       |
 
 ---
 
-## Testing Philosophy
+## Enforcement Scope
 
-All tests must be **property-based, generative, and integration-focused**. No trivial unit tests with hardcoded values.
+- Enforce on runtime production code only.
+- Test code, fixtures, build scripts, and generated artifacts are exempt unless explicitly stated.
 
-### Core Rules
+---
 
-| Rule                       | Description                                                                   |
-| -------------------------- | ----------------------------------------------------------------------------- |
-| Generative inputs only     | All test data comes from generators—never hardcoded magic values              |
-| Integration over isolation | Test complete protocol pipelines, not isolated internal functions             |
-| State delta verification   | Capture state before/after operations, assert on deltas and invariants        |
-| Real dependencies          | Use real crypto, real services—mock only unavoidable external APIs            |
-| Error paths are required   | Generate invalid inputs and test all failure modes with same rigor as success |
-| Properties over examples   | Assert invariants on state transitions, not exact values                      |
+## Security
 
-### Forbidden Patterns
+- Sanitize and validate all external input at system boundaries.
+- Use parameterized queries — never interpolate untrusted data into query strings.
+- Never render untrusted content via raw/unescaped output.
+- Template auto-escaping must not be bypassed without documented justification.
 
-| Forbidden                                   | Required                                              |
-| ------------------------------------------- | ----------------------------------------------------- |
-| Hardcoded test values                       | Generated values via `proptest`                       |
-| Testing private/internal functions directly | Testing through public APIs as users would            |
-| Mocking crypto or core services             | Real implementations with test configurations         |
-| Single example per behavior                 | Multiple generated scenarios covering the input space |
-| Asserting exact values                      | Asserting properties and invariants                   |
-| Testing functions in isolation              | Testing complete flows end-to-end                     |
+---
 
-### Test Structure
+## Testing
 
-Every test follows this pattern:
+### Test Double Hierarchy
 
-1. **Generate** — Create random valid inputs using `proptest`
-2. **Setup** — Establish preconditions (create peers, configure network)
-3. **Capture before** — Snapshot relevant state
-4. **Execute** — Perform the operation under test
-5. **Capture after** — Snapshot state post-operation
-6. **Assert properties** — Verify invariants hold on the state delta
+Prefer real implementations over test doubles:
 
-### Test Utilities
+1. **Real implementation** — default. Use actual production code with in-process dependencies.
+2. **Fake** — in-memory implementation with real behavior when the real dependency requires external I/O.
+3. **Mock** — stub-based double. Only when crossing a system boundary that cannot run in tests.
 
-Build reusable infrastructure:
+Do not mock what you can fake. Do not fake what you can use directly.
 
-| Utility Type    | Purpose                                                          |
-| --------------- | ---------------------------------------------------------------- |
-| Generators      | Produce valid random inputs (peer IDs, addresses, messages)      |
-| State verifiers | Capture snapshots, compute deltas, assert invariants             |
-| Flow helpers    | Encapsulate multi-step operations (peer setup, connection flows) |
-| Await utilities | Handle async completion, timeout handling with tokio             |
-| Config builders | Construct test configurations with sensible defaults             |
+### Principles
+
+- Test through the public interface, not internal implementation details.
+- Test code is exempt from strict error handling rules.
+- Prefer integration tests that exercise real code paths over unit tests of isolated fragments.
