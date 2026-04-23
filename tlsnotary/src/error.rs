@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tlsn::{hash::HashAlgId, transcript::Direction};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -6,19 +7,22 @@ pub enum Error {
     HttpRequestFailed(u16),
 
     #[error(transparent)]
-    Parser(#[from] parser::ParseError),
+    Parser(#[from] crate::parser::ParseError),
 
     #[error("missing required field: {0}")]
     MissingField(&'static str),
 
-    #[error("invalid transcript data: {0}")]
-    InvalidTranscript(String),
+    #[error(transparent)]
+    InvalidTranscript(#[from] TranscriptError),
 
-    #[error("invalid configuration: {0}")]
-    InvalidConfig(String),
+    #[error("builder is missing required field: {0}")]
+    MissingBuilderField(&'static str),
 
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("{context}: {details}")]
+    InvalidInput {
+        context: &'static str,
+        details: String,
+    },
 
     #[error(transparent)]
     Tlsn(#[from] tlsn::Error),
@@ -52,4 +56,54 @@ pub enum Error {
 
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
+}
+
+impl From<std::str::Utf8Error> for Error {
+    fn from(err: std::str::Utf8Error) -> Self {
+        Self::InvalidTranscript(TranscriptError::InvalidUtf8(err))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum TranscriptError {
+    #[error("expected server name '{expected}', got '{actual}'")]
+    ServerName { expected: String, actual: String },
+
+    #[error("expected {expected:?} hash algorithm in {direction:?} direction, got {actual:?}")]
+    HashAlgorithm {
+        expected: HashAlgId,
+        actual: HashAlgId,
+        direction: Direction,
+    },
+
+    #[error("missing {ctx} header '{key}'")]
+    MissingHeader { ctx: &'static str, key: String },
+
+    #[error("{ctx} header '{key}' has no value")]
+    HeaderWithoutValue { ctx: &'static str, key: String },
+
+    #[error("missing {ctx} body field '{key}'")]
+    MissingBodyField { ctx: &'static str, key: String },
+
+    #[error("missing value for {ctx} field '{key}'")]
+    MissingFieldValue { ctx: &'static str, key: String },
+
+    #[error("{ctx} header '{key}': expected '{expected}', got '{actual}'")]
+    HeaderMismatch {
+        ctx: &'static str,
+        key: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("{ctx} field '{key}': expected {expected}, got {actual}")]
+    FieldMismatch {
+        ctx: &'static str,
+        key: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error(transparent)]
+    InvalidUtf8(#[from] std::str::Utf8Error),
 }

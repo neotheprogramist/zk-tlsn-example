@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use parser::{
+use crate::parser::{
     HttpMessage, JsonFieldRangeExt,
     standard::{Body, Header, Request, Response},
 };
@@ -350,10 +350,13 @@ where
                 )?;
             }
             Some(Body::Value(_)) => {
-                return Err(Error::InvalidInput(format!(
-                    "Expected key-value pair for keypath {}, got standalone value",
-                    key_value_rule.keypath
-                )));
+                return Err(Error::InvalidInput {
+                    context: "reveal+commit body rule",
+                    details: format!(
+                        "expected key-value pair for keypath {}, got standalone value",
+                        key_value_rule.keypath
+                    ),
+                });
             }
             None => log_unmatched_disclosure(
                 direction,

@@ -68,8 +68,18 @@ contract SettlementMintGate {
         if (toUserId != EXPECTED_TO_USER_ID) {
             revert WrongFiatDestination(EXPECTED_TO_USER_ID, toUserId);
         }
-        if (nullVkHash != EXPECTED_NULL_VK_HASH || recursiveVkHash != EXPECTED_RECURSIVE_VK_HASH || innerVkHash != EXPECTED_INNER_VK_HASH) {
-            revert InvalidVkHashes(EXPECTED_NULL_VK_HASH, nullVkHash, EXPECTED_RECURSIVE_VK_HASH, recursiveVkHash, EXPECTED_INNER_VK_HASH, innerVkHash);
+        if (
+            nullVkHash != EXPECTED_NULL_VK_HASH || recursiveVkHash != EXPECTED_RECURSIVE_VK_HASH
+                || innerVkHash != EXPECTED_INNER_VK_HASH
+        ) {
+            revert InvalidVkHashes(
+                EXPECTED_NULL_VK_HASH,
+                nullVkHash,
+                EXPECTED_RECURSIVE_VK_HASH,
+                recursiveVkHash,
+                EXPECTED_INNER_VK_HASH,
+                innerVkHash
+            );
         }
         if (claimedRoot[transfersRoot]) {
             revert RootAlreadyClaimed(transfersRoot);

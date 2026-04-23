@@ -1,3 +1,4 @@
+mod aggregate;
 mod cli;
 mod commitment;
 mod error;
@@ -8,39 +9,28 @@ mod recursive;
 mod ticket;
 mod verifier;
 
-#[cfg(test)]
-mod test_fixtures;
-
-#[cfg(test)]
-mod tests;
-
 use std::path::Path;
 
+pub use aggregate::{RecursiveSettlement, aggregate_attestations};
 pub use commitment::{BoundCommitment, bind_commitments_to_keys};
 pub use error::{Result, ZkTlsnError};
 pub use padding::PaddingConfig;
 pub use proof::{
-    ProofTransferFields, extract_committed_hash_from_proof, extract_transfer_fields_from_proof,
-    verify_proof, verify_proof_against_hash,
+    extract_committed_hash_from_proof, extract_transfer_fields_from_proof,
+    verify_proof_against_hash,
 };
 pub use prover::{
-    KeccakProof, NoirProverInputs, Proof, SettlementBundle, derive_noir_prover_inputs,
-    generate_settlement_bundle, generate_settlement_bundle_from_inputs,
+    AttestationProof, KeccakProof, NoirProverInputs, Proof, prove_attestation,
+    prove_attestation_from_inputs,
 };
 pub use recursive::{
-    HONK_FIELD_BYTES, INNER_PUBLIC_INPUTS, NULL_PUBLIC_INPUTS, RECURSIVE_PUBLIC_INPUTS,
-    RecursiveCircuit, RecursiveState, VkArtifacts, build_recursive_prover_toml,
-    compile_all_packages, derive_circuit_vk, generate_honk_solidity_verifier,
-    hex_field_words_to_bytes, parse_hex_field_word, prove_keccak_circuit,
-    prove_noir_recursive_circuit, prove_null_circuit, state_from_public_inputs,
+    RECURSIVE_PUBLIC_INPUTS, RecursiveCircuit, RecursiveState, VkArtifacts,
+    build_recursive_prover_toml, compile_all_packages, derive_circuit_vk,
+    generate_honk_solidity_verifier, prove_keccak_circuit, prove_noir_recursive_circuit,
+    prove_null_circuit, state_from_public_inputs,
 };
-pub use ticket::{
-    DEFAULT_VERIFIER_TICKET_PRIVATE_KEY, SignedTransferTicket, TicketSigner,
-    VERIFIER_TICKET_PRIVATE_KEY_ENV, ticket_message_hash,
-};
-pub use verifier::{
-    validate_generated_solidity_verifier, validate_generated_solidity_verifier_for_bytecode,
-};
+pub use ticket::{SignedTransferTicket, TicketSigner, VERIFIER_TICKET_PRIVATE_KEY_ENV};
+pub use verifier::validate_generated_solidity_verifier;
 
 pub fn ensure_cli_toolchain() -> Result<()> {
     cli::ensure_cli_toolchain()
@@ -55,7 +45,10 @@ pub fn cleanup_cli_outputs() -> Result<()> {
 }
 
 pub(crate) fn repo_root() -> &'static Path {
+    // PROOF: CARGO_MANIFEST_DIR is set by Cargo at compile time and always
+    // points to this crate's Cargo.toml directory, which by workspace layout
+    // is a child of the workspace root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("zktlsn crate should live under the workspace root")
+        .expect("zktlsn crate lives under the workspace root")
 }

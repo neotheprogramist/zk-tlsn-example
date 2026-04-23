@@ -4,12 +4,12 @@ pragma solidity ^0.8.27;
 import {Test} from "forge-std/Test.sol";
 
 import {SettlementMintGate} from "../src/SettlementMintGate.sol";
-import {SettlementHonkVerifier} from "../src/generated/SettlementHonkVerifier.sol";
+import {SettlementHonkVerifier} from "../../.data/evm/generated/SettlementHonkVerifier.sol";
 import {StableToken} from "../src/StableToken.sol";
 
 contract SettlementMintGateTest is Test {
-    string internal constant PROOF_PATH = "evm/testdata/settlement_proof.bin";
-    string internal constant PUBLIC_INPUTS_PATH = "evm/testdata/settlement_public_inputs.bin";
+    string internal constant PROOF_PATH = ".data/evm/testdata/settlement_proof.bin";
+    string internal constant PUBLIC_INPUTS_PATH = ".data/evm/testdata/settlement_public_inputs.bin";
     uint256 internal constant RESERVED_INDEX = 0;
     uint256 internal constant TOTAL_AMOUNT_INDEX = 1;
     uint256 internal constant TRANSFERS_ROOT_INDEX = 2;

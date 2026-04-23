@@ -1,0 +1,5 @@
+[tools]
+foundry = "1.5.1"
+
+[env]
+_.file = ".env"

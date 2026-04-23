@@ -6,9 +6,9 @@ libs = ["dependencies"]
 optimizer = true
 optimizer_runs = 1
 ignored_warnings_from = [
-    "evm/src/generated/SettlementHonkVerifier.sol",
+    ".data/evm/generated/SettlementHonkVerifier.sol",
 ]
-fs_permissions = [{ access = "read", path = "./evm/testdata" }]
+fs_permissions = [{ access = "read", path = "./.data/evm/testdata" }]
 
 [dependencies]
 forge-std = "1.15.0"
@@ -16,7 +16,7 @@ openzeppelin-contracts = { version = "5.6.1", git = "https://github.com/OpenZepp
 
 [lint]
 ignore = [
-    "evm/src/generated/SettlementHonkVerifier.sol",
+    ".data/evm/generated/SettlementHonkVerifier.sol",
 ]
 lint_on_build = false
 

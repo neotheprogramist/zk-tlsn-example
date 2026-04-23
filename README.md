@@ -1,223 +1,171 @@
 # zk-tlsn-example
 
-Stablecoin settlement demo built on TLSNotary, Noir, and Barretenberg.
+Stablecoin-settlement demo on TLSNotary + Noir + Barretenberg: three fiat transfers are attested via MPC-TLS, folded into one recursive Honk proof, and settled on-chain for a single mint.
 
-The current implementation targets latest `nargo`/`bb` and uses a CLI-only proving backend. A client produces an attestation proof for a fiat transfer. The verifier checks that proof against the TLSNotary transcript and, on success, signs a compact transfer ticket. A settlement circuit verifies those signed tickets, sums the mint amount, computes a batch root, and emits one final proof for onchain settlement.
+## Prerequisites
 
-## Architecture
+- Rust toolchain pinned in `rust-toolchain.toml`.
+- [`mise`](https://mise.jdx.dev/) (`mise install` once) — pins Foundry and injects `.env`.
+- Node **20+** (stdlib only; no `npm install`).
+- Noir / Barretenberg CLIs on `PATH`, ABI-compatible pair:
+  - `nargo 1.0.0-beta.20`
+  - `bb 5.0.0-nightly.20260324`
 
-Every fiat transfer yields a fixed-width 32 byte attestation:
+  A mismatched pair fails inside the recursive circuit with `Assertion failed: size() == max_size_impl`. Pin with `noirup` / `bbup`.
 
-```text
-{tx_id:010}{to_user_id:010}{amount:012}
-```
+## Repo layout
 
-The flow is:
+| Crate        | Role                                                                                                                              |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `tlsnotary/` | TLSN attestation core: MPC-TLS prover + verifier + validator + HTTP transcript parser + `Runtime`. No ZK, no on-chain.            |
+| `zktlsn/`    | Wrapper on `tlsnotary`: per-attestation ZK proof (`prove_attestation`) + recursive fold (`aggregate_attestations`) via Noir/`bb`. |
+| `shared/`    | `FiatTransferAttestation` encoder/parser — the only type shared by server and zktlsn.                                             |
+| `e2e/`       | Demo HTTPS ledger, QUIC verifier service, TLS/cert helpers, on-chain submission, and the six runnable binaries.                   |
 
-1. The prover generates an attestation proof with [circuits/attestation/src/main.nr](./circuits/attestation/src/main.nr).
-2. The verifier checks the TLSNotary transcript binding and verifies the attestation proof with `bb verify`.
-3. On success, the verifier signs a transfer ticket `(tx_id, to_user_id, amount)` with a fixed secp256k1 key.
-4. [circuits/null/src/main.nr](./circuits/null/src/main.nr) produces a bootstrap proof with zero state. The recursive circuit in [circuits/recursive/src/main.nr](./circuits/recursive/src/main.nr) then folds each attestation proof into the chain using `verify_proof_with_type`, enforcing a shared `to_user_id`, accumulating `total_amount`, and computing `transfers_root` via Pedersen hashing.
-5. [evm/src/SettlementMintGate.sol](./evm/src/SettlementMintGate.sol) verifies the final settlement proof, prevents replay by `transfers_root`, and mints [evm/src/StableToken.sol](./evm/src/StableToken.sol).
+Dependency direction: `tlsnotary → zktlsn → e2e`. Noir circuits live in `circuits/{attestation,null,recursive}/`; Solidity contracts in `evm/src/`.
 
-`single-settle` is only a wrapper around the canonical settlement pipeline with batch size `1`.
+## Binaries
 
-## Key Paths
+| Binary     | Role                                                                                                                                          |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server`   | Demo HTTPS ledger (salvo). Long-running. Shared by both flows.                                                                                |
+| `verifier` | QUIC verifier service — runs the TLSN verifier side of MPC-TLS and returns an attest-only outcome. Long-running. Shared by both flows.        |
+| `notarize` | **tlsnotary-only** client: creates a transfer, runs a TLSN session via `verifier`, prints the revealed transcript. No ZK.                     |
+| `prove`    | **zktlsn wrapper**: same TLSN attestation as `notarize`, then generates a per-transfer ZK proof via `zktlsn::prove_attestation`.              |
+| `fixture`  | Compiles circuits, generates the settlement fixture, deploys contracts to anvil.                                                              |
+| `settle`   | **wraps `prove` 3×**: collects 3 TLSN+ZK attestations, folds them via `zktlsn::aggregate_attestations`, submits the aggregate proof on-chain. |
 
-- [zktlsn/examples/server.rs](./zktlsn/examples/server.rs): in-memory fiat ledger
-- [zktlsn/examples/verifier.rs](./zktlsn/examples/verifier.rs): TLSNotary verifier plus ticket signer
-- [zktlsn/examples/prover.rs](./zktlsn/examples/prover.rs): off-chain attestation proof flow
-- [zktlsn/examples/settle.rs](./zktlsn/examples/settle.rs): canonical onchain settlement example
-- [zktlsn/examples/single-settle.rs](./zktlsn/examples/single-settle.rs): one-transfer wrapper around `settle`
-- [zktlsn/examples/fixture.rs](./zktlsn/examples/fixture.rs): deterministic settlement fixture generator
-- [zktlsn/examples/support/settlement_demo.rs](./zktlsn/examples/support/settlement_demo.rs): runtime settlement orchestration
-- [verifier/src/protocol.rs](./verifier/src/protocol.rs): proof verification and signed-ticket issuance
-- [zktlsn/src/ticket.rs](./zktlsn/src/ticket.rs): ticket hash and secp256k1 signing helpers
-- [evm/src/SettlementMintGate.sol](./evm/src/SettlementMintGate.sol): onchain mint gate
-- [evm/src/generated/SettlementHonkVerifier.sol](./evm/src/generated/SettlementHonkVerifier.sol): generated Solidity verifier
+## Examples vs. e2e tests
 
-[circuits/null/src/main.nr](./circuits/null/src/main.nr) serves as the bootstrap circuit for the recursive settlement chain, producing the initial zero-state proof that anchors the first recursive step.
+_Examples_ are the cargo binaries above — run them by hand and read the `ZKTLSN_RESULT` JSON line on stdout. _E2E tests_ are Node harness scripts in `scripts/` that spawn the same binaries and assert on that same JSON line. Identical flow, identical asserts; only the orchestrator differs. There is no Rust test suite and no mocks — the server, verifier, prover, anvil node, and both `nargo` / `bb` invocations are all real.
 
-## Toolchain
+Both flows share the same `server` and `verifier` processes. The `verifier` service is purely a TLSN attestation service — it never sees a ZK proof. ZK proof generation is a **client-side** step done by `prove` (and by `settle`, which wraps it) using the `zktlsn` library. The on-chain `SettlementMintGate` contract is the real ZK verifier.
 
-Rust:
+## Cleanup
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+Between runs you usually don't need to reset anything; stale state only matters when you change circuits or contracts.
 
-Noir:
+| Directory        | Contents                                                              | Reset command  |
+| ---------------- | --------------------------------------------------------------------- | -------------- |
+| `.data/`         | Certs, circuit cache, fixture proof bytes, on-chain deployment state. | `rm -rf .data` |
+| `target/`        | Rust build output and compiled Noir `.json` artifacts.                | `cargo clean`  |
+| `out/`, `cache/` | Foundry build + fixture caches.                                       | `forge clean`  |
 
-```bash
-curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
-noirup
-```
-
-Barretenberg:
+Full reset:
 
 ```bash
-curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
-bbup
+rm -rf .data target out cache
 ```
 
-Foundry:
+## Flow 1 — TLSN attestation only
+
+The `notarize` client `POST /transfer`s a 25-unit `alice → treasury` transfer through the demo ledger, opens a TLSN session via the QUIC `verifier` service, and reads back an attest-only outcome. The client then parses the notarised HTTP response body client-side and asserts the revealed fields. No ZK proof is generated.
+
+**Asserted** (from `scripts/run-tlsn.mjs`): `server_name == "localhost"`, `to_username == "treasury"`, `amount == 25`, `eligible_for_mint == true`, `commitment_count == 2`.
+
+### E2E test
 
 ```bash
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-forge soldeer install
+# Harness spawns server + verifier + notarize, asserts ZKTLSN_RESULT.
+node scripts/run-tlsn.mjs
 ```
 
-The code validates the expected CLI versions at runtime:
+### Example (manual)
 
-- `nargo 1.0.0-beta.19`
-- `bb 4.0.0-nightly.20260120`
+One-time setup (`mise trust` + `mise install`) and `.env` creation are shared with Flow 2 — see the Flow 2 manual block below. Flow 1 uses the same `server` + `verifier` binaries and the same `.env`; it only needs `ZKTLSN_FROM_USER` / `ZKTLSN_TO_USER` / `ZKTLSN_TRANSFER_AMOUNT` in addition.
 
-## Environment
-
-Copy [.env.example](./.env.example) to `.env` if you want defaults loaded by your shell.
-
-Important variables:
-
-- `ZKTLSN_SERVER_USERS=alice=100,bob=40,treasury=0`
-- `ZKTLSN_SERVER_SPECIAL_USER=treasury`
-- `ZKTLSN_FROM_USER=alice`
-- `ZKTLSN_TO_USER=treasury`
-- `ZKTLSN_TRANSFER_AMOUNT=25`
-- `ZKTLSN_BATCH_FROM_USERS=alice,bob,alice`
-- `ZKTLSN_BATCH_TO_USERS=treasury,treasury,treasury`
-- `ZKTLSN_BATCH_AMOUNTS=25,10,15`
-- `ZKTLSN_ANVIL_RPC_URL=http://127.0.0.1:8545`
-- `ZKTLSN_ANVIL_PRIVATE_KEY=...`
-- `ZKTLSN_MINT_RECIPIENT=...`
-- `ZKTLSN_VERIFIER_TICKET_PRIVATE_KEY=...`
-
-The verifier private key defines the signer baked into the settlement circuit constants. If you change it, rerun `fixture`.
-
-## One-Time Setup
+Then, in three shells (each `cd`'d into the repo root):
 
 ```bash
-git clone <repo-url>
-cd zk-tlsn-example
+# 1. demo ledger (shell 1, long-running)
+cargo run --release --bin server
 
-nargo compile --force
-cargo build --release --all-targets --examples
+# 2. verifier service (shell 2, long-running)
+cargo run --release --bin verifier
+
+# 3. notarize client (shell 3, one-shot)
+cargo run --release --bin notarize
 ```
 
-`fixture` regenerates:
+The `notarize` binary emits the same `ZKTLSN_RESULT` JSON line the e2e test asserts on. Its call chain uses only `tlsnotary` primitives — zktlsn is not on this path.
 
-- [evm/src/generated/SettlementHonkVerifier.sol](./evm/src/generated/SettlementHonkVerifier.sol)
-- [evm/testdata/settlement_fixture.json](./evm/testdata/settlement_fixture.json)
-- [evm/testdata/settlement_proof.bin](./evm/testdata/settlement_proof.bin)
-- [evm/testdata/settlement_public_inputs.bin](./evm/testdata/settlement_public_inputs.bin)
-- [zktlsn/examples/support/deployment_artifacts.json](./zktlsn/examples/support/deployment_artifacts.json)
-- `target/settlement_deployment.json` after it deploys contracts to the running Anvil instance
+## Flow 2 — TLSN + recursive ZK proof + on-chain settlement
 
-## Deterministic Checks
+Three fiat transfers (`alice → treasury 25`, `bob → treasury 10`, `alice → treasury 15`) each produce a TLSN attestation, each proved against the Noir `attestation` circuit. A `null` circuit produces the initial `(total=0, root=0)` state. Three `recursive` circuit steps then fold the three attestation proofs into one aggregated Honk proof whose 7 public inputs carry `(reserved=0, total_amount, transfers_root, to_user_id, null_vk_hash, recursive_vk_hash, inner_vk_hash)`. The final proof is submitted to `SettlementMintGate.settle`, which verifies the Honk proof, matches all three VK hashes, marks the `transfers_root` as claimed (replay protection), and mints `total_amount × 10¹⁸` stable-token units to the recipient.
 
-Offline checks:
+**Asserted** (from `scripts/run-settlement.mjs`): `num_attestations == 3`, `total_amount == 50`, `to_user_id == 3` (treasury), `claimed_root == true`, `balance_before == "0"`, `balance_delta == "50000000000000000000"`, plus 64-hex `transfers_root`, `null_vk_hash`, `recursive_vk_hash`, `inner_vk_hash`, and `tx_hash`.
+
+### E2E test
 
 ```bash
-nargo compile --force
-nargo test
-cargo check -p zktlsn --examples
-cargo check -p verifier
-forge lint
-forge test --match-contract SettlementMintGateTest -vv
+# Harness spawns anvil + fixture + server + verifier + settle in sequence
+# and asserts on the aggregated mint.
+node scripts/run-settlement.mjs
 ```
 
-Anvil-backed artifact and deployment refresh:
+### Example (manual)
+
+Each shell runs one long-lived process; one extra shell runs the batch driver. Every binary reads its config from environment variables, and `mise.toml` auto-loads them from `.env` when you enter the project directory — so you set them once and forget.
+
+**One-time setup.** Install `mise` (see [Prerequisites](#prerequisites)), then from the repo root:
 
 ```bash
-anvil
-cargo run --package zktlsn --release --example fixture
+mise trust       # authorise mise.toml + .env for this project
+mise install     # pin Foundry (and anything else mise.toml declares)
 ```
 
-`fixture` now deploys contracts, so it requires a running Anvil-compatible RPC.
+Create `.env` in the repo root with the values below. These match `scripts/run-settlement.mjs`, which is the source of truth.
 
-`SettlementMintGateTest` covers:
+```dotenv
+ZKTLSN_ANVIL_RPC_URL=http://127.0.0.1:8545
+ZKTLSN_ANVIL_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+ZKTLSN_MINT_RECIPIENT=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+ZKTLSN_SERVER_ADDR=127.0.0.1:8443
+ZKTLSN_SERVER_LISTEN_ADDR=127.0.0.1:8443
+ZKTLSN_SERVER_NAME=localhost
+ZKTLSN_SERVER_CERT_PATH=.data/tls/server-cert.pem
+ZKTLSN_SERVER_KEY_PATH=.data/tls/server-key.pem
+ZKTLSN_VERIFIER_ADDR=[::1]:5000
+ZKTLSN_VERIFIER_CERT_PATH=.data/quic/verifier-cert.pem
+ZKTLSN_QUIC_CERT_PATH=.data/quic/verifier-cert.pem
+ZKTLSN_QUIC_KEY_PATH=.data/quic/verifier-key.pem
 
-- valid settlement from the deterministic fixture
-- replay rejection by `transfers_root`
-- wrong destination rejection
-- tampered proof rejection
-- tampered public input rejection
+# Flow 1 (notarize) — single transfer.
+ZKTLSN_FROM_USER=alice
+ZKTLSN_TO_USER=treasury
+ZKTLSN_TRANSFER_AMOUNT=25
 
-## Live E2E
+# Flow 2 (settle) — three transfers folded into one aggregated proof.
+ZKTLSN_BATCH_FROM_USERS=alice,bob,alice
+ZKTLSN_BATCH_TO_USERS=treasury,treasury,treasury
+ZKTLSN_BATCH_AMOUNTS=25,10,15
+```
 
-Run these in separate terminals:
+Then, in four shells (each `cd`'d into the repo root so mise injects `.env`):
 
 ```bash
-cargo run --package zktlsn --release --example server
+# 1. anvil (shell 1)
+anvil --host 127.0.0.1 --port 8545
+
+# 2. deploy contracts + generate fixture artifacts (shell 2, one-shot)
+cargo run --release --bin fixture
+
+# 3. demo ledger (shell 3, long-running)
+cargo run --release --bin server
+
+# 4. verifier service (shell 4, long-running)
+cargo run --release --bin verifier
+
+# 5. run the 3-transfer settlement batch (shell 2 again)
+cargo run --release --bin settle
 ```
+
+Step 5 emits the same `ZKTLSN_RESULT` JSON line the e2e test asserts on — identical flow, identical output.
+
+## Forge tests
 
 ```bash
-cargo run --package zktlsn --release --example verifier
+forge test -vvv
 ```
 
-```bash
-anvil
-```
-
-After Anvil is running, deploy the settlement contracts once with:
-
-```bash
-cargo run --package zktlsn --release --example fixture
-```
-
-`fixture` is responsible for:
-
-- generating the deterministic settlement artifacts
-- generating the Solidity verifier and embedded deployment artifacts
-- deploying the verifier, token, and settlement gate to the current Anvil chain
-- writing the local deployment manifest to `target/settlement_deployment.json`
-
-Then run canonical settlement:
-
-```bash
-cargo run --package zktlsn --release --example settle
-```
-
-Single-transfer wrapper:
-
-```bash
-cargo run --package zktlsn --release --example single-settle
-```
-
-The default batch is:
-
-- `alice -> treasury : 25`
-- `bob -> treasury : 10`
-- `alice -> treasury : 15`
-
-Expected result: one settlement proof that mints `50 * 1e18` tokens to the configured recipient.
-
-Repeated `settle` runs against the same Anvil instance reuse the deployment from
-`target/settlement_deployment.json` and mint into the same token contract. The recipient balance
-therefore accumulates across runs until Anvil is reset. Rerunning `fixture` on the same chain will
-deploy a new verifier/token/gate set and overwrite `target/settlement_deployment.json` to point at
-that new deployment.
-
-To inspect the recipient's ERC-20 balance with `cast`, use the `token=` address printed by the
-`settle` example and the recipient address from the log output. If you do not pass
-`--mint-recipient`, the recipient defaults to Anvil account `0`
-(`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`).
-
-```bash
-cast call --rpc-url http://127.0.0.1:8545 "$TOKEN" "balanceOf(address)(uint256)" "$RECIPIENT"
-```
-
-On a fresh default Anvil run, that `balanceOf` value is:
-
-- `0` before the first `settle`
-- `50000000000000000000` after the first default `25 + 10 + 15` settlement
-- `100000000000000000000` after running the same default `settle` flow a second time on the same deployment
-
-Those exact numbers assume a fresh `server` process with the default ledger state and a fresh
-Anvil instance that has already been initialized by `fixture`.
-
-## Design Notes
-
-- The server-side artifact boundary stays stable: attestation proof bytes, public inputs, and VK bytes are still produced before settlement.
-- The recursive settlement circuit uses `verify_proof_with_type` with proof type `6` (UltraHonk ZK) to fold attestation proofs into a running batch state.
-- The signed-ticket design preserves mobile proving while keeping the latest CLI toolchain and a sound server-side authorization step.
+The Solidity gate + replay + VK-hash + tamper asserts in `evm/test/` consume fixture artifacts under `.data/evm/testdata/` produced by `cargo run --bin fixture` (step 2 of Flow 2). Run Flow 2's fixture step at least once before `forge test`.

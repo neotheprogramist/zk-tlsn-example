@@ -13,11 +13,7 @@ fn main(
     attestation: str<ATTESTATION_LEN>,
     attestation_blinder: [u8; 16],
 ) {
-    verify_commitment(
-        attestation_committed_hash,
-        attestation,
-        attestation_blinder,
-    );
+    verify_commitment(attestation_committed_hash, attestation, attestation_blinder);
 
     let parsed_tx_id = parse_decimal_bytes(tx_id_bytes(attestation));
     let parsed_to_user_id = parse_decimal_bytes(to_user_id_bytes(attestation));
@@ -28,11 +24,7 @@ fn main(
     assert(parsed_amount == amount, "amount mismatch");
 }
 
-fn verify_commitment<let N: u32>(
-    committed_hash: [u8; 32],
-    attestation: str<N>,
-    blinder: [u8; 16],
-) {
+fn verify_commitment<let N: u32>(committed_hash: [u8; 32], attestation: str<N>, blinder: [u8; 16]) {
     let computed_hash = hash(build_hash_input(attestation, blinder));
     assert_eq(committed_hash, computed_hash, "Commitment hash mismatch");
 }

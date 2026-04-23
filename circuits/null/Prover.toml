@@ -1,4 +1,0 @@
-to_user_id = "3"
-allowed_null_vk_hash = "0x12d78032d32faafa5c9465d3ab833dd4e78c94fafeeb9b0ac2b366ed08400d99"
-allowed_recursive_vk_hash = "0x2bc6eccec58a9abe54fc56b207c5423fcf8a57f32c692b50cab7156323bf0ab5"
-allowed_inner_vk_hash = "0x1fb325d840f4802e50b21952e9fb5e0fee50ce08ce14189d388bc1d50bfeec12"

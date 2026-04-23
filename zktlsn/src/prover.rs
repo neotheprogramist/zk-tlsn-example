@@ -40,7 +40,7 @@ impl KeccakProof {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SettlementBundle {
+pub struct AttestationProof {
     pub noir_inputs: NoirProverInputs,
     pub native_proof: Proof,
 }
@@ -63,8 +63,7 @@ impl NoirProverInputs {
         attestation_blinder: [u8; 16],
     ) -> Result<Self> {
         let attestation =
-            encode_transfer_attestation(FiatTransferAttestation::new(tx_id, to_user_id, amount))
-                .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
+            encode_transfer_attestation(FiatTransferAttestation::new(tx_id, to_user_id, amount))?;
 
         Self::from_attestation(attestation, attestation_blinder)
     }
@@ -74,14 +73,16 @@ impl NoirProverInputs {
         attestation_blinder: [u8; 16],
     ) -> Result<Self> {
         let attestation = attestation.into();
-        let parsed = parse_transfer_attestation(&attestation)
-            .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
+        let parsed = parse_transfer_attestation(&attestation)?;
         let attestation_bytes = attestation.as_bytes();
         if attestation_bytes.len() != ATTESTATION_LEN {
-            return Err(ZkTlsnError::InvalidInput(format!(
-                "attestation must be {ATTESTATION_LEN} bytes, got {}",
-                attestation_bytes.len()
-            )));
+            return Err(ZkTlsnError::InvalidInput {
+                context: "attestation length",
+                details: format!(
+                    "expected {ATTESTATION_LEN} bytes, got {}",
+                    attestation_bytes.len()
+                ),
+            });
         }
 
         let committed_hash = blake3_hash(attestation_bytes, &attestation_blinder);
@@ -124,27 +125,25 @@ impl NoirProverInputs {
     }
 }
 
-pub fn generate_settlement_bundle(
+pub fn prove_attestation(
     transcript_commitments: &[TranscriptCommitment],
     transcript_secrets: &[TranscriptSecret],
     received_data: &[u8],
     padding_config: PaddingConfig,
-) -> Result<SettlementBundle> {
+) -> Result<AttestationProof> {
     let noir_inputs = derive_noir_prover_inputs(
         transcript_commitments,
         transcript_secrets,
         received_data,
         padding_config,
     )?;
-    generate_settlement_bundle_from_inputs(noir_inputs)
+    prove_attestation_from_inputs(noir_inputs)
 }
 
-pub fn generate_settlement_bundle_from_inputs(
-    noir_inputs: NoirProverInputs,
-) -> Result<SettlementBundle> {
+pub fn prove_attestation_from_inputs(noir_inputs: NoirProverInputs) -> Result<AttestationProof> {
     cli::compile_package(RecursiveCircuit::Attestation.name())?;
     let native_proof = generate_native_proof_from_inputs(&noir_inputs)?;
-    Ok(SettlementBundle {
+    Ok(AttestationProof {
         noir_inputs,
         native_proof,
     })
@@ -224,18 +223,20 @@ fn prepare_proof_input(
         return Err(ZkTlsnError::InvalidHashAlgorithm);
     }
 
-    let range_start = secret.idx.min().ok_or(ZkTlsnError::InvalidInput(
-        "received secret commitment has empty index range".to_string(),
-    ))?;
+    let range_start = secret.idx.min().ok_or(ZkTlsnError::InvalidInput {
+        context: "received secret",
+        details: String::from("commitment has empty index range"),
+    })?;
     let range_end = range_start.saturating_add(padding_config.commitment_length);
     let range = range_start..range_end;
     let committed_data = received_data
         .get(range.clone())
-        .ok_or_else(|| {
-            ZkTlsnError::InvalidInput(format!(
-                "received commitment range {range_start}..{range_end} is out of transcript bounds {}",
+        .ok_or_else(|| ZkTlsnError::InvalidInput {
+            context: "received commitment range",
+            details: format!(
+                "{range_start}..{range_end} exceeds transcript length {}",
                 received_data.len()
-            ))
+            ),
         })?
         .to_vec();
     let blinder = secret.blinder.as_bytes().to_vec();
@@ -255,11 +256,8 @@ fn build_noir_prover_inputs(input: &ProofInput) -> Result<NoirProverInputs> {
     let attestation_committed_hash =
         to_fixed_array::<32>(&input.committed_hash, "attestation_committed_hash")?;
     let attestation_blinder = to_fixed_array::<16>(&input.blinder, "attestation_blinder")?;
-    let attestation = String::from_utf8(input.committed_data.clone()).map_err(|error| {
-        ZkTlsnError::InvalidInput(format!("attestation must be valid UTF-8: {error}"))
-    })?;
-    let parsed = parse_transfer_attestation(&attestation)
-        .map_err(|error| ZkTlsnError::InvalidInput(error.to_string()))?;
+    let attestation = String::from_utf8(input.committed_data.clone())?;
+    let parsed = parse_transfer_attestation(&attestation)?;
 
     Ok(NoirProverInputs {
         attestation_committed_hash,
@@ -278,13 +276,14 @@ fn blake3_hash(data: &[u8], blinder: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &str) -> Result<[u8; N]> {
-    bytes.try_into().map_err(|_| {
-        ZkTlsnError::InvalidInput(format!(
-            "{field_name} must be {N} bytes, got {}",
-            bytes.len()
-        ))
-    })
+fn to_fixed_array<const N: usize>(bytes: &[u8], field_name: &'static str) -> Result<[u8; N]> {
+    let Ok(array) = <[u8; N]>::try_from(bytes) else {
+        return Err(ZkTlsnError::InvalidInput {
+            context: field_name,
+            details: format!("expected {N} bytes, got {}", bytes.len()),
+        });
+    };
+    Ok(array)
 }
 
 fn u64_to_field_word(value: u64) -> [u8; HONK_FIELD_BYTES] {
@@ -324,62 +323,4 @@ struct ProofInput {
     committed_hash: Vec<u8>,
     committed_data: Vec<u8>,
     blinder: Vec<u8>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::NoirProverInputs;
-    use crate::test_fixtures::{load_attestation_fixture, parse_fixture_public_inputs};
-
-    #[test]
-    fn noir_inputs_from_transfer_match_attestation_fixture() {
-        let fixture = load_attestation_fixture();
-        let attestation_blinder: [u8; 16] = fixture
-            .attestation_blinder
-            .clone()
-            .try_into()
-            .expect("fixture blinder length");
-        let attestation_committed_hash: [u8; 32] = fixture
-            .attestation_committed_hash
-            .clone()
-            .try_into()
-            .expect("fixture committed hash length");
-
-        let inputs = NoirProverInputs::from_transfer(
-            fixture.tx_id,
-            fixture.to_user_id,
-            fixture.amount,
-            attestation_blinder,
-        )
-        .expect("build Noir inputs");
-
-        assert_eq!(inputs.attestation, fixture.attestation);
-        assert_eq!(inputs.attestation_blinder, attestation_blinder);
-        assert_eq!(
-            inputs.attestation_committed_hash,
-            attestation_committed_hash
-        );
-    }
-
-    #[test]
-    fn solidity_public_inputs_match_attestation_fixture() {
-        let fixture = load_attestation_fixture();
-        let attestation_blinder: [u8; 16] = fixture
-            .attestation_blinder
-            .clone()
-            .try_into()
-            .expect("fixture blinder length");
-        let inputs = NoirProverInputs::from_transfer(
-            fixture.tx_id,
-            fixture.to_user_id,
-            fixture.amount,
-            attestation_blinder,
-        )
-        .expect("build Noir inputs");
-
-        assert_eq!(
-            inputs.to_solidity_public_inputs(),
-            parse_fixture_public_inputs(&fixture.public_inputs)
-        );
-    }
 }

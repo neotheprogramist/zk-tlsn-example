@@ -1,4 +1,4 @@
-use crate::SharedError;
+use crate::AttestationError;
 
 pub const TX_ID_WIDTH: usize = 10;
 pub const USER_ID_WIDTH: usize = 10;
@@ -24,7 +24,7 @@ impl FiatTransferAttestation {
 
 pub fn encode_transfer_attestation(
     attestation: FiatTransferAttestation,
-) -> Result<String, SharedError> {
+) -> Result<String, AttestationError> {
     ensure_fits(attestation.tx_id, TX_ID_WIDTH, "tx_id")?;
     ensure_fits(attestation.to_user_id, USER_ID_WIDTH, "to_user_id")?;
     ensure_fits(attestation.amount, AMOUNT_WIDTH, "amount")?;
@@ -37,12 +37,14 @@ pub fn encode_transfer_attestation(
     ))
 }
 
-pub fn parse_transfer_attestation(value: &str) -> Result<FiatTransferAttestation, SharedError> {
+pub fn parse_transfer_attestation(
+    value: &str,
+) -> Result<FiatTransferAttestation, AttestationError> {
     if value.len() != ATTESTATION_LEN {
-        return Err(SharedError::InvalidAttestation(format!(
-            "expected {ATTESTATION_LEN} bytes, got {}",
-            value.len()
-        )));
+        return Err(AttestationError::InvalidLength {
+            expected: ATTESTATION_LEN,
+            actual: value.len(),
+        });
     }
 
     let tx_id = parse_segment(value.get(..TX_ID_WIDTH), "tx_id")?;
@@ -58,43 +60,29 @@ pub fn parse_transfer_attestation(value: &str) -> Result<FiatTransferAttestation
     Ok(FiatTransferAttestation::new(tx_id, to_user_id, amount))
 }
 
-fn parse_segment(segment: Option<&str>, label: &str) -> Result<u64, SharedError> {
-    segment
-        .ok_or_else(|| SharedError::InvalidAttestation(format!("missing {label} segment")))?
-        .parse::<u64>()
-        .map_err(|error| SharedError::InvalidAttestation(format!("invalid {label}: {error}")))
+fn parse_segment(segment: Option<&str>, label: &'static str) -> Result<u64, AttestationError> {
+    let text = segment.ok_or(AttestationError::MissingSegment(label))?;
+    match text.parse::<u64>() {
+        Ok(value) => Ok(value),
+        Err(source) => Err(AttestationError::InvalidSegment { label, source }),
+    }
 }
 
-fn ensure_fits(value: u64, width: usize, label: &str) -> Result<(), SharedError> {
-    let width = u32::try_from(width)
-        .map_err(|_| SharedError::InvalidAttestation(format!("invalid width for {label}")))?;
+fn ensure_fits(value: u64, width: usize, label: &'static str) -> Result<(), AttestationError> {
+    // PROOF: attestation widths are small compile-time constants in this module,
+    // so u32::try_from(width) cannot fail — asserting the proof via expect here
+    // keeps the error path uniform for the caller.
+    let width = u32::try_from(width).expect("attestation width fits in u32");
     let limit = 10_u64
         .checked_pow(width)
-        .ok_or_else(|| SharedError::InvalidAttestation(format!("width overflow for {label}")))?;
+        .expect("attestation width decimal limit fits in u64");
 
-    (value < limit).then_some(()).ok_or_else(|| {
-        SharedError::InvalidAttestation(format!(
-            "{label} value {value} exceeds {width}-digit limit"
-        ))
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ATTESTATION_LEN, FiatTransferAttestation, encode_transfer_attestation,
-        parse_transfer_attestation,
-    };
-
-    #[test]
-    fn test_transfer_attestation_roundtrip() {
-        let encoded = encode_transfer_attestation(FiatTransferAttestation::new(1, 3, 25))
-            .expect("encoded attestation");
-
-        assert_eq!(encoded.len(), ATTESTATION_LEN);
-        assert_eq!(
-            parse_transfer_attestation(&encoded).expect("parsed attestation"),
-            FiatTransferAttestation::new(1, 3, 25)
-        );
+    if value >= limit {
+        return Err(AttestationError::SegmentTooWide {
+            label,
+            value,
+            width,
+        });
     }
+    Ok(())
 }

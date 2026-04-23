@@ -1,8 +1,8 @@
 use std::verify_proof_with_type;
 
 global HONK_VK_SIZE: u32 = 115;
-global HONK_PROOF_SIZE: u32 = 508;
-// proof_type 6 = UltraHonk ZK verifier (bb_proof_verification PROOF_TYPE_HONK_ZK)
+// bb 5.0 RECURSIVE_ZK_PROOF_LENGTH for PROOF_TYPE_HONK_ZK=6
+global HONK_PROOF_SIZE: u32 = 458;
 global HONK_IDENTIFIER: u32 = 6;
 global INNER_PUBLIC_INPUTS: u32 = 35;
 global PREV_PUBLIC_INPUTS: u32 = 7;
@@ -45,8 +45,20 @@ fn main(
     let is_recursive = prev_key_hash == allowed_recursive_vk_hash;
     assert(is_null | is_recursive, "prev VK not in allowed set");
 
-    verify_proof_with_type(inner_vk, inner_proof, inner_public_inputs, inner_key_hash, HONK_IDENTIFIER);
-    verify_proof_with_type(prev_vk, prev_proof, prev_public_inputs, prev_key_hash, HONK_IDENTIFIER);
+    verify_proof_with_type(
+        inner_vk,
+        inner_proof,
+        inner_public_inputs,
+        inner_key_hash,
+        HONK_IDENTIFIER,
+    );
+    verify_proof_with_type(
+        prev_vk,
+        prev_proof,
+        prev_public_inputs,
+        prev_key_hash,
+        HONK_IDENTIFIER,
+    );
 
     let inner_tx_id = inner_public_inputs[32];
     let inner_to_user_id = inner_public_inputs[33];
@@ -69,13 +81,8 @@ fn main(
     let transfers_root = next_transfers_root(prev_root, inner_tx_id, inner_amount);
 
     (
-        0,
-        total_amount,
-        transfers_root,
-        inner_to_user_id,
-        allowed_null_vk_hash,
-        allowed_recursive_vk_hash,
-        allowed_inner_vk_hash,
+        0, total_amount, transfers_root, inner_to_user_id, allowed_null_vk_hash,
+        allowed_recursive_vk_hash, allowed_inner_vk_hash,
     )
 }
 

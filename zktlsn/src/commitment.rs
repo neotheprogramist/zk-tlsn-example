@@ -13,7 +13,7 @@ pub struct BoundCommitment {
 }
 
 pub fn bind_commitments_to_keys(
-    parsed_response: &parser::redacted::Response,
+    parsed_response: &tlsnotary::parser::redacted::Response,
     transcript_commitments: &[TranscriptCommitment],
 ) -> Result<HashMap<String, BoundCommitment>> {
     let mut commitments_by_position: BTreeMap<usize, &PlaintextHash> = BTreeMap::new();
@@ -21,10 +21,9 @@ pub fn bind_commitments_to_keys(
         if let TranscriptCommitment::Hash(hash) = commitment
             && hash.direction == Direction::Received
         {
-            let start = hash.idx.min().ok_or_else(|| {
-                ZkTlsnError::InvalidInput(
-                    "received transcript commitment is missing range start".to_string(),
-                )
+            let start = hash.idx.min().ok_or(ZkTlsnError::InvalidInput {
+                context: "commitment binding",
+                details: String::from("received transcript commitment is missing range start"),
             })?;
             commitments_by_position.insert(start, hash);
         }
@@ -34,7 +33,7 @@ pub fn bind_commitments_to_keys(
         .body
         .iter()
         .filter_map(|(keypath, body_field)| {
-            if let parser::redacted::Body::KeyValue { key, value } = body_field
+            if let tlsnotary::parser::redacted::Body::KeyValue { key, value } = body_field
                 && value.is_none()
             {
                 find_nearest_commitment(&commitments_by_position, key.end).map(|hash| {

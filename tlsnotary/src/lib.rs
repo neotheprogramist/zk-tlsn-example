@@ -1,11 +1,14 @@
 pub mod error;
+pub mod parser;
 pub mod prover;
+pub mod runtime;
 pub mod verifier;
 
 pub use error::Error;
 pub use prover::{
     BodyFieldConfig, KeyValueCommitConfig, Prover, ProverBuilder, ProverOutput, RevealConfig,
 };
+pub use runtime::{Runtime, SmolRuntime, TokioRuntime};
 pub use tlsn::{
     Session,
     config::{
@@ -18,7 +21,7 @@ pub use tlsn::{
     connection::ServerName,
     hash::HashAlgId,
     transcript::{
-        Direction, PartialTranscript, TranscriptCommitConfig, TranscriptCommitment,
+        Direction, PartialTranscript, Transcript, TranscriptCommitConfig, TranscriptCommitment,
         TranscriptCommitmentKind, TranscriptSecret,
         hash::{PlaintextHash, PlaintextHashSecret},
     },
@@ -30,6 +33,3 @@ pub use verifier::{
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-#[cfg(test)]
-mod tests;

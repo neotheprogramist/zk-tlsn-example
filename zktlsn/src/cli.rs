@@ -15,8 +15,8 @@ use crate::{
     repo_root,
 };
 
-const EXPECTED_NARGO_VERSION: &str = "1.0.0-beta.19";
-const EXPECTED_BB_VERSION: &str = "4.0.0-nightly.20260120";
+const EXPECTED_NARGO_VERSION: &str = "1.0.0-beta.20";
+const EXPECTED_BB_VERSION: &str = "5.0.0-nightly.20260324";
 const TARGET_DIR: &str = "target";
 const CLI_DIR: &str = "cli";
 
@@ -53,9 +53,8 @@ static COMPILED_PACKAGES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub(crate) fn compile_package(package: &str) -> Result<()> {
     let set = COMPILED_PACKAGES.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = set
-        .lock()
-        .map_err(|e| ZkTlsnError::InvalidInput(e.to_string()))?;
+    // PROOF: poisoning means a prior holder panicked — unrecoverable state.
+    let mut guard = set.lock().expect("COMPILED_PACKAGES mutex poisoned");
     if !guard.insert(package.to_string()) {
         return Ok(());
     }
@@ -181,6 +180,8 @@ pub(crate) fn write_solidity_verifier(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // bb 5.0: --optimized is not available for ZK verifiers; emit the
+    // non-optimized ZK Solidity verifier instead.
     run_command(
         repo_root(),
         "bb",
@@ -192,7 +193,6 @@ pub(crate) fn write_solidity_verifier(
             &path_arg(output_path)?,
             "-t",
             target.as_str(),
-            "--optimized",
         ],
     )?;
     Ok(())
@@ -237,12 +237,15 @@ pub(crate) fn write_vk_for_circuit(
 pub(crate) fn read_single_field_word(path: &Path) -> Result<[u8; HONK_FIELD_BYTES]> {
     let bytes = fs::read(path)?;
     if bytes.len() != HONK_FIELD_BYTES {
-        return Err(ZkTlsnError::InvalidInput(format!(
-            "expected {} bytes in `{}`, got {}",
-            HONK_FIELD_BYTES,
-            path.display(),
-            bytes.len()
-        )));
+        return Err(ZkTlsnError::InvalidInput {
+            context: "single field word",
+            details: format!(
+                "expected {} bytes in `{}`, got {}",
+                HONK_FIELD_BYTES,
+                path.display(),
+                bytes.len()
+            ),
+        });
     }
     let mut word = [0u8; HONK_FIELD_BYTES];
     word.copy_from_slice(&bytes);
@@ -266,11 +269,14 @@ pub(crate) fn read_field_words_from_bytes(
     label: &str,
 ) -> Result<Vec<[u8; HONK_FIELD_BYTES]>> {
     if !bytes.len().is_multiple_of(HONK_FIELD_BYTES) {
-        return Err(ZkTlsnError::InvalidInput(format!(
-            "expected `{label}` to contain {}-byte field words, got {} bytes",
-            HONK_FIELD_BYTES,
-            bytes.len()
-        )));
+        return Err(ZkTlsnError::InvalidInput {
+            context: "field word stream",
+            details: format!(
+                "`{label}` must contain {}-byte words, got {} bytes",
+                HONK_FIELD_BYTES,
+                bytes.len()
+            ),
+        });
     }
 
     bytes
@@ -284,16 +290,19 @@ pub(crate) fn read_field_words_from_bytes(
 }
 
 fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Result<()> {
-    let output = Command::new(program)
+    let output = match Command::new(program)
         .args(args)
         .current_dir(repo_root())
         .output()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => ZkTlsnError::MissingTool {
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ZkTlsnError::MissingTool {
                 tool: program.to_string(),
-            },
-            _ => ZkTlsnError::Io(error),
-        })?;
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
     if !output.status.success() {
         return Err(ZkTlsnError::CommandFailed {
             program: program.to_string(),
@@ -315,16 +324,15 @@ fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Resul
 }
 
 fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => ZkTlsnError::MissingTool {
+    let output = match Command::new(program).args(args).current_dir(cwd).output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ZkTlsnError::MissingTool {
                 tool: program.to_string(),
-            },
-            _ => ZkTlsnError::Io(error),
-        })?;
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
     if output.status.success() {
         return Ok(());
     }
@@ -353,9 +361,10 @@ fn cli_output_dir(label: &str) -> PathBuf {
 
 pub(crate) fn cleanup_cli_outputs() -> Result<()> {
     let tracker = CLI_OUTPUT_DIRS.get_or_init(|| Mutex::new(Vec::new()));
+    // PROOF: poisoning means a prior holder panicked — unrecoverable state.
     let dirs = tracker
         .lock()
-        .map_err(|e| ZkTlsnError::InvalidInput(e.to_string()))?
+        .expect("CLI_OUTPUT_DIRS mutex poisoned")
         .drain(..)
         .collect::<Vec<_>>();
     for dir in dirs {
@@ -387,5 +396,8 @@ fn scheme_for(circuit: RecursiveCircuit) -> &'static str {
 fn path_arg(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| ZkTlsnError::InvalidInput(format!("invalid UTF-8 path: {}", path.display())))
+        .ok_or_else(|| ZkTlsnError::InvalidInput {
+            context: "path utf8",
+            details: format!("invalid UTF-8 path: {}", path.display()),
+        })
 }

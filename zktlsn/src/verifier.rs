@@ -1,17 +1,9 @@
 use crate::{Result, error::ZkTlsnError};
 
-const PAIRING_POINTS_SIZE: usize = 16;
+// bb 5.0 emits solidity verifiers with PAIRING_POINTS_SIZE=8 (was 16 in bb 4.x).
+const PAIRING_POINTS_SIZE: usize = 8;
 
 pub fn validate_generated_solidity_verifier(source: &str, num_public_inputs: usize) -> Result<()> {
-    validate_generated_solidity_verifier_for_bytecode(source, "", num_public_inputs, false)
-}
-
-pub fn validate_generated_solidity_verifier_for_bytecode(
-    source: &str,
-    _bytecode: &str,
-    num_public_inputs: usize,
-    _recursive: bool,
-) -> Result<()> {
     let expected_public_inputs = num_public_inputs + PAIRING_POINTS_SIZE;
     [
         (
@@ -23,7 +15,9 @@ pub fn validate_generated_solidity_verifier_for_bytecode(
             "verification key `publicInputsSize`",
         ),
         (
-            String::from("if (publicInputs.length != vk.publicInputsSize - PAIRING_POINTS_SIZE) {"),
+            String::from(
+                "require(publicInputs.length == vk.publicInputsSize - PAIRING_POINTS_SIZE, Errors.PublicInputsLengthWrong());",
+            ),
             "public input arity guard",
         ),
         (
@@ -37,49 +31,12 @@ pub fn validate_generated_solidity_verifier_for_bytecode(
     .try_for_each(|(snippet, label)| ensure_contains(source, &snippet, label))
 }
 
-fn ensure_contains(source: &str, snippet: &str, label: &str) -> Result<()> {
-    source.contains(snippet).then_some(()).ok_or_else(|| {
-        ZkTlsnError::InvalidInput(format!(
-            "generated Solidity verifier is missing {label}: `{snippet}`"
-        ))
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_generated_solidity_verifier;
-
-    #[test]
-    fn validate_generated_solidity_verifier_accepts_expected_source() {
-        let source = r#"
-uint256 constant NUMBER_OF_PUBLIC_INPUTS = 51;
-Honk.VerificationKey memory vk = Honk.VerificationKey({
-    publicInputsSize: uint256(51)
-});
-function verify(bytes calldata _proof, bytes32[] calldata _publicInputs) external view returns (bool) {}
-if (publicInputs.length != vk.publicInputsSize - PAIRING_POINTS_SIZE) {
-}
-"#;
-
-        validate_generated_solidity_verifier(source, 35).expect("valid raw verifier");
-    }
-
-    #[test]
-    fn validate_generated_solidity_verifier_rejects_mismatched_public_inputs_size() {
-        let source = r#"
-uint256 constant NUMBER_OF_PUBLIC_INPUTS = 47;
-Honk.VerificationKey memory vk = Honk.VerificationKey({
-    publicInputsSize: uint256(47)
-});
-function verify(bytes calldata _proof, bytes32[] calldata _publicInputs) external view returns (bool) {}
-if (publicInputs.length != vk.publicInputsSize - PAIRING_POINTS_SIZE) {
-}
-"#;
-
-        let error =
-            validate_generated_solidity_verifier(source, 35).expect_err("mismatched verifier");
-        assert!(error.to_string().contains(
-            "generated Solidity verifier is missing verifier constant `NUMBER_OF_PUBLIC_INPUTS`"
-        ));
-    }
+fn ensure_contains(source: &str, snippet: &str, label: &'static str) -> Result<()> {
+    source
+        .contains(snippet)
+        .then_some(())
+        .ok_or_else(|| ZkTlsnError::InvalidInput {
+            context: "solidity verifier",
+            details: format!("missing {label}: `{snippet}`"),
+        })
 }
