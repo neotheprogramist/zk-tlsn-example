@@ -342,16 +342,17 @@ contract PrivacyPool {
     }
 
     /// @notice Create an offer from a ZK proof.
-    /// @dev claimOutputValues (7 M31 scalars from offer circuit):
+    /// @dev claimOutputValues (10 M31 scalars from offer circuit):
     ///   [0] depositsRoot  [1] nullifier  [2] tokenM31  [3] amount
     ///   [4] offerCommitment  [5] refundCommitment  [6] offerRefundSnHash
+    ///   [7] fiatAmount  [8] currencyHash  [9] revTagHash
     function createOffer(
         uint32[4][] calldata claimOutputValues,
         bytes calldata signature,
         address token,
         uint256 secretHash
     ) external {
-        if (claimOutputValues.length < 7) revert InvalidVerifierResponse();
+        if (claimOutputValues.length < 10) revert InvalidVerifierResponse();
 
         uint256 root = _qm31ToM31(claimOutputValues[0]);
         uint256 nullifier = _qm31ToM31(claimOutputValues[1]);
@@ -360,16 +361,15 @@ contract PrivacyPool {
         uint256 offerCommitment = _qm31ToM31(claimOutputValues[4]);
         uint256 refundCommitment = _qm31ToM31(claimOutputValues[5]);
         uint256 offerRefundSnHash = _qm31ToM31(claimOutputValues[6]);
+        uint256 fiatAmount = _qm31ToM31(claimOutputValues[7]);
+        uint256 currencyHash = _qm31ToM31(claimOutputValues[8]);
+        uint256 revTagHash = _qm31ToM31(claimOutputValues[9]);
 
         if (
-            !_verifySignature7(
-                root,
-                nullifier,
-                tokenM31,
-                amount,
-                offerCommitment,
-                refundCommitment,
-                offerRefundSnHash,
+            !_verifySignature10(
+                root, nullifier, tokenM31, amount,
+                offerCommitment, refundCommitment, offerRefundSnHash,
+                fiatAmount, currencyHash, revTagHash,
                 signature
             )
         ) {
@@ -747,6 +747,30 @@ contract PrivacyPool {
         bytes calldata signature
     ) internal pure returns (bool) {
         bytes32 cHash = executionHash(a, b, c, d, e, f);
+        return recoverSigner(messageHash(cHash), signature) == trustedSignerAddress();
+    }
+
+    function _verifySignature10(
+        uint256 a, uint256 b, uint256 c, uint256 d,
+        uint256 e, uint256 f, uint256 g,
+        uint256 h, uint256 i_, uint256 j,
+        bytes calldata signature
+    ) internal pure returns (bool) {
+        bytes32 cHash = keccak256(
+            abi.encodePacked(
+                CLAIM_PREFIX,
+                _u32be(_m31ToU32(a)),
+                _u32be(_m31ToU32(b)),
+                _u32be(_m31ToU32(c)),
+                _u32be(_m31ToU32(d)),
+                _u32be(_m31ToU32(e)),
+                _u32be(_m31ToU32(f)),
+                _u32be(_m31ToU32(g)),
+                _u32be(_m31ToU32(h)),
+                _u32be(_m31ToU32(i_)),
+                _u32be(_m31ToU32(j))
+            )
+        );
         return recoverSigner(messageHash(cHash), signature) == trustedSignerAddress();
     }
 
