@@ -35,6 +35,7 @@ pub struct AppState {
     balances: Arc<RwLock<HashMap<String, u64>>>,
     rev_tag: String,
     fiat_amount: u64,
+    currency: String,
     signature_secret: String,
 }
 
@@ -45,12 +46,15 @@ impl AppState {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(123);
+        let currency =
+            std::env::var("MOCK_CURRENCY").unwrap_or_else(|_| "GBP".to_string());
         let signature_secret =
             std::env::var("MOCK_SIGNATURE_SECRET").unwrap_or_else(|_| "mock-secret".to_string());
         Self {
             balances: Arc::new(RwLock::new(balances)),
             rev_tag,
             fiat_amount,
+            currency,
             signature_secret,
         }
     }
@@ -72,16 +76,19 @@ pub struct TransferResponse {
     rev_tag: String,
     #[serde(rename = "fiatAmount")]
     fiat_amount: u64,
+    #[serde(rename = "currency")]
+    currency: String,
     #[serde(rename = "z")]
     padding: String,
 }
 
 impl TransferResponse {
-    fn new(comment_data: String, rev_tag: String, fiat_amount: u64) -> Self {
+    fn new(comment_data: String, rev_tag: String, fiat_amount: u64, currency: String) -> Self {
         Self {
             comment_data,
             rev_tag,
             fiat_amount,
+            currency,
             padding: " ".repeat(12),
         }
     }
@@ -121,7 +128,7 @@ async fn get_transfer(
     State(state): State<AppState>,
     Path(comment): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let body = TransferResponse::new(comment, state.rev_tag.clone(), state.fiat_amount);
+    let body = TransferResponse::new(comment, state.rev_tag.clone(), state.fiat_amount, state.currency.clone());
     let signature = sign_transfer_payload(
         &body.comment_data,
         &body.rev_tag,
