@@ -166,7 +166,8 @@ pub fn build_offer_merkle_context(witness: &OfferMerkleWitness) -> Context<QM31>
 
     // Public outputs expected by contract/server:
     //   [0] root, [1] nullifier, [2] token, [3] amount,
-    //   [4] offerCommitment, [5] initialRefundCommitment, [6] offerRefundSnHash
+    //   [4] offerCommitment, [5] initialRefundCommitment, [6] offerRefundSnHash,
+    //   [7] fiatAmount, [8] currencyHash, [9] revTagHash
     output(&mut context, root);
     output(&mut context, nullifier);
     output(&mut context, token);
@@ -174,6 +175,9 @@ pub fn build_offer_merkle_context(witness: &OfferMerkleWitness) -> Context<QM31>
     output(&mut context, offer_commitment_hash);
     output(&mut context, refund_commitment_hash);
     output(&mut context, offer_refund_sn_hash);
+    output(&mut context, fiat_amount);
+    output(&mut context, currency_hash);
+    output(&mut context, rev_tag_hash);
 
 
     context
