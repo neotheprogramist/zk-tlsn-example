@@ -18,8 +18,9 @@ use crate::{
         VerifyTlsnAndSignSettlementRequest, VerifyTlsnAndSignSettlementResponse,
         VerifyTlsnAndSignTransactionSettlementRequest,
         VerifyTlsnAndSignTransactionSettlementResponse,
+        SignedSingleOfferData,
     },
-    verify::{verify_raw_stwo_proof, verify_recursive_withdraw, verify_recursive_create_offer},
+    verify::{verify_raw_stwo_proof, verify_recursive_withdraw, verify_recursive_create_offer, reconstruct_single_offer_message_hash},
 };
 
 
@@ -175,6 +176,9 @@ async fn verify_and_sign_recursive_create_offer(
         offer_commitment: verified.offer_commitment,
         offer_refund_sn_hash: verified.offer_refund_sn_hash,
         secret_hash: verified.secret_hash,
+        fiat_amount: verified.fiat_amount,
+        currency_hash: verified.currency_hash,
+        rev_tag_hash: verified.rev_tag_hash,
     }))
 }
 
@@ -340,6 +344,33 @@ async fn verify_tlsn_and_sign_transaction_settlement(
         ));
     }
 
+    // If a signed offer is provided, verify its signature and check TLSN values match.
+    if let Some(signed_offer) = &req.signed_offer {
+        let (offer_fiat, offer_currency_hash, offer_rev_tag_hash) =
+            verify_single_offer_and_extract_terms(&state, signed_offer)?;
+
+        if fiat_amount != u64::from(offer_fiat) {
+            return Err(ApiError::Verification(format!(
+                "TLSN fiatAmount {fiat_amount} does not match offer fiatAmount {offer_fiat}"
+            )));
+        }
+
+        let tlsn_rev_tag_hash = str_to_m31(&rev_tag);
+        if tlsn_rev_tag_hash != offer_rev_tag_hash {
+            return Err(ApiError::Verification(format!(
+                "TLSN revTag hash {tlsn_rev_tag_hash} does not match offer revTagHash {offer_rev_tag_hash}"
+            )));
+        }
+
+        let currency = body_json.get("currency").and_then(|v| v.as_str()).unwrap_or("");
+        let tlsn_currency_hash = str_to_m31(currency);
+        if tlsn_currency_hash != offer_currency_hash {
+            return Err(ApiError::Verification(format!(
+                "TLSN currency hash {tlsn_currency_hash} does not match offer currencyHash {offer_currency_hash}"
+            )));
+        }
+    }
+
     let tx_id = decode_hex_32(&req.transaction_id_hex, "transaction_id_hex")?;
     let buyer = decode_hex_20(&req.buyer_address, "buyer_address")?;
     let token = decode_hex_20(&req.token_address, "token_address")?;
@@ -380,6 +411,49 @@ async fn verify_tlsn_and_sign_transaction_settlement(
         signer_public_key_hex: state.signer.public_key_hex(),
         signed_at_unix: Utc::now().timestamp(),
     }))
+}
+
+/// Verifies a single-deposit offer signature and returns (fiat_amount, currency_hash, rev_tag_hash).
+///
+/// Reconstructs the claim bytes from `claim_output_values` using the same "trusted-stwo-claim-v1"
+/// prefix logic as the `/verify-and-sign` endpoint, verifies the ECDSA signature, and extracts
+/// the ZK-proven offer terms from outputs [7], [8], [9].
+fn verify_single_offer_and_extract_terms(
+    state: &AppState,
+    offer: &SignedSingleOfferData,
+) -> Result<(u32, u32, u32), ApiError> {
+    let (message_hash, fiat_amount, currency_hash, rev_tag_hash) =
+        reconstruct_single_offer_message_hash(&offer.claim_output_values)?;
+
+    let sig_hex = offer.signature_hex.trim_start_matches("0x");
+    let sig_bytes = hex::decode(sig_hex)
+        .map_err(|e| ApiError::InvalidInput(format!("invalid signed_offer signature: {e}")))?;
+    if sig_bytes.len() != 65 {
+        return Err(ApiError::InvalidInput(
+            "signed_offer signature must be 65 bytes".to_string(),
+        ));
+    }
+
+    let recovered = state
+        .signer
+        .recover_address(message_hash, &sig_bytes)
+        .map_err(|e| ApiError::Verification(format!("offer signature recovery failed: {e}")))?;
+
+    if !recovered.eq_ignore_ascii_case(&state.signer.address_hex()) {
+        return Err(ApiError::Verification(
+            "signed_offer was not signed by this server".to_string(),
+        ));
+    }
+
+    Ok((fiat_amount, currency_hash, rev_tag_hash))
+}
+
+fn str_to_m31(s: &str) -> u32 {
+    const M31: u64 = (1u64 << 31) - 1;
+    s.bytes()
+        .fold(0u64, |acc, b| {
+            acc.wrapping_mul(131).wrapping_add(b as u64) % M31
+        }) as u32
 }
 
 fn normalize_hex_prefixed(s: &str) -> String {

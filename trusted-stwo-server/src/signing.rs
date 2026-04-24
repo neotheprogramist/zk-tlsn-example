@@ -66,6 +66,29 @@ impl Signer {
         format!("0x{}", hex::encode(self.address))
     }
 
+    /// Recovers the signer address (0x-prefixed hex) from a 65-byte EVM signature (r|s|v).
+    pub fn recover_address(&self, digest32: [u8; 32], sig65: &[u8]) -> Result<String, String> {
+        if sig65.len() != 65 {
+            return Err(format!("signature must be 65 bytes, got {}", sig65.len()));
+        }
+        let v = sig65[64];
+        let recovery_id_raw = if v >= 27 { v - 27 } else { v };
+        let recid = RecoveryId::from_i32(i32::from(recovery_id_raw))
+            .map_err(|e| format!("invalid recovery id: {e}"))?;
+        let msg = Message::from_digest_slice(&digest32)
+            .map_err(|e| format!("invalid digest: {e}"))?;
+        let mut compact = [0u8; 64];
+        compact.copy_from_slice(&sig65[0..64]);
+        let recoverable = RecoverableSignature::from_compact(&compact, recid)
+            .map_err(|e| format!("invalid signature: {e}"))?;
+        let pubkey = self
+            .secp
+            .recover_ecdsa(&msg, &recoverable)
+            .map_err(|e| format!("recovery failed: {e}"))?;
+        let addr = address_from_pubkey(&pubkey);
+        Ok(format!("0x{}", hex::encode(addr)))
+    }
+
     pub fn sign_digest(&self, digest32: [u8; 32]) -> Result<EvmSignature, String> {
         let msg = Message::from_digest_slice(&digest32)
             .map_err(|e| format!("invalid digest length: {e}"))?;

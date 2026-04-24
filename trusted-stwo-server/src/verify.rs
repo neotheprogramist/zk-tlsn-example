@@ -23,7 +23,7 @@ const IDX_RECIPIENT: usize = 5;
 const WITHDRAW_CIRCUIT_ROOT_U32: [u32; 8] =
     [652536158, 1858539233, 59812728, 107606911, 121169370, 567731177, 498092224, 1678070508];
 const OFFER_CIRCUIT_ROOT_U32: [u32; 8] =
-    [2083006622, 875350036, 949412405, 1403257640, 1687447398, 1160659095, 1153139438, 1349329321];
+    [902165740, 1346305038, 1748925693, 1104586736, 1870730692, 90716518, 2081041874, 460870125];
 
 const OFFER_SPEND_CANCEL_CIRCUIT_ROOT_U32: [u32; 8] =
     [228289986, 724834124, 320566596, 1181551808, 1139858737, 1093925691, 977744636, 212433008];
@@ -31,9 +31,9 @@ const OFFER_SPEND_CANCEL_CIRCUIT_ROOT_U32: [u32; 8] =
 // Terminal offer circuit: verifies full recursive accumulated proof + proves offerCommitment in ZK.
 // Step2 == stable (terminal stabilises at N=2, one step earlier than the accumulator).
 const OFFER_TERMINAL_STEP1_ROOT_U32: [u32; 8] =
-    [2123831596, 774154872, 215040919, 45785260, 2140798896, 1452535023, 922618969, 1961052800];
+    [1792127072, 1285818740, 1386980931, 328988617, 431457831, 1405517098, 1850187090, 1141660344];
 const OFFER_TERMINAL_STABLE_ROOT_U32: [u32; 8] =
-    [626675481, 2013871859, 1212401755, 198642368, 2081990364, 1953051901, 873756461, 1192898319];
+    [1928045575, 1837518804, 870489993, 382443634, 1448994755, 1318264099, 753086036, 1145628333];
 
 const RECURSIVE_STEP1_ROOT_U32: [u32; 8] =
     [1754113036, 1826477655, 1206977738, 950444227, 2075168426, 1808668797, 2085858017, 954426740];
@@ -241,7 +241,9 @@ fn compute_signature_hashes(
         .take_while(|limbs| limbs[1] == 0 && limbs[2] == 0 && limbs[3] == 0)
         .count();
 
-    let signed_output_count = if scalar_prefix_count >= 8 {
+    let signed_output_count = if scalar_prefix_count >= 10 {
+        10
+    } else if scalar_prefix_count >= 8 {
         8
     } else if scalar_prefix_count >= 7 {
         7
@@ -293,6 +295,44 @@ fn keccak256(bytes: &[u8]) -> [u8; 32] {
     k.update(bytes);
     k.finalize(&mut out);
     out
+}
+
+/// Reconstructs the message hash for a single-deposit offer claim from raw circuit output values.
+///
+/// Uses the same logic as `compute_signature_hashes`: signs up to 10 scalar M31 outputs under
+/// the "trusted-stwo-claim-v1" prefix.  Returns `(message_hash, fiat_amount, currency_hash,
+/// rev_tag_hash)` where the offer terms are extracted from outputs [7], [8], [9].
+pub fn reconstruct_single_offer_message_hash(
+    claim_output_values: &[[u32; 4]],
+) -> Result<([u8; 32], u32, u32, u32), ApiError> {
+    let scalar_count = claim_output_values
+        .iter()
+        .take_while(|v| v[1] == 0 && v[2] == 0 && v[3] == 0)
+        .count();
+
+    if scalar_count < 10 {
+        return Err(ApiError::InvalidInput(format!(
+            "single offer claim_output_values must have at least 10 scalar outputs, got {scalar_count}"
+        )));
+    }
+
+    let mut claim_bytes = Vec::new();
+    claim_bytes.extend_from_slice(b"trusted-stwo-claim-v1");
+    for limbs in claim_output_values.iter().take(10) {
+        claim_bytes.extend_from_slice(&limbs[0].to_be_bytes());
+    }
+    let claim_hash = keccak256(&claim_bytes);
+
+    let mut message_bytes = Vec::new();
+    message_bytes.extend_from_slice(b"trusted-stwo-message-v1");
+    message_bytes.extend_from_slice(&claim_hash);
+    let message_hash = keccak256(&message_bytes);
+
+    let fiat_amount = claim_output_values[7][0];
+    let currency_hash = claim_output_values[8][0];
+    let rev_tag_hash = claim_output_values[9][0];
+
+    Ok((message_hash, fiat_amount, currency_hash, rev_tag_hash))
 }
 
 pub struct VerifiedRecursiveWithdraw {
@@ -439,6 +479,10 @@ pub struct VerifiedRecursiveCreateOffer {
     /// offerRefundSnHash is output[6] of the terminal circuit — proven in ZK.
     pub offer_refund_sn_hash: u32,
     pub secret_hash: u32,
+    /// Offer terms from circuit outputs[7..9] — proven in ZK, bound to offerCommitment.
+    pub fiat_amount: u32,
+    pub currency_hash: u32,
+    pub rev_tag_hash: u32,
 }
 
 /// Verifies a recursive batch-offer terminal proof.
@@ -480,11 +524,12 @@ pub fn verify_recursive_create_offer(
         ));
     }
 
-    // Terminal circuit outputs: [root_acc, nullifier_acc, token, total_amount, offerCommitment, 0, offerRefundSnHash]
+    // Terminal circuit outputs: [root_acc, nullifier_acc, token, total_amount, offerCommitment, 0,
+    //                            offerRefundSnHash, fiatAmount, currencyHash, revTagHash]
     let outputs = &req.claim_output_values;
-    if outputs.len() < 7 {
+    if outputs.len() < 10 {
         return Err(ApiError::InvalidInput(
-            "claim_output_values must have at least 7 entries (terminal circuit outputs)".to_string(),
+            "claim_output_values must have at least 10 entries (terminal circuit outputs)".to_string(),
         ));
     }
 
@@ -514,14 +559,19 @@ pub fn verify_recursive_create_offer(
 
     let token = outputs[2][0];
     let total_amount = outputs[3][0];
-    // Read offerCommitment and offerRefundSnHash directly from ZK-proven circuit outputs.
+    // Read ZK-proven values directly from circuit public outputs.
     let offer_commitment = outputs[4][0];
     let offer_refund_sn_hash = outputs[6][0];
+    let fiat_amount = outputs[7][0];
+    let currency_hash = outputs[8][0];
+    let rev_tag_hash = outputs[9][0];
 
     let proof_hash_bytes = hex::decode(&verified.proof_hash_hex)
         .map_err(|e| ApiError::Internal(format!("hex decode proof_hash: {e}")))?;
 
-    // Claim binds: proof identity, nullifier/root lists, all 7 circuit outputs, offer identifier.
+    // Claim layout matches contract's recursiveCreateOffer claimBytes exactly.
+    // fiat_amount/currency_hash/rev_tag_hash are private offer terms — not included here;
+    // they are authenticated via proofHash which commits to all circuit public outputs.
     let mut claim_bytes = Vec::new();
     claim_bytes.extend_from_slice(b"trusted-stwo-recursive-create-offer-v1");
     claim_bytes.extend_from_slice(&proof_hash_bytes);
@@ -556,5 +606,8 @@ pub fn verify_recursive_create_offer(
         offer_commitment,
         offer_refund_sn_hash,
         secret_hash: req.secret_hash,
+        fiat_amount,
+        currency_hash,
+        rev_tag_hash,
     })
 }

@@ -179,6 +179,10 @@ pub struct VerifyAndSignRecursiveCreateOfferResponse {
     /// offerRefundSnHash extracted from circuit output[6] — proven in ZK.
     pub offer_refund_sn_hash: u32,
     pub secret_hash: u32,
+    /// Offer terms extracted from circuit outputs[7..9] — proven in ZK, bound to offerCommitment.
+    pub fiat_amount: u32,
+    pub currency_hash: u32,
+    pub rev_tag_hash: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,7 +243,12 @@ pub struct VerifyTlsnAndSignSettlementResponse {
 }
 
 /// Verifies a TLSN HTTP transcript (Revolut-mock) and signs a on-chain settlement claim.
-/// The TLSN proof attests the fiat payment; the remaining fields bind the on-chain transaction.
+///
+/// `signed_offer` is the full response from the `/verify-and-sign-recursive-create-offer`
+/// endpoint.  The server re-verifies its own ECDSA signature over the reconstructed claim,
+/// then checks that the TLSN fiatAmount / currencyHash / revTagHash match the ZK-proven
+/// circuit outputs embedded in that claim — ensuring the buyer paid exactly what the offer
+/// required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyTlsnAndSignTransactionSettlementRequest {
     pub transcript_response: String,
@@ -248,6 +257,21 @@ pub struct VerifyTlsnAndSignTransactionSettlementRequest {
     pub secret_nullifier_hash: u64,
     pub buyer_address: String,
     pub token_address: String,
+    /// If provided, the server re-verifies the createOffer signature and checks that TLSN
+    /// fiatAmount / revTagHash / currencyHash match the ZK-proven offer circuit outputs.
+    #[serde(default)]
+    pub signed_offer: Option<SignedSingleOfferData>,
+}
+
+/// Signed single-deposit offer data passed to the settlement endpoint.
+///
+/// The server reconstructs the claim bytes from `claim_output_values` (same logic as the
+/// `/verify-and-sign` endpoint), verifies the server's own ECDSA signature, then extracts
+/// offer terms from outputs [7]=fiatAmount, [8]=currencyHash, [9]=revTagHash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedSingleOfferData {
+    pub claim_output_values: Vec<[u32; 4]>,
+    pub signature_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
