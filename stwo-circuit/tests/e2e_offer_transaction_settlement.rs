@@ -25,6 +25,7 @@ use trusted_stwo_server::Signer;
 use trusted_stwo_server::types::{
     VerifyAndSignRequest, VerifyAndSignResponse,
     VerifyTlsnAndSignTransactionSettlementRequest, VerifyTlsnAndSignTransactionSettlementResponse,
+    SignedSingleOfferData,
 };
 use tlsnotary::{
     BodyFieldConfig, CertificateDer, MpcTlsConfig, Prover, RootCertStore,
@@ -185,19 +186,39 @@ async fn build_offchain_offers_tree_from_chain(
     pool: Address,
 ) -> OffchainMerkleTree {
     let mut tree = OffchainMerkleTree::new(31);
-    let logs = provider
-        .get_logs(
-            &Filter::new()
-                .address(pool)
-                .from_block(0u64)
-                .event("OfferCreated(uint256,uint256,address,uint256)"),
+
+    let mut logs: Vec<_> = {
+        let single = provider
+            .get_logs(
+                &Filter::new()
+                    .address(pool)
+                    .from_block(0u64)
+                    .event("OfferCreated(uint256,uint256,address,uint256)"),
+            )
+            .await
+            .expect("fetch OfferCreated logs");
+        let recursive = provider
+            .get_logs(
+                &Filter::new()
+                    .address(pool)
+                    .from_block(0u64)
+                    .event("RecursiveOfferCreated(uint256,uint256,address,uint256,uint256)"),
+            )
+            .await
+            .expect("fetch RecursiveOfferCreated logs");
+        single.into_iter().chain(recursive).collect()
+    };
+
+    // Sort by (block_number, log_index) to match on-chain insertion order.
+    logs.sort_by_key(|l| {
+        (
+            l.block_number.unwrap_or(0),
+            l.log_index.unwrap_or(0),
         )
-        .await
-        .expect("fetch OfferCreated logs");
+    });
 
     for log in logs {
-        // OfferCreated: indexed [0]=offerCommitment, [1]=secretHash, [2]=tokenAddress, data=cryptoAmount
-        let commitment_topic = log.inner.topics().get(1).expect("OfferCreated commitment topic");
+        let commitment_topic = log.inner.topics().get(1).expect("offer commitment topic");
         let commitment_u256 = U256::from_be_slice(commitment_topic.as_slice());
         let commitment_u32 = u32::try_from(commitment_u256).expect("offerCommitment fits u32");
         tree.add_leaf(BaseField::from_u32_unchecked(commitment_u32));
@@ -229,12 +250,13 @@ async fn build_offchain_tree_from_chain(provider: &impl Provider, pool: Address)
 /// Run a real TLSN session against the in-process mock bank server.
 /// The prover makes an MPC-TLS connection through the verifier to `GET /api/transfer/{tx_title}`.
 /// Returns a reconstructed clean HTTP response string built from the revealed TLSN fields.
-fn run_tlsn_transfer_session(tx_title: &str, rev_tag: &str, fiat_amount: u64) -> String {
+fn run_tlsn_transfer_session(tx_title: &str, rev_tag: &str, fiat_amount: u64, currency: &str) -> String {
     // Configure the mock bank before it starts reading env vars in AppState::new().
     // Safety: single-threaded at this point (called from spawn_blocking, test is sequential).
     unsafe {
         std::env::set_var("MOCK_REV_TAG", rev_tag);
         std::env::set_var("MOCK_FIAT_AMOUNT", fiat_amount.to_string());
+        std::env::set_var("MOCK_CURRENCY", currency);
     }
 
     let tx_title = tx_title.to_string();
@@ -289,13 +311,14 @@ fn run_tlsn_transfer_session(tx_title: &str, rev_tag: &str, fiat_amount: u64) ->
             .response_reveal_config(RevealConfig {
                 reveal_headers: vec!["x-revolut-signature".into()],
                 commit_headers: vec![],
-                // All three body fields are revealed so the trusted server can read them.
+                // All body fields are revealed so the trusted server can read them.
                 // fiatAmount is revealed (not committed) because the trusted server must
                 // include it in the signed settlement claim.
                 reveal_body_fields: vec![
                     BodyFieldConfig::Quoted(".commentData".into()),
                     BodyFieldConfig::Quoted(".revTag".into()),
                     BodyFieldConfig::Unquoted(".fiatAmount".into()),
+                    BodyFieldConfig::Quoted(".currency".into()),
                 ],
                 commit_body_fields: vec![],
                 reveal_keys_commit_values: vec![],
@@ -341,9 +364,11 @@ fn reconstruct_http_from_tlsn_partial(raw: &[u8]) -> Result<String, String> {
         .ok_or("missing revTag in TLSN transcript")?;
     let fiat_amount = extract_unquoted_json_number(raw, b"\"fiatAmount\":")
         .ok_or("missing/zeroed fiatAmount in TLSN transcript")?;
+    let currency = extract_quoted_json_value(raw, b"\"currency\":\"")
+        .ok_or("missing currency in TLSN transcript")?;
 
     Ok(format!(
-        "HTTP/1.1 200 OK\r\nx-revolut-signature: {sig_value}\r\n\r\n{{\"commentData\":\"{comment_data}\",\"revTag\":\"{rev_tag}\",\"fiatAmount\":{fiat_amount}}}"
+        "HTTP/1.1 200 OK\r\nx-revolut-signature: {sig_value}\r\n\r\n{{\"commentData\":\"{comment_data}\",\"revTag\":\"{rev_tag}\",\"fiatAmount\":{fiat_amount},\"currency\":\"{currency}\"}}"
     ))
 }
 
@@ -731,7 +756,8 @@ async fn test_e2e_offer_transaction_verify_and_withdraw() {
         let title = tx_title.clone();
         let rev = offer_rev_str.to_string();
         let fiat = offer_fiat_u64;
-        move || run_tlsn_transfer_session(&title, &rev, fiat)
+        let curr = offer_currency_str.to_string();
+        move || run_tlsn_transfer_session(&title, &rev, fiat, &curr)
     })
     .await
     .expect("TLSN bank session");
@@ -745,6 +771,10 @@ async fn test_e2e_offer_transaction_verify_and_withdraw() {
             secret_nullifier_hash: payout_secret_nullifier_hash.0 as u64,
             buyer_address: format!("0x{}", hex::encode(taker.as_slice())),
             token_address: format!("0x{}", hex::encode(token.as_slice())),
+            signed_offer: Some(SignedSingleOfferData {
+                claim_output_values: offer_payload.claim_output_values.clone(),
+                signature_hex: offer_sign.signature_hex.clone(),
+            }),
         })
         .send()
         .await

@@ -23,6 +23,9 @@ pub const TERMINAL_IDX_TOKEN: usize = 2;
 pub const TERMINAL_IDX_AMOUNT: usize = 3;
 pub const TERMINAL_IDX_OFFER_COMMITMENT: usize = 4;
 pub const TERMINAL_IDX_OFFER_REFUND_SN_HASH: usize = 6;
+pub const TERMINAL_IDX_FIAT_AMOUNT: usize = 7;
+pub const TERMINAL_IDX_CURRENCY_HASH: usize = 8;
+pub const TERMINAL_IDX_REV_TAG_HASH: usize = 9;
 
 /// Null (identity) circuit for recursive offer accumulation.
 ///
@@ -165,6 +168,9 @@ pub fn build_offer_terminal_context(
     output(&mut ctx, offer_commitment);
     output(&mut ctx, zero);
     output(&mut ctx, offer_refund_sn_hash);
+    output(&mut ctx, fa);
+    output(&mut ctx, ch);
+    output(&mut ctx, rth);
 
     ctx
 }
@@ -723,11 +729,14 @@ mod tests {
             "terminal circuit root must stabilise from step 3"
         );
 
-        // Verify outputs: offerCommitment is in output[4], offerRefundSnHash in output[6].
+        // Verify outputs: offerCommitment is in output[4], offerRefundSnHash in output[6],
+        //                 fiatAmount in output[7], currencyHash in output[8], revTagHash in output[9].
         let out = &terminal4.proof.claim.output_values;
         assert_eq!(out[TERMINAL_IDX_TOKEN], m31(token_bf));
-        // offerCommitment must be non-zero (non-trivial hash).
         assert_ne!(out[TERMINAL_IDX_OFFER_COMMITMENT], QM31::from(0u32));
         assert_ne!(out[TERMINAL_IDX_OFFER_REFUND_SN_HASH], QM31::from(0u32));
+        assert_eq!(out[TERMINAL_IDX_FIAT_AMOUNT], m31(fiat_amount));
+        assert_eq!(out[TERMINAL_IDX_CURRENCY_HASH], m31(currency_hash));
+        assert_eq!(out[TERMINAL_IDX_REV_TAG_HASH], m31(rev_tag_hash));
     }
 }
