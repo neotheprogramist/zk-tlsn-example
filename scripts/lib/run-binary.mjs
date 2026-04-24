@@ -25,9 +25,17 @@ export function streamLines(stream, onLine) {
     });
 }
 
-// Runs a cargo binary to completion. Returns { exitCode, resultLine } where
-// resultLine is the first stdout line starting with "ZKTLSN_RESULT ", or null.
-// stdout/stderr are forwarded to the parent console with a [label] prefix.
+const STDERR_TAIL_LINES = 40;
+
+function pushWithCap(buf, line, cap) {
+    buf.push(line);
+    if (buf.length > cap) buf.shift();
+}
+
+// Runs a cargo binary to completion. Returns { exitCode, resultLine, stderrTail } where
+// resultLine is the first stdout line starting with "ZKTLSN_RESULT " (or null) and
+// stderrTail is the most recent STDERR_TAIL_LINES lines. stdout/stderr are forwarded
+// to the parent console with a [label] prefix.
 export function runCargoBinary({ bin, args = [], env = {}, label = bin, color = '36' }) {
     const cargoArgs = ['run', '--release', '--quiet', '--bin', bin];
     if (args.length > 0) {
@@ -40,6 +48,7 @@ export function runCargoBinary({ bin, args = [], env = {}, label = bin, color = 
     });
 
     let resultLine = null;
+    const stderrTail = [];
     streamLines(child.stdout, (line) => {
         if (line.startsWith(RESULT_PREFIX) && resultLine === null) {
             resultLine = line;
@@ -47,13 +56,37 @@ export function runCargoBinary({ bin, args = [], env = {}, label = bin, color = 
         process.stdout.write(formatLogLine(label, color, line) + '\n');
     });
     streamLines(child.stderr, (line) => {
+        pushWithCap(stderrTail, line, STDERR_TAIL_LINES);
         process.stderr.write(formatLogLine(label, color, line) + '\n');
     });
 
     return new Promise((resolve, reject) => {
         child.on('error', reject);
-        child.on('close', (exitCode) => resolve({ exitCode, resultLine }));
+        child.on('close', (exitCode) =>
+            resolve({ exitCode, resultLine, stderrTail: stderrTail.join('\n') }),
+        );
     });
+}
+
+// Asserts a cargo binary exited 0. Throws with binary name + exit code + stderr tail.
+export function assertCargoExit(label, result) {
+    if (result.exitCode !== 0) {
+        throw new Error(
+            `${label} exited with code ${result.exitCode}\nstderr tail:\n${result.stderrTail}`,
+        );
+    }
+}
+
+// Asserts a cargo binary exited 0 and emitted a parseable ZKTLSN_RESULT line.
+// Throws with binary name + exit code + stderr tail on any failure mode.
+export function assertCargoResult(label, result) {
+    assertCargoExit(label, result);
+    if (result.resultLine === null) {
+        throw new Error(
+            `${label} exited 0 but produced no "${RESULT_PREFIX}<json>" line\nstderr tail:\n${result.stderrTail}`,
+        );
+    }
+    return parseResultLine(result.resultLine);
 }
 
 // Spawns a cargo binary and keeps it running. Returns a controller object

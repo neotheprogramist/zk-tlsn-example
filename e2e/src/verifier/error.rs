@@ -38,6 +38,9 @@ pub enum ProtocolError {
     Utf8(#[from] std::string::FromUtf8Error),
 
     #[error(transparent)]
+    Utf8Str(#[from] std::str::Utf8Error),
+
+    #[error(transparent)]
     TlsNotary(#[from] tlsnotary::Error),
 
     #[error(transparent)]
@@ -47,16 +50,17 @@ pub enum ProtocolError {
     TlsnVerifierConfig(#[from] tlsn::config::verifier::VerifierConfigError),
 
     #[error(transparent)]
-    TlsConfig(#[from] crate::error::TlsConfigError),
+    TlsConfig(#[from] crate::error::TlsFixtureError),
 }
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("max_sent_data {actual} exceeds limit {limit}")]
-    MaxSentDataTooLarge { limit: usize, actual: usize },
-
-    #[error("max_recv_data {actual} exceeds limit {limit}")]
-    MaxRecvDataTooLarge { limit: usize, actual: usize },
+    #[error("{field} {actual} exceeds limit {limit}")]
+    BoundExceeded {
+        field: &'static str,
+        limit: usize,
+        actual: usize,
+    },
 
     #[error("expected MPC-TLS protocol")]
     UnsupportedProtocol,

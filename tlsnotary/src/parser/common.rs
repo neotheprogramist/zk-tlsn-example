@@ -5,7 +5,10 @@ use pest::{
     iterators::{Pair, Pairs},
 };
 
-use crate::parser::error::{ParseError, Result};
+use crate::parser::{
+    error::{ParseError, Result},
+    traits::RangeExtractor,
+};
 
 pub fn assert_rule<R: RuleType + PartialEq>(
     pair: &Pair<'_, R>,
@@ -32,6 +35,30 @@ pub fn assert_end_of_iterator<'a, R: RuleType>(
         )));
     }
     Ok(())
+}
+
+pub fn parse_three_field_line<R: RuleType + PartialEq>(
+    line: Pair<'_, R>,
+    line_rule: R,
+    line_label: &'static str,
+    fields: [(R, &'static str); 3],
+) -> Result<(Range<usize>, Range<usize>, Range<usize>)> {
+    assert_rule(&line, line_rule, line_label)?;
+    let mut inner = line.into_inner();
+    let [a, b, c] = fields.map(|(rule, label)| {
+        inner
+            .next()
+            .ok_or_else(|| ParseError::MissingField(label.to_string()))
+            .and_then(|pair| {
+                assert_rule(&pair, rule, label)?;
+                Ok(pair)
+            })
+    });
+    let a = a?;
+    let b = b?;
+    let c = c?;
+    assert_end_of_iterator(&mut inner, line_label)?;
+    Ok((a.extract_range(), b.extract_range(), c.extract_range()))
 }
 
 pub trait HttpMessageBuilder: Sized {

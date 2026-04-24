@@ -1,9 +1,10 @@
+use crate::cli::cleanup_cli_outputs;
 use crate::error::{Result, ZkTlsnError};
 use crate::{
     KeccakProof, Proof, RecursiveCircuit, RecursiveState, build_recursive_prover_toml,
-    cleanup_cli_outputs, compile_all_packages, derive_circuit_vk,
-    extract_transfer_fields_from_proof, prove_keccak_circuit, prove_noir_recursive_circuit,
-    prove_null_circuit, state_from_public_inputs,
+    compile_all_packages, derive_circuit_vk, extract_transfer_fields_from_proof,
+    prove_keccak_circuit, prove_noir_recursive_circuit, prove_null_circuit,
+    state_from_public_inputs,
 };
 use tracing::info;
 

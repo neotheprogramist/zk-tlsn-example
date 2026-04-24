@@ -20,15 +20,6 @@ pub enum ZkTlsnError {
     #[error(transparent)]
     JsonParseError(#[from] serde_json::Error),
 
-    #[error("Verification key mismatch")]
-    VerificationKeyMismatch,
-
-    #[error("Committed hash does not match proof")]
-    CommittedHashMismatch,
-
-    #[error("Proof is invalid")]
-    InvalidProof,
-
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -74,27 +65,6 @@ pub enum ZkTlsnError {
         context: &'static str,
         details: String,
     },
-
-    #[error("missing required configuration: {0}")]
-    MissingConfig(&'static str),
-
-    #[error("Invalid commitment length: expected {expected} bytes, got {actual} bytes")]
-    InvalidCommitmentLength { expected: usize, actual: usize },
-
-    #[error("invalid ticket private key hex")]
-    TicketKeyHex(#[from] hex::FromHexError),
-
-    #[error("ticket private key must be 32 bytes, got {actual}")]
-    TicketKeyLength { actual: usize },
-
-    #[error(transparent)]
-    TicketSigningKey(#[from] k256::ecdsa::Error),
-
-    #[error("ticket public key missing {0} coordinate")]
-    TicketPublicKeyCoordinate(&'static str),
-
-    #[error("ticket signature must be 64 bytes, got {actual}")]
-    TicketSignatureLength { actual: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ZkTlsnError>;

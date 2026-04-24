@@ -1,13 +1,11 @@
 use std::{net::SocketAddr, path::Path};
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use e2e::bootstrap;
-use e2e::testing::{TestQuicConfig, get_or_create_test_quic_config};
+use e2e::tls::{TestQuicConfig, get_or_create_test_quic_config};
 use e2e::verifier::serve;
 use quinn::Endpoint;
-use tracing::error;
-
-type ExampleResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -21,19 +19,17 @@ struct Cli {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    bootstrap::init_logging().expect("failed to initialize logging");
-
-    if let Err(err) = run(Cli::parse()).await {
-        error!(error = %err, "Verifier example failed");
-        std::process::exit(1);
-    }
+    bootstrap::run_main("verifier", || run(Cli::parse())).await;
 }
 
-async fn run(cli: Cli) -> ExampleResult<()> {
+async fn run(cli: Cli) -> Result<()> {
     let TestQuicConfig { server_config, .. } =
-        get_or_create_test_quic_config(Path::new(&cli.cert_path), Path::new(&cli.key_path)).await?;
+        get_or_create_test_quic_config(Path::new(&cli.cert_path), Path::new(&cli.key_path))
+            .await
+            .context("failed to load QUIC server config")?;
 
-    let endpoint = Endpoint::server(server_config, cli.listen_addr)?;
+    let endpoint =
+        Endpoint::server(server_config, cli.listen_addr).context("failed to bind QUIC endpoint")?;
     tracing::info!("Reliable streams server listening on {}", cli.listen_addr);
     serve(endpoint).await;
     Ok(())

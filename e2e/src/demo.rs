@@ -15,7 +15,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::{
     server::app::{ServerConfigResponse, TransferRequest, TransferResponse},
-    testing::load_test_client_tls_config,
+    tls::load_test_client_tls_config,
     verifier::{MAX_RECV_DATA, MAX_SENT_DATA},
 };
 

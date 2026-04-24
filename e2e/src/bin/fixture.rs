@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use zktlsn::{NoirProverInputs, compile_attestation_package, prove_attestation_from_inputs};
+use zktlsn::{NoirProverInputs, prove_attestation_from_inputs};
 
 use e2e::settlement as settlement_support;
 
@@ -37,8 +37,9 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    zktlsn::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
-    compile_attestation_package().context("failed to compile attestation package")?;
+    zktlsn::cli::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
+    zktlsn::recursive::compile_attestation_package()
+        .context("failed to compile attestation package")?;
 
     let to_user_id = SETTLEMENT_FIXTURE_TXS[0].1;
     let attestation_proofs = SETTLEMENT_FIXTURE_TXS

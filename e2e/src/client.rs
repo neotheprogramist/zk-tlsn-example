@@ -6,7 +6,7 @@ use quinn::Endpoint;
 use crate::proof::{NotarizedFlow, run_attest_only_flow};
 
 pub async fn open_client_endpoint(verifier_cert_path: &Path) -> Result<Endpoint> {
-    let client_config = crate::testing::load_test_quic_client_config(verifier_cert_path)
+    let client_config = crate::tls::load_test_quic_client_config(verifier_cert_path)
         .await
         .context("failed to load QUIC client configuration")?;
     let mut endpoint = Endpoint::client("[::]:0".parse().context("invalid client bind address")?)

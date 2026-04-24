@@ -1,22 +1,32 @@
 pub mod app;
-pub mod handler;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
-pub use handler::{ConnectionError, handle_connection};
-use salvo::Service;
-use tokio::net::TcpListener;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use salvo::{Service, conn::SocketAddr as SalvoSocketAddr, http::uri::Scheme};
+use thiserror::Error;
+use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsAcceptor;
 
 use crate::{
     server::app::{AppConfig, InitialUser, get_app},
-    testing::get_or_create_test_tls_config,
+    tls::get_or_create_test_tls_config,
 };
 
 pub struct DemoServerConfig {
     pub listen_addr: SocketAddr,
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
+}
+
+#[derive(Debug, Error)]
+enum ConnectionError {
+    #[error(transparent)]
+    TlsHandshake(#[from] std::io::Error),
+
+    #[error(transparent)]
+    ServeConnection(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 pub async fn serve(cfg: DemoServerConfig) -> Result<()> {
@@ -46,6 +56,25 @@ pub async fn serve(cfg: DemoServerConfig) -> Result<()> {
             }
         });
     }
+}
+
+async fn handle_connection(
+    service: Arc<Service>,
+    server_config: Arc<rustls::ServerConfig>,
+    cnx: TcpStream,
+) -> Result<(), ConnectionError> {
+    let stream = TlsAcceptor::from(server_config).accept(cnx).await?;
+    let hyper_handler = service.hyper_handler(
+        SalvoSocketAddr::Unknown,
+        SalvoSocketAddr::Unknown,
+        Scheme::HTTPS,
+        None,
+        None,
+    );
+    hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+        .serve_connection_with_upgrades(TokioIo::new(stream), hyper_handler)
+        .await?;
+    Ok(())
 }
 
 fn demo_app_config() -> AppConfig {

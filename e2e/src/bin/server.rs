@@ -2,7 +2,6 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::error;
 
 use e2e::{
     bootstrap,
@@ -21,12 +20,7 @@ struct Cli {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    bootstrap::init_logging().expect("failed to initialize logging");
-
-    if let Err(err) = run(Cli::parse()).await {
-        error!(error = %err, "TLS server example failed");
-        std::process::exit(1);
-    }
+    bootstrap::run_main("server", || run(Cli::parse())).await;
 }
 
 async fn run(cli: Cli) -> Result<()> {

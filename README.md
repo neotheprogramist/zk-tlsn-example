@@ -41,6 +41,21 @@ _Examples_ are the cargo binaries above — run them by hand and read the `ZKTLS
 
 Both flows share the same `server` and `verifier` processes. The `verifier` service is purely a TLSN attestation service — it never sees a ZK proof. ZK proof generation is a **client-side** step done by `prove` (and by `settle`, which wraps it) using the `zktlsn` library. The on-chain `SettlementMintGate` contract is the real ZK verifier.
 
+## Audit scope
+
+The security-relevant surface is three crates + one contract:
+
+| Component                         | Trust property enforced                                                                                                           |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `tlsnotary::verifier`             | Only the verifier side: validates the MPC-TLS session, enforces transcript commitment policy, signs the attestation.              |
+| `zktlsn::{prove, aggregate}`      | Generates the per-transfer Honk proof + recursive fold; the aggregate's 7 public inputs are the only thing the contract consumes. |
+| `evm/src/SettlementMintGate.sol`  | Verifies the aggregated Honk proof, matches three VK hashes, marks `transfers_root` claimed (replay protection), mints tokens.    |
+| `shared::FiatTransferAttestation` | Canonical 16-byte attestation encoding shared by the server, the Noir circuit, and the contract.                                  |
+
+Demo scaffolding (out of audit scope): `e2e::server` (demo HTTPS ledger), `e2e::service` (browser WebTransport page + proxy), `e2e::demo` / `e2e::client` (test client harness), `bin/fixture`, `bin/notarize`, `bin/prove`, `scripts/*.mjs`, Playwright, anvil. These exist to exercise the flows end-to-end; they are not intended to be production code.
+
+The TLSN prover side (`tlsnotary::prover`, `tlsnotary::parser`, `tlsnotary::io`, `tlsnotary::runtime`) runs untrusted client code; its correctness matters for liveness and privacy, not for settlement integrity. The settlement guarantee rests entirely on the four rows above.
+
 ## Cleanup
 
 Between runs you usually don't need to reset anything; stale state only matters when you change circuits or contracts.
@@ -161,6 +176,81 @@ cargo run --release --bin settle
 ```
 
 Step 5 emits the same `ZKTLSN_RESULT` JSON line the e2e test asserts on — identical flow, identical output.
+
+## Flow 3 — Browser WASM (TLSN only)
+
+The `notarize` flow as a web page. The prover is the same `tlsnotary::Prover::prove` the native binary calls, but compiled to `wasm32-unknown-unknown` and driven from Chrome. The browser opens a **single** WebTransport session to the new `service` binary's `/connect` endpoint and multiplexes both channels over two bidi streams: each stream begins with a role preamble — `VERIFY\n` for the attestation-verifier protocol, `CONNECT <host>:<port>\n` for the raw TCP tunnel to the demo ledger. The service reads the first line on each stream and dispatches to either the TLSN verifier pipeline (same `run_notarize_stream` the native QUIC `verifier` binary uses) or the allow-listed TCP forwarder. Produces the same `ZKTLSN_RESULT` JSON line Flow 1 asserts on.
+
+The prover runs **inside a dedicated Web Worker**, not on the page's main thread. Every `JsValue` handle it owns — the WebTransport session, both bidi streams, both `WebTransportIo`s, the `Prover` — is constructed and polled on that Worker, which makes `WebTransportIo`'s `unsafe impl Send` sound and keeps MPC-TLS's `parking_lot::Mutex` + `Atomics.wait` on a legal thread. `SharedArrayBuffer` and `crossOriginIsolated` are available because the service serves `Cross-Origin-Embedder-Policy: require-corp` + `Cross-Origin-Resource-Policy: same-origin` on every asset response, including the worker script. tlsn's internal MPC parallelism dispatches onto a `web-spawn` worker pool that `tlsnotary::initialize()` starts up front, before the `Prover` is constructed.
+
+### Prerequisites (in addition to Flow 1's)
+
+- Node **22+**.
+- `npx` on `PATH` — the harness fetches Playwright at runtime; no `package.json` is vendored.
+- Rust **nightly** with the `wasm32-unknown-unknown` target and `rust-src`: `rustup toolchain install nightly && rustup component add rust-src --toolchain nightly && rustup target add wasm32-unknown-unknown --toolchain nightly`.
+- `wasm-bindgen-cli` matching the workspace's `wasm-bindgen` version (0.2.118): `cargo install wasm-bindgen-cli --version 0.2.118`.
+- A clang that can target `wasm32-unknown-unknown` (needed to build `ring`'s C sources). Tested with MacPorts LLVM-22 at `/opt/local/libexec/llvm-22/bin/{clang,llvm-ar}`; configure a different path in `.cargo/config.toml` if yours lives elsewhere.
+
+Playwright downloads its own bundled Chromium the first time it runs (`~/Library/Caches/ms-playwright/` on macOS, `~/.cache/ms-playwright/` on Linux). If it hasn't been run before on this machine, pre-fetch with `npx --yes --package=playwright -- playwright install chromium`.
+
+### Build the browser prover
+
+Same pattern as the paymoney `signer` crate — plain `cargo build` followed by `wasm-bindgen`, no `wasm-pack`:
+
+```bash
+cargo +nightly build -p tlsnotary --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/tlsnotary.wasm \
+  --out-dir e2e/assets/wasm \
+  --target web \
+  --out-name tlsnotary
+```
+
+The output lands in `e2e/assets/wasm/` as `tlsnotary.js`, `tlsnotary_bg.wasm`, and `tlsnotary.d.ts`. The `service` binary refuses to start if the `.wasm` is missing.
+
+### Build-and-run helper
+
+`node scripts/build-wasm.mjs` runs both steps above and applies one necessary patch to the `web-spawn` snippet that wasm-bindgen emits: `import('../../..')` → `import('../../../tlsnotary.js')`. Chrome can't resolve the former against a directory URL. `tlsn[web]` pulls `web-spawn` in transitively for its MPC worker pool, so the snippet is always emitted and always needs the patch.
+
+### E2E test
+
+```bash
+# Harness spawns server + service, launches a real (headed) Chromium window
+# via Playwright, navigates to the prover page, clicks "Start attestation",
+# and asserts on the ZKTLSN_RESULT console line. The script self-bootstraps
+# Playwright via `npx` on first run.
+node scripts/run-tlsn-wasm.mjs
+```
+
+The Chromium window is visible on purpose. The test closes it automatically on PASS.
+
+### Example (manual)
+
+Same `.env` as Flows 1/2, plus these extras:
+
+```dotenv
+# Flow 3 (service) — browser-facing WebTransport endpoint and prover page.
+ZKTLSN_SERVICE_LISTEN_ADDR=127.0.0.1:8444
+ZKTLSN_SERVICE_CERT_DIR=.data/service
+```
+
+Then, in three shells (each `cd`'d into the repo root):
+
+```bash
+# 1. demo ledger (shell 1, long-running) — unchanged from Flow 1.
+cargo run --release --bin server
+
+# 2. service (shell 2, long-running) — hosts page + WebTransport proxy + browser-facing TLSN verifier.
+cargo run --release --bin service
+
+# 3. open https://127.0.0.1:8444/ in Chrome, click "Start attestation".
+# The page reads cert-hash + connect-url + server details from data-* attributes,
+# spawns a dedicated Worker (/assets/prove.worker.js), opens ONE WebTransport
+# session to /connect with serverCertificateHashes pinning, creates two bidi
+# streams (VERIFY + CONNECT host:port), runs Prover.prove() inside the Worker,
+# and prints ZKTLSN_RESULT {…} in both the on-page log and the browser console.
+```
+
+The `service` binary creates the demo transfer (`POST /api/transfers`) at startup before serving — so by the time you open the page, the tx_id the prover will attest over is already embedded in the HTML as a `data-tx-id` attribute.
 
 ## Forge tests
 

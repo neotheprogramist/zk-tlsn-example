@@ -5,8 +5,9 @@
 // Asserts the on-chain mint matches the aggregated settlement state.
 
 import {
+    assertCargoExit,
+    assertCargoResult,
     assertEquals,
-    parseResultLine,
     runCargoBinary,
     sleep,
     spawnCargoBinary,
@@ -107,9 +108,7 @@ try {
         label: 'fixture',
         color: '35',
     });
-    if (fixture.exitCode !== 0) {
-        throw new Error(`fixture exited with code ${fixture.exitCode}`);
-    }
+    assertCargoExit('fixture', fixture);
 
     console.log('[harness] starting demo server...');
     const server = spawnCargoBinary({
@@ -145,11 +144,7 @@ try {
         label: 'settle',
         color: '36',
     });
-    if (settle.exitCode !== 0) {
-        throw new Error(`settle exited with code ${settle.exitCode}`);
-    }
-
-    const result = parseResultLine(settle.resultLine);
+    const result = assertCargoResult('settle', settle);
     assertEquals('flow', 'settle', result.flow);
     assertEquals('num_attestations', EXPECTED_NUM_ATTESTATIONS, result.num_attestations);
     assertEquals('total_amount', EXPECTED_TOTAL_AMOUNT, result.total_amount);

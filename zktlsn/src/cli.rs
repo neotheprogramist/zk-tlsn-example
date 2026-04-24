@@ -43,7 +43,7 @@ pub(crate) struct BbProofArtifacts {
     pub vk_hash: [u8; HONK_FIELD_BYTES],
 }
 
-pub(crate) fn ensure_cli_toolchain() -> Result<()> {
+pub fn ensure_cli_toolchain() -> Result<()> {
     ensure_command_version("nargo", &["--version"], EXPECTED_NARGO_VERSION)?;
     ensure_command_version("bb", &["--version"], EXPECTED_BB_VERSION)?;
     Ok(())
@@ -134,41 +134,6 @@ pub(crate) fn prove_circuit(
         verification_key: fs::read(output_dir.join("vk"))?,
         vk_hash: read_single_field_word(&output_dir.join("vk_hash"))?,
     })
-}
-
-pub(crate) fn verify_proof(
-    proof: &[u8],
-    public_inputs: &[[u8; HONK_FIELD_BYTES]],
-    verification_key: &[u8],
-    target: VerifierTarget,
-) -> Result<()> {
-    ensure_cli_toolchain()?;
-    let output_dir = cli_output_dir(&format!("verify-{}", target.as_str()));
-    fs::create_dir_all(&output_dir)?;
-
-    let proof_path = output_dir.join("proof");
-    let public_inputs_path = output_dir.join("public_inputs");
-    let vk_path = output_dir.join("vk");
-    fs::write(&proof_path, proof)?;
-    fs::write(&vk_path, verification_key)?;
-    fs::write(&public_inputs_path, flatten_public_inputs(public_inputs))?;
-
-    run_command(
-        repo_root(),
-        "bb",
-        &[
-            "verify",
-            "-p",
-            &path_arg(&proof_path)?,
-            "-i",
-            &path_arg(&public_inputs_path)?,
-            "-k",
-            &path_arg(&vk_path)?,
-            "-t",
-            target.as_str(),
-        ],
-    )?;
-    Ok(())
 }
 
 pub(crate) fn write_solidity_verifier(
@@ -289,20 +254,17 @@ pub(crate) fn read_field_words_from_bytes(
         .collect()
 }
 
-fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Result<()> {
-    let output = match Command::new(program)
+fn run_checked(cwd: &Path, program: &str, args: &[&str]) -> Result<std::process::Output> {
+    let output = Command::new(program)
         .args(args)
-        .current_dir(repo_root())
+        .current_dir(cwd)
         .output()
-    {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ZkTlsnError::MissingTool {
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => ZkTlsnError::MissingTool {
                 tool: program.to_string(),
-            });
-        }
-        Err(error) => return Err(error.into()),
-    };
+            },
+            _ => error.into(),
+        })?;
     if !output.status.success() {
         return Err(ZkTlsnError::CommandFailed {
             program: program.to_string(),
@@ -311,38 +273,25 @@ fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Resul
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
+    Ok(output)
+}
 
+fn ensure_command_version(program: &str, args: &[&str], expected: &str) -> Result<()> {
+    let output = run_checked(repo_root(), program, args)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.contains(expected) {
-        return Err(ZkTlsnError::UnsupportedToolVersion {
+    if stdout.contains(expected) {
+        Ok(())
+    } else {
+        Err(ZkTlsnError::UnsupportedToolVersion {
             tool: program.to_string(),
             expected: expected.to_string(),
             actual: stdout.trim().to_string(),
-        });
+        })
     }
-    Ok(())
 }
 
 fn run_command(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let output = match Command::new(program).args(args).current_dir(cwd).output() {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ZkTlsnError::MissingTool {
-                tool: program.to_string(),
-            });
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(ZkTlsnError::CommandFailed {
-        program: program.to_string(),
-        args: args.iter().map(|arg| (*arg).to_string()).collect(),
-        status: output.status.to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-    })
+    run_checked(cwd, program, args).map(|_| ())
 }
 
 static CLI_OUTPUT_DIRS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();

@@ -1,6 +1,8 @@
+use std::future::Future;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
+use tracing::error;
 
 static LOGGING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -18,7 +20,20 @@ pub fn init_logging() -> Result<()> {
 }
 
 pub fn ensure_attestation_toolchain() -> Result<()> {
-    zktlsn::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
-    zktlsn::compile_attestation_package().context("failed to compile the attestation circuit")?;
+    zktlsn::cli::ensure_cli_toolchain().context("failed to validate nargo/bb CLI toolchain")?;
+    zktlsn::recursive::compile_attestation_package()
+        .context("failed to compile the attestation circuit")?;
     Ok(())
+}
+
+pub async fn run_main<F, Fut>(name: &'static str, f: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    init_logging().expect("failed to initialize logging");
+    if let Err(err) = f().await {
+        error!(error = %format!("{err:#}"), "{name} flow failed");
+        std::process::exit(1);
+    }
 }

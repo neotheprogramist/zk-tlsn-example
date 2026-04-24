@@ -9,9 +9,9 @@ use super::{
 };
 use crate::parser::{
     HttpMessageBuilder,
-    common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
-    traits::{HttpMessage, RangeExtractor, Traverser},
+    parse_three_field_line,
+    traits::{HttpMessage, Traverser},
 };
 
 #[derive(Parser)]
@@ -90,34 +90,16 @@ impl HttpMessageBuilder for RequestBuilder {
         &self,
         request_line: pest::iterators::Pair<'_, Self::Rule>,
     ) -> Result<(Range<usize>, Range<usize>, Range<usize>)> {
-        assert_rule(&request_line, Rule::request_line, "request_line")?;
-
-        let mut inner = request_line.into_inner();
-        let method = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("method".to_string()))?;
-        let url = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("url".to_string()))?;
-        let protocol_version = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("protocol version".to_string()))?;
-
-        assert_rule(&method, Rule::method, "method")?;
-        assert_rule(&url, Rule::url, "url")?;
-        assert_rule(
-            &protocol_version,
-            Rule::protocol_version,
-            "protocol_version",
-        )?;
-
-        assert_end_of_iterator(&mut inner, "request_line")?;
-
-        Ok((
-            method.extract_range(),
-            url.extract_range(),
-            protocol_version.extract_range(),
-        ))
+        parse_three_field_line(
+            request_line,
+            Rule::request_line,
+            "request_line",
+            [
+                (Rule::method, "method"),
+                (Rule::url, "url"),
+                (Rule::protocol_version, "protocol_version"),
+            ],
+        )
     }
 
     fn parse(&self, mut pairs: pest::iterators::Pairs<'_, Self::Rule>) -> Result<Self::Message> {

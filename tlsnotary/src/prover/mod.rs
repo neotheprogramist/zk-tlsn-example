@@ -1,15 +1,15 @@
 mod reveal;
 
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+
 use std::sync::Arc;
 
-use async_compat::Compat;
-use futures::{AsyncRead, AsyncWrite, FutureExt, join};
+use futures::{AsyncRead, AsyncWrite, channel::oneshot, join};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Request, StatusCode, body::Bytes};
-use hyper_util::rt::TokioIo;
-pub use reveal::{
-    BodyFieldConfig, KeyValueCommitConfig, RevealConfig, reveal_request, reveal_response,
-};
+pub use reveal::{BodyFieldConfig, KeyValueCommitConfig, RevealConfig};
+use reveal::{reveal_request, reveal_response};
 use tlsn::{
     Session, SessionHandle,
     config::{
@@ -19,7 +19,7 @@ use tlsn::{
     transcript::{TranscriptCommitConfig, TranscriptCommitmentKind},
 };
 
-use crate::{error::Error, runtime::Runtime};
+use crate::{error::Error, io::FuturesIo, runtime::Runtime};
 
 #[derive(Debug, Clone)]
 pub struct ProverOutput {
@@ -42,27 +42,41 @@ pub struct Prover {
 
 impl Prover {
     #[must_use]
-    pub fn builder() -> ProverBuilder {
-        ProverBuilder::new()
+    pub fn builder(
+        runtime: Arc<dyn Runtime>,
+        tls_client_config: TlsClientConfig,
+        tls_commit_config: TlsCommitConfig,
+        request: Request<Empty<Bytes>>,
+    ) -> ProverBuilder {
+        ProverBuilder {
+            runtime,
+            tls_client_config,
+            tls_commit_config,
+            request,
+            request_reveal_config: RevealConfig::default(),
+            response_reveal_config: RevealConfig::default(),
+            hash_alg: HashAlgId::BLAKE3,
+        }
     }
 
     pub async fn prove<T, S>(
         self,
         verifier_socket: T,
         server_socket: S,
-    ) -> Result<ProverOutput, Error>
+    ) -> Result<(T, ProverOutput), Error>
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let (mpc_tls_connection, prover_fut, session_handle) = Self::setup_and_connect(
-            self.runtime,
-            self.tls_client_config,
-            self.tls_commit_config,
-            verifier_socket,
-            server_socket,
-        )
-        .await?;
+        let (mpc_tls_connection, prover_fut, session_handle, verifier_io_rx) =
+            Self::setup_and_connect(
+                self.runtime,
+                self.tls_client_config,
+                self.tls_commit_config,
+                verifier_socket,
+                server_socket,
+            )
+            .await?;
 
         let (mut prover, response_body) =
             Self::execute_http_exchange(mpc_tls_connection, prover_fut, self.request).await?;
@@ -79,14 +93,21 @@ impl Prover {
         let prover_output = Self::generate_and_finalize_proof(prover, &prove_config).await?;
 
         session_handle.close();
+        let verifier_io = verifier_io_rx
+            .await
+            .map_err(|_| Error::SessionDriverCancelled)
+            .and_then(|inner| inner)?;
 
-        Ok(ProverOutput {
-            sent,
-            received,
-            transcript_commitments: prover_output.transcript_commitments,
-            transcript_secrets: prover_output.transcript_secrets,
-            response_body,
-        })
+        Ok((
+            verifier_io,
+            ProverOutput {
+                sent,
+                received,
+                transcript_commitments: prover_output.transcript_commitments,
+                transcript_secrets: prover_output.transcript_secrets,
+                response_body,
+            },
+        ))
     }
 
     async fn setup_and_connect<T, S>(
@@ -105,6 +126,7 @@ impl Prover {
                 >,
             > + Send,
             SessionHandle,
+            oneshot::Receiver<Result<T, Error>>,
         ),
         Error,
     >
@@ -115,11 +137,15 @@ impl Prover {
         let mut session = Session::new(verifier_socket);
         let prover = session.new_prover(ProverConfig::builder().build()?)?;
         let (driver, handle) = session.split();
-        runtime.spawn_detached(Box::pin(driver.map(|_| ())));
+        let (verifier_io_tx, verifier_io_rx) = oneshot::channel();
+        runtime.spawn_detached(Box::pin(async move {
+            let outcome = driver.await.map_err(Error::from);
+            let _ = verifier_io_tx.send(outcome);
+        }));
 
         let prover = prover.commit(tls_commit_config).await?;
         let (connection, prover_future) = prover.connect(tls_client_config, server_socket).await?;
-        Ok((connection, prover_future, handle))
+        Ok((connection, prover_future, handle, verifier_io_rx))
     }
 
     async fn execute_http_exchange<C>(
@@ -141,7 +167,7 @@ impl Prover {
     where
         C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        let mpc_tls_connection = TokioIo::new(Compat::new(mpc_tls_connection));
+        let mpc_tls_connection = FuturesIo::new(mpc_tls_connection);
         let (mut request_sender, connection) =
             hyper::client::conn::http1::handshake(mpc_tls_connection).await?;
 
@@ -171,11 +197,11 @@ impl Prover {
         request_reveal_config: &RevealConfig,
         response_reveal_config: &RevealConfig,
     ) -> Result<ProveConfig, Error> {
-        let transcript = prover.transcript().clone();
-        let mut prove_config_builder = ProveConfig::builder(&transcript);
+        let transcript = prover.transcript();
+        let mut prove_config_builder = ProveConfig::builder(transcript);
         prove_config_builder.server_identity();
 
-        let mut transcript_commitment_builder = TranscriptCommitConfig::builder(&transcript);
+        let mut transcript_commitment_builder = TranscriptCommitConfig::builder(transcript);
         transcript_commitment_builder
             .default_kind(TranscriptCommitmentKind::Hash { alg: hash_alg });
 
@@ -208,52 +234,16 @@ impl Prover {
 }
 
 pub struct ProverBuilder {
-    runtime: Option<Arc<dyn Runtime>>,
-    tls_client_config: Option<TlsClientConfig>,
-    tls_commit_config: Option<TlsCommitConfig>,
-    request: Option<Request<Empty<Bytes>>>,
+    runtime: Arc<dyn Runtime>,
+    tls_client_config: TlsClientConfig,
+    tls_commit_config: TlsCommitConfig,
+    request: Request<Empty<Bytes>>,
     request_reveal_config: RevealConfig,
     response_reveal_config: RevealConfig,
     hash_alg: HashAlgId,
 }
 
 impl ProverBuilder {
-    fn new() -> Self {
-        Self {
-            runtime: None,
-            tls_client_config: None,
-            tls_commit_config: None,
-            request: None,
-            request_reveal_config: RevealConfig::default(),
-            response_reveal_config: RevealConfig::default(),
-            hash_alg: HashAlgId::BLAKE3,
-        }
-    }
-
-    #[must_use]
-    pub fn runtime(mut self, runtime: Arc<dyn Runtime>) -> Self {
-        self.runtime = Some(runtime);
-        self
-    }
-
-    #[must_use]
-    pub fn tls_client_config(mut self, config: TlsClientConfig) -> Self {
-        self.tls_client_config = Some(config);
-        self
-    }
-
-    #[must_use]
-    pub fn tls_commit_config(mut self, config: TlsCommitConfig) -> Self {
-        self.tls_commit_config = Some(config);
-        self
-    }
-
-    #[must_use]
-    pub fn request(mut self, request: Request<Empty<Bytes>>) -> Self {
-        self.request = Some(request);
-        self
-    }
-
     #[must_use]
     pub fn request_reveal_config(mut self, config: RevealConfig) -> Self {
         self.request_reveal_config = config;
@@ -272,19 +262,16 @@ impl ProverBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Prover, Error> {
-        Ok(Prover {
-            runtime: self.runtime.ok_or(Error::MissingBuilderField("runtime"))?,
-            tls_client_config: self
-                .tls_client_config
-                .ok_or(Error::MissingBuilderField("tls_client_config"))?,
-            tls_commit_config: self
-                .tls_commit_config
-                .ok_or(Error::MissingBuilderField("tls_commit_config"))?,
-            request: self.request.ok_or(Error::MissingBuilderField("request"))?,
+    #[must_use]
+    pub fn build(self) -> Prover {
+        Prover {
+            runtime: self.runtime,
+            tls_client_config: self.tls_client_config,
+            tls_commit_config: self.tls_commit_config,
+            request: self.request,
             request_reveal_config: self.request_reveal_config,
             response_reveal_config: self.response_reveal_config,
             hash_alg: self.hash_alg,
-        })
+        }
     }
 }

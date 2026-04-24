@@ -1,5 +1,7 @@
 use std::{fmt::Write as _, fs};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     Result, ZkTlsnError,
     cli::{self, VerifierTarget, read_field_words_from_bytes},
@@ -11,6 +13,27 @@ pub(crate) const HONK_FIELD_BYTES: usize = 32;
 pub(crate) const INNER_PUBLIC_INPUTS: usize = 35;
 pub(crate) const NULL_PUBLIC_INPUTS: usize = 7;
 pub const RECURSIVE_PUBLIC_INPUTS: usize = 7;
+
+// bb 5.0 emits solidity verifiers with PAIRING_POINTS_SIZE=8 (was 16 in bb 4.x).
+const PAIRING_POINTS_SIZE: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaddingConfig {
+    pub commitment_length: usize,
+}
+
+impl PaddingConfig {
+    #[must_use]
+    pub const fn new(commitment_length: usize) -> Self {
+        Self { commitment_length }
+    }
+}
+
+impl Default for PaddingConfig {
+    fn default() -> Self {
+        Self::new(10)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursiveState {
@@ -85,6 +108,16 @@ pub fn derive_circuit_vk(circuit: RecursiveCircuit) -> Result<VkArtifacts> {
     })
 }
 
+fn prove_with_toml(
+    circuit: RecursiveCircuit,
+    prover_toml: &str,
+    target: VerifierTarget,
+) -> Result<cli::BbProofArtifacts> {
+    cli::write_package_prover_toml(circuit.name(), prover_toml)?;
+    let witness_path = cli::execute_package(circuit.name())?;
+    cli::prove_circuit(circuit, &witness_path, target)
+}
+
 pub fn prove_null_circuit(
     to_user_id: u64,
     null_vk_hash: &[u8; HONK_FIELD_BYTES],
@@ -100,28 +133,11 @@ pub fn prove_null_circuit(
         field_word_hex(recursive_vk_hash),
         field_word_hex(inner_vk_hash),
     );
-
-    cli::write_package_prover_toml(RecursiveCircuit::Null.name(), &prover_toml)?;
-    let witness_path = cli::execute_package(RecursiveCircuit::Null.name())?;
-    let artifacts = cli::prove_circuit(
-        RecursiveCircuit::Null,
-        &witness_path,
-        VerifierTarget::NoirRecursive,
-    )?;
-
-    Ok(Proof {
-        verification_key: artifacts.verification_key,
-        proof: artifacts.proof,
-        public_inputs: artifacts.public_inputs,
-        vk_hash: artifacts.vk_hash,
-    })
+    prove_noir_recursive_circuit(RecursiveCircuit::Null, &prover_toml)
 }
 
 pub fn prove_noir_recursive_circuit(circuit: RecursiveCircuit, prover_toml: &str) -> Result<Proof> {
-    cli::write_package_prover_toml(circuit.name(), prover_toml)?;
-    let witness_path = cli::execute_package(circuit.name())?;
-    let artifacts = cli::prove_circuit(circuit, &witness_path, VerifierTarget::NoirRecursive)?;
-
+    let artifacts = prove_with_toml(circuit, prover_toml, VerifierTarget::NoirRecursive)?;
     Ok(Proof {
         verification_key: artifacts.verification_key,
         proof: artifacts.proof,
@@ -169,9 +185,7 @@ pub fn build_recursive_prover_toml(
 }
 
 pub fn prove_keccak_circuit(circuit: RecursiveCircuit, prover_toml: &str) -> Result<KeccakProof> {
-    cli::write_package_prover_toml(circuit.name(), prover_toml)?;
-    let witness_path = cli::execute_package(circuit.name())?;
-    let artifacts = cli::prove_circuit(circuit, &witness_path, VerifierTarget::Evm)?;
+    let artifacts = prove_with_toml(circuit, prover_toml, VerifierTarget::Evm)?;
     let combined_proof = [
         cli::flatten_public_inputs(&artifacts.public_inputs),
         artifacts.proof.clone(),
@@ -289,4 +303,42 @@ fn decode_hex_nibble(byte: u8) -> Result<u8> {
             details: format!("invalid character `{}`", char::from(byte)),
         }),
     }
+}
+
+pub fn validate_generated_solidity_verifier(source: &str, num_public_inputs: usize) -> Result<()> {
+    let expected_public_inputs = num_public_inputs + PAIRING_POINTS_SIZE;
+    [
+        (
+            format!("uint256 constant NUMBER_OF_PUBLIC_INPUTS = {expected_public_inputs};"),
+            "verifier constant `NUMBER_OF_PUBLIC_INPUTS`",
+        ),
+        (
+            format!("publicInputsSize: uint256({expected_public_inputs})"),
+            "verification key `publicInputsSize`",
+        ),
+        (
+            String::from(
+                "require(publicInputs.length == vk.publicInputsSize - PAIRING_POINTS_SIZE, Errors.PublicInputsLengthWrong());",
+            ),
+            "public input arity guard",
+        ),
+        (
+            String::from(
+                "function verify(bytes calldata _proof, bytes32[] calldata _publicInputs)",
+            ),
+            "verifier interface",
+        ),
+    ]
+    .into_iter()
+    .try_for_each(|(snippet, label)| ensure_contains(source, &snippet, label))
+}
+
+fn ensure_contains(source: &str, snippet: &str, label: &'static str) -> Result<()> {
+    source
+        .contains(snippet)
+        .then_some(())
+        .ok_or_else(|| ZkTlsnError::InvalidInput {
+            context: "solidity verifier",
+            details: format!("missing {label}: `{snippet}`"),
+        })
 }

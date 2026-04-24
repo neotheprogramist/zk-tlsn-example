@@ -9,9 +9,9 @@ use super::{
 };
 use crate::parser::{
     HttpMessageBuilder,
-    common::{assert_end_of_iterator, assert_rule},
     error::{ParseError, Result},
-    traits::{HttpMessage, RangeExtractor, Traverser},
+    parse_three_field_line,
+    traits::{HttpMessage, Traverser},
 };
 
 #[derive(Parser)]
@@ -25,23 +25,6 @@ pub struct Response {
     pub status: Range<usize>,
     pub headers: HashMap<String, Vec<Header>>,
     pub body: HashMap<String, Body>,
-}
-
-impl Response {
-    #[must_use]
-    pub fn protocol_version_with_space(&self) -> Range<usize> {
-        self.protocol_version.start..self.protocol_version.end + 1
-    }
-
-    #[must_use]
-    pub fn status_code_with_space(&self) -> Range<usize> {
-        self.status_code.start..self.status_code.end + 1
-    }
-
-    #[must_use]
-    pub fn status_with_newline(&self) -> Range<usize> {
-        self.status.start..self.status.end + 1
-    }
 }
 
 impl HttpMessage for Response {
@@ -107,34 +90,16 @@ impl HttpMessageBuilder for ResponseBuilder {
         &self,
         status_line: pest::iterators::Pair<'_, Self::Rule>,
     ) -> Result<(Range<usize>, Range<usize>, Range<usize>)> {
-        assert_rule(&status_line, Rule::status_line, "status_line")?;
-
-        let mut inner = status_line.into_inner();
-        let protocol_version = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("protocol version".to_string()))?;
-        let status_code = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("status code".to_string()))?;
-        let status = inner
-            .next()
-            .ok_or_else(|| ParseError::MissingField("status".to_string()))?;
-
-        assert_rule(
-            &protocol_version,
-            Rule::protocol_version,
-            "protocol_version",
-        )?;
-        assert_rule(&status_code, Rule::status_code, "status_code")?;
-        assert_rule(&status, Rule::status, "status")?;
-
-        assert_end_of_iterator(&mut inner, "status_line")?;
-
-        Ok((
-            protocol_version.extract_range(),
-            status_code.extract_range(),
-            status.extract_range(),
-        ))
+        parse_three_field_line(
+            status_line,
+            Rule::status_line,
+            "status_line",
+            [
+                (Rule::protocol_version, "protocol_version"),
+                (Rule::status_code, "status_code"),
+                (Rule::status, "status"),
+            ],
+        )
     }
 
     fn parse(&self, mut pairs: pest::iterators::Pairs<'_, Self::Rule>) -> Result<Self::Message> {

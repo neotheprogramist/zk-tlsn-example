@@ -1,6 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::error;
 
 use e2e::{
     bootstrap,
@@ -40,28 +39,27 @@ struct Cli {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    bootstrap::init_logging().expect("failed to initialize logging");
-    bootstrap::ensure_attestation_toolchain().expect("failed to prepare attestation toolchain");
-
-    if let Err(error) = run(Cli::parse()).await {
-        error!(error = %format!("{error:#}"), "settlement flow failed");
-        std::process::exit(1);
-    }
+    bootstrap::run_main("settlement", || async {
+        bootstrap::ensure_attestation_toolchain()
+            .context("failed to prepare attestation toolchain")?;
+        run(Cli::parse()).await
+    })
+    .await;
 }
 
 async fn run(cli: Cli) -> Result<()> {
     run_settlement(SettlementArgs {
-        server_addr: cli.common.server_addr,
-        server_name: cli.common.server_name,
-        server_cert_path: cli.common.server_cert_path,
-        verifier_addr: cli.common.verifier_addr,
-        verifier_cert_path: cli.common.verifier_cert_path,
+        server_addr: cli.common.tlsn.server_addr,
+        server_name: cli.common.tlsn.server_name,
+        server_cert_path: cli.common.tlsn.server_cert_path,
+        verifier_addr: cli.common.tlsn.verifier_addr,
+        verifier_cert_path: cli.common.tlsn.verifier_cert_path,
         from_users: cli.from_users,
         to_users: cli.to_users,
         amounts: cli.amounts,
-        anvil_rpc_url: cli.common.anvil_rpc_url,
-        anvil_private_key: cli.common.anvil_private_key,
-        mint_recipient: cli.common.mint_recipient,
+        anvil_rpc_url: cli.common.chain.anvil_rpc_url,
+        anvil_private_key: cli.common.chain.anvil_private_key,
+        mint_recipient: cli.common.chain.mint_recipient,
     })
     .await
 }

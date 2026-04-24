@@ -5,12 +5,11 @@
 // reads back the AttestOnly outcome. Asserts the revealed transcript matches.
 
 import {
+    assertCargoResult,
     assertEquals,
-    parseResultLine,
     runCargoBinary,
     sleep,
     spawnCargoBinary,
-    spawnProcess,
     waitForTcp,
     waitForUdp,
 } from './lib/run-binary.mjs';
@@ -97,11 +96,7 @@ try {
         label: 'notarize',
         color: '36',
     });
-    if (notarize.exitCode !== 0) {
-        throw new Error(`notarize exited with code ${notarize.exitCode}`);
-    }
-
-    const result = parseResultLine(notarize.resultLine);
+    const result = assertCargoResult('notarize', notarize);
     assertEquals('flow', 'notarize', result.flow);
     assertEquals('server_name', SERVER_NAME, result.server_name);
     assertEquals('to_username', TO_USER, result.to_username);

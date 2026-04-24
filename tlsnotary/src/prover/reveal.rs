@@ -168,7 +168,7 @@ fn calculate_padded_range(value: &Range<usize>, commitment_length: usize) -> Ran
     value.start..(value.start + commitment_length)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BodyFieldConfig {
     Quoted(String),
     Unquoted(String),
@@ -187,18 +187,14 @@ impl BodyFieldConfig {
             (Self::Quoted(_), Body::KeyValue { key, value }) => key.full_pair_quoted(value),
             (Self::Unquoted(_), Body::KeyValue { key, value }) => key.full_pair_unquoted(value),
             (Self::UnquotedPadded(_, padding_len), Body::KeyValue { key: _, value }) => {
-                Self::get_padded_range(value, *padding_len)
+                calculate_padded_range(value, *padding_len)
             }
             (_, Body::Value(range)) => range.clone(),
         }
     }
-
-    fn get_padded_range(value: &Range<usize>, commitment_length: usize) -> Range<usize> {
-        calculate_padded_range(value, commitment_length)
-    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeyValueCommitConfig {
     pub keypath: String,
     pub commitment_length: Option<usize>,
@@ -227,36 +223,13 @@ impl KeyValueCommitConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RevealConfig {
     pub reveal_headers: Vec<String>,
     pub commit_headers: Vec<String>,
     pub reveal_body_fields: Vec<BodyFieldConfig>,
     pub commit_body_fields: Vec<BodyFieldConfig>,
     pub reveal_keys_commit_values: Vec<KeyValueCommitConfig>,
-}
-
-impl RevealConfig {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn reveal_all() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn commit_all() -> Self {
-        Self {
-            reveal_headers: vec![],
-            commit_headers: vec![],
-            reveal_body_fields: vec![],
-            commit_body_fields: vec![],
-            reveal_keys_commit_values: vec![],
-        }
-    }
 }
 
 fn apply_header_rules<M>(
@@ -392,39 +365,19 @@ where
         builders,
     )?;
 
-    apply_header_rules(
-        direction,
-        DisclosureAction::Reveal,
-        message,
-        source,
-        &config.reveal_headers,
-        builders,
-    )?;
-    apply_header_rules(
-        direction,
-        DisclosureAction::Commit,
-        message,
-        source,
-        &config.commit_headers,
-        builders,
-    )?;
+    for (names, action) in [
+        (&config.reveal_headers, DisclosureAction::Reveal),
+        (&config.commit_headers, DisclosureAction::Commit),
+    ] {
+        apply_header_rules(direction, action, message, source, names, builders)?;
+    }
 
-    apply_body_field_rules(
-        direction,
-        DisclosureAction::Reveal,
-        message,
-        source,
-        &config.reveal_body_fields,
-        builders,
-    )?;
-    apply_body_field_rules(
-        direction,
-        DisclosureAction::Commit,
-        message,
-        source,
-        &config.commit_body_fields,
-        builders,
-    )?;
+    for (fields, action) in [
+        (&config.reveal_body_fields, DisclosureAction::Reveal),
+        (&config.commit_body_fields, DisclosureAction::Commit),
+    ] {
+        apply_body_field_rules(direction, action, message, source, fields, builders)?;
+    }
 
     apply_reveal_key_commit_value_rules(
         direction,
@@ -432,9 +385,7 @@ where
         source,
         &config.reveal_keys_commit_values,
         builders,
-    )?;
-
-    Ok(())
+    )
 }
 
 pub fn reveal_request<'transcript>(

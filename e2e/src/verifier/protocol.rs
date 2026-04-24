@@ -1,52 +1,21 @@
-use std::{ops::Range, path::Path, str::FromStr};
+use std::{ops::Range, path::Path, sync::Arc};
 
 use async_compat::Compat;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tlsnotary::{
-    CertificateDer, Direction, RootCertStore, Session, TlsCommitProtocolConfig,
-    TranscriptCommitment, VerifierConfig,
+    CertificateDer, Direction, RootCertStore, SmolRuntime, TlsCommitProtocolConfig,
+    TranscriptCommitment, Verifier, VerifierConfig, VerifierOutput,
 };
-use tracing::{info, instrument, warn};
+use tracing::info;
 
 use super::{
     MAX_RECV_DATA, MAX_SENT_DATA,
     error::{ConfigError, ProtocolError, ProvingRequestError},
 };
-use crate::testing::{TestTlsConfig, get_or_create_test_tls_config};
+use crate::tls::{TestTlsConfig, get_or_create_test_tls_config};
 
 const MAX_FRAME_BYTES: usize = 1 << 20;
-
-struct StepProgress {
-    current: usize,
-    total: usize,
-}
-
-impl StepProgress {
-    fn new(total: usize) -> Self {
-        Self { current: 0, total }
-    }
-
-    fn tick(&mut self, stage: &str) {
-        self.current = (self.current + 1).min(self.total);
-        let width = 20usize;
-        let filled = (self.current * width) / self.total.max(1);
-        let bar = format!(
-            "{}{}",
-            "█".repeat(filled),
-            "░".repeat(width.saturating_sub(filled))
-        );
-        let percent = (self.current * 100) / self.total.max(1);
-        info!(
-            stage = %stage,
-            step = self.current,
-            total_steps = self.total,
-            percent,
-            progress_bar = %bar,
-            "Verifier stream progress"
-        );
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -96,107 +65,28 @@ impl VerificationOutcome {
     }
 }
 
-#[derive(Debug, Clone)]
-struct NotarizedTranscript {
-    server_name: String,
-    request: String,
-    response: String,
-    transcript_commitments: Vec<TranscriptCommitment>,
-}
-
-#[instrument(skip(stream), fields(phase = "notarize"))]
 pub async fn run_notarize_stream<IO>(stream: IO) -> Result<(), ProtocolError>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    let mut progress = StepProgress::new(4);
-    progress.tick("starting pipeline");
-    let (mut io, notarized_transcript) = run_notarization(stream).await?;
-    progress.tick("notarization finished");
-    log_notarized_transcript(&notarized_transcript)?;
-    info!(
-        server_name = %notarized_transcript.server_name,
-        commitments = notarized_transcript.transcript_commitments.len(),
-        "Notarization complete"
-    );
+    let (mut io, output) = Verifier::new(Arc::new(SmolRuntime), create_verifier_config()?)
+        .verify(
+            Compat::new(stream),
+            |protocol| validate_protocol_config(protocol).map_err(|e| e.to_string()),
+            |server_identity, reveal_present| {
+                validate_proving_request(server_identity, reveal_present).map_err(|e| e.to_string())
+            },
+        )
+        .await?;
 
+    log_verifier_output(&output)?;
     let outcome = VerificationOutcome::Success {
-        server_name: notarized_transcript.server_name.clone(),
-        commitment_count: notarized_transcript.transcript_commitments.len(),
+        server_name: output.server_name.clone(),
+        commitment_count: output.transcript_commitments.len(),
         message: "Attestation-only flow completed".into(),
     };
     send_verification_outcome_and_close(&mut io, &outcome).await?;
-    progress.tick("sent verification result");
-    progress.tick("stream closed");
     Ok(())
-}
-
-#[instrument(skip(stream), fields(phase = "notarize:mpc"))]
-async fn run_notarization<IO>(
-    stream: IO,
-) -> Result<(Compat<IO>, NotarizedTranscript), ProtocolError>
-where
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
-    let session = Session::new(Compat::new(stream));
-    let (driver, mut handle) = session.split();
-    let driver_task = smol::spawn(driver);
-
-    let verifier_config = create_verifier_config()?;
-    info!("Created verifier configuration");
-    let verifier = handle.new_verifier(verifier_config)?;
-    info!("Verifier session created");
-    let verifier = verifier.commit().await?;
-    info!("Verifier committed protocol proposal");
-
-    if let Err(error) = validate_protocol_config(verifier.request().protocol()) {
-        verifier.reject(Some(&error.to_string())).await?;
-        warn!(reason = %error, "Rejected prover protocol configuration");
-        return Err(error.into());
-    }
-    info!("Accepted prover protocol configuration");
-
-    let verifier = verifier.accept().await?.run().await?;
-    info!("Finished MPC-TLS run");
-    let verifier = verifier.verify().await?;
-    info!("Started verification phase");
-
-    if let Err(error) = validate_proving_request(
-        verifier.request().server_identity(),
-        verifier.request().reveal().is_some(),
-    ) {
-        let verifier = verifier.reject(Some(&error.to_string())).await?;
-        verifier.close().await?;
-        warn!(reason = %error, "Rejected proving request");
-        return Err(error.into());
-    }
-
-    let (output, verifier) = verifier.accept().await?;
-    info!("Accepted verifier output from prover");
-    verifier.close().await?;
-
-    handle.close();
-    let io = driver_task.await?;
-
-    let server_name = output
-        .server_name
-        .ok_or(ProtocolError::MissingField("server_name"))?
-        .to_string();
-    let transcript = output
-        .transcript
-        .ok_or(ProtocolError::MissingField("transcript"))?;
-    let request = String::from_utf8(transcript.sent_unsafe().to_vec())?;
-    let response = String::from_utf8(transcript.received_unsafe().to_vec())?;
-
-    Ok((
-        io,
-        NotarizedTranscript {
-            server_name,
-            request,
-            response,
-            transcript_commitments: output.transcript_commitments,
-        },
-    ))
 }
 
 fn create_verifier_config() -> Result<VerifierConfig, ProtocolError> {
@@ -219,10 +109,8 @@ where
 {
     let mut len_buf = [0u8; 4];
     io.read_exact(&mut len_buf).await?;
-    let raw_len = u32::from_be_bytes(len_buf);
-    let frame_len = usize::try_from(raw_len)
-        .ok()
-        .ok_or(ProtocolError::FrameTooLarge(raw_len as usize))?;
+    let frame_len = usize::try_from(u32::from_be_bytes(len_buf))
+        .map_err(|_| ProtocolError::FrameTooLarge(u32::from_be_bytes(len_buf) as usize))?;
     if frame_len > MAX_FRAME_BYTES {
         return Err(ProtocolError::FrameTooLarge(frame_len));
     }
@@ -238,13 +126,12 @@ where
     T: Serialize,
 {
     let payload = serde_json::to_vec(value)?;
+    let len_u32 =
+        u32::try_from(payload.len()).map_err(|_| ProtocolError::FrameTooLarge(payload.len()))?;
     if payload.len() > MAX_FRAME_BYTES {
         return Err(ProtocolError::FrameTooLarge(payload.len()));
     }
 
-    let len_u32 = u32::try_from(payload.len())
-        .ok()
-        .ok_or(ProtocolError::FrameTooLarge(payload.len()))?;
     io.write_all(&len_u32.to_be_bytes()).await?;
     io.write_all(&payload).await?;
     io.flush().await?;
@@ -262,10 +149,7 @@ where
         success = outcome.is_success(),
         "Sending verification outcome"
     );
-    outcome
-        .write_to(io)
-        .await
-        .inspect_err(|e| warn!(error = %e, "Failed sending verification outcome"))?;
+    outcome.write_to(io).await?;
     io.close().await?;
     Ok(())
 }
@@ -276,14 +160,16 @@ fn validate_protocol_config(protocol: &TlsCommitProtocolConfig) -> Result<(), Co
     };
 
     if mpc_tls_config.max_sent_data() > MAX_SENT_DATA {
-        return Err(ConfigError::MaxSentDataTooLarge {
+        return Err(ConfigError::BoundExceeded {
+            field: "max_sent_data",
             limit: MAX_SENT_DATA,
             actual: mpc_tls_config.max_sent_data(),
         });
     }
 
     if mpc_tls_config.max_recv_data() > MAX_RECV_DATA {
-        return Err(ConfigError::MaxRecvDataTooLarge {
+        return Err(ConfigError::BoundExceeded {
+            field: "max_recv_data",
             limit: MAX_RECV_DATA,
             actual: mpc_tls_config.max_recv_data(),
         });
@@ -307,53 +193,43 @@ fn validate_proving_request(
     Ok(())
 }
 
-fn log_notarized_transcript(
-    notarized_transcript: &NotarizedTranscript,
-) -> Result<(), ProtocolError> {
-    let request_commit_mask = build_commitment_mask(
-        &notarized_transcript.transcript_commitments,
+fn log_verifier_output(output: &VerifierOutput) -> Result<(), ProtocolError> {
+    let request = std::str::from_utf8(output.transcript.sent_unsafe())?;
+    let response = std::str::from_utf8(output.transcript.received_unsafe())?;
+
+    let request_mask = build_commitment_mask(
+        &output.transcript_commitments,
         Direction::Sent,
-        notarized_transcript.request.len(),
+        request.len(),
     );
-    let response_commit_mask = build_commitment_mask(
-        &notarized_transcript.transcript_commitments,
+    let response_mask = build_commitment_mask(
+        &output.transcript_commitments,
         Direction::Received,
-        notarized_transcript.response.len(),
+        response.len(),
     );
 
     info!(
-        server_name = %notarized_transcript.server_name,
-        request_len = notarized_transcript.request.len(),
-        response_len = notarized_transcript.response.len(),
-        commitment_count = notarized_transcript.transcript_commitments.len(),
+        server_name = %output.server_name,
+        request_len = request.len(),
+        response_len = response.len(),
+        commitment_count = output.transcript_commitments.len(),
         "Received notarization transcript from prover"
     );
-    let request_view = render_verifier_view(&notarized_transcript.request, &request_commit_mask);
-    let response_view = render_verifier_view(&notarized_transcript.response, &response_commit_mask);
     info!(
         "Verifier redacted request text (legend: x redacted byte, # committed byte):\n{}",
-        request_view
+        render_verifier_view(request, &request_mask)
     );
     info!(
         "Verifier redacted response text (legend: x redacted byte, # committed byte):\n{}",
-        response_view
+        render_verifier_view(response, &response_mask)
     );
 
-    let parsed_request =
-        tlsnotary::parser::redacted::Request::from_str(&notarized_transcript.request)?;
-    info!(parsed_request = ?parsed_request, "Parsed notarized request");
-    log_redacted_request_details(&parsed_request, &notarized_transcript.request)?;
+    info!(parsed_request = ?output.parsed_request, "Parsed notarized request");
+    log_redacted_request_details(&output.parsed_request, request)?;
+    info!(parsed_response = ?output.parsed_response, "Parsed notarized response");
+    log_redacted_response_details(&output.parsed_response, response)?;
 
-    let parsed_response =
-        tlsnotary::parser::redacted::Response::from_str(&notarized_transcript.response)?;
-    info!(parsed_response = ?parsed_response, "Parsed notarized response");
-    log_redacted_response_details(&parsed_response, &notarized_transcript.response)?;
-
-    for (index, commitment) in notarized_transcript
-        .transcript_commitments
-        .iter()
-        .enumerate()
-    {
+    for (index, commitment) in output.transcript_commitments.iter().enumerate() {
         match commitment {
             TranscriptCommitment::Hash(hash) => {
                 let (range_start, range_end) =
@@ -432,8 +308,7 @@ fn render_verifier_view(transcript: &str, commit_mask: &[bool]) -> String {
     );
 
     if commit_mask.len() > bytes.len() {
-        let hidden_tail = commit_mask.len() - bytes.len();
-        out.push_str(&"#".repeat(hidden_tail));
+        out.push_str(&"#".repeat(commit_mask.len() - bytes.len()));
     }
 
     out

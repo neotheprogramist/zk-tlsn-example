@@ -15,13 +15,19 @@ pub enum Error {
     #[error(transparent)]
     InvalidTranscript(#[from] TranscriptError),
 
-    #[error("builder is missing required field: {0}")]
-    MissingBuilderField(&'static str),
-
     #[error("{context}: {details}")]
     InvalidInput {
         context: &'static str,
         details: String,
+    },
+
+    #[error("tlsn session driver was cancelled before it could return the socket")]
+    SessionDriverCancelled,
+
+    #[error("{context} policy rejected verifier session: {reason}")]
+    PolicyRejected {
+        context: &'static str,
+        reason: String,
     },
 
     #[error(transparent)]
@@ -56,12 +62,9 @@ pub enum Error {
 
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
-}
 
-impl From<std::str::Utf8Error> for Error {
-    fn from(err: std::str::Utf8Error) -> Self {
-        Self::InvalidTranscript(TranscriptError::InvalidUtf8(err))
-    }
+    #[error(transparent)]
+    Utf8Str(#[from] std::str::Utf8Error),
 }
 
 #[derive(Error, Debug)]
@@ -103,7 +106,4 @@ pub enum TranscriptError {
         expected: String,
         actual: String,
     },
-
-    #[error(transparent)]
-    InvalidUtf8(#[from] std::str::Utf8Error),
 }
