@@ -7,7 +7,8 @@ use http_body_util::BodyExt;
 use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use smol::net::TcpStream;
-use stwo_circuits::attestation::{ATTESTATION_LEN, prove_attestation};
+use shared::ATTESTATION_LEN;
+use stwo_circuits::attestation::prove_attestation;
 use tlsnotary::{
     HashAlgId, ProveConfig, ProverConfig, Session, TranscriptCommitConfig,
     TranscriptCommitmentKind,
@@ -134,10 +135,6 @@ where
     prover.close().await.context("failed to close prover")?;
     handle.close();
     let mut verifier_stream = driver_task.await.context("TLSNotary driver failed")?;
-    verifier_stream
-        .close()
-        .await
-        .context("failed to close verifier stream")?;
 
     let attestation = derive_noir_prover_inputs(
         &prover_output.transcript_commitments,
@@ -152,9 +149,11 @@ where
         .as_bytes()
         .try_into()
         .map_err(|_| anyhow::anyhow!("attestation must be 32 bytes"))?;
+
     let native_proof = prove_attestation(
         &attestation_bytes,
         &attestation.attestation_blinder,
+        &attestation.attestation_committed_hash,
         attestation.tx_id,
         attestation.to_user_id,
         attestation.amount,

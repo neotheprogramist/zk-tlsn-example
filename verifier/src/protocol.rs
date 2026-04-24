@@ -442,6 +442,16 @@ fn verify_stwo_proof_message(
     verify_attestation(&proof_message.proof)
         .map_err(|error| ProtocolError::ProofVerificationFailed(error.to_string()))?;
 
+    let stwo_commitment_bytes = proof_message
+        .proof
+        .commitment_bytes()
+        .ok_or_else(|| ProtocolError::ProofVerificationFailed("STWO proof missing commitment".to_string()))?;
+    if stwo_commitment_bytes != proof_message.attestation_committed_hash {
+        return Err(ProtocolError::ProofVerificationFailed(
+            "STWO commitment does not match TLSN attestation hash".to_string(),
+        ));
+    }
+
     let parsed_response = parser::redacted::Response::from_str(&notarized_transcript.response)
         .map_err(|error| ProtocolError::ResponseParse(format!("{error:?}")))?;
     let bindings = bind_commitments_to_keys(
