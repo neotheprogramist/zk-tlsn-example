@@ -44,8 +44,7 @@ target
 node_modules/
 
 # wasm-bindgen output
-extension/wasm/
-e2e/assets/wasm/
+demo/assets/wasm/
 
 # Playwright
 /test-results/

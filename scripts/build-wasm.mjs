@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Builds the tlsnotary wasm bundle for Flow 3 and writes the wasm-bindgen
-// output into the service's asset directory.
+// Builds the zktlsn_core wasm bundle for Flow 1 (browser) and writes the
+// wasm-bindgen output into the service's asset directory.
 //
 // Post-step: wasm-bindgen emits web-spawn's snippet with `import('../../..')`,
 // which Chrome can't resolve against a directory URL. Rewrite to an explicit
-// `../../../tlsnotary.js` so the dynamic import works in the browser.
+// `../../../core.js` so the dynamic import works in the browser.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const OUT_DIR = 'e2e/assets/wasm';
-const WASM_INPUT = 'target/wasm32-unknown-unknown/release/tlsnotary.wasm';
+const OUT_DIR = 'demo/assets/wasm';
+const WASM_INPUT = 'target/wasm32-unknown-unknown/release/zktlsn_core.wasm';
 
 function run(cmd, args) {
     return new Promise((resolve, reject) => {
@@ -32,7 +32,7 @@ function patchSpawnJs() {
         const spawnJs = path.join(snippetsRoot, dir, 'js', 'spawn.js');
         if (!fs.existsSync(spawnJs)) continue;
         const before = fs.readFileSync(spawnJs, 'utf8');
-        const after = before.replaceAll("'../../..'", "'../../../tlsnotary.js'");
+        const after = before.replaceAll("'../../..'", "'../../../core.js'");
         if (after !== before) {
             fs.writeFileSync(spawnJs, after);
             console.log(`patched ${spawnJs}`);
@@ -45,7 +45,8 @@ try {
         '+nightly',
         'build',
         '-p',
-        'tlsnotary',
+        'zktlsn_core',
+        '--lib',
         '--target',
         'wasm32-unknown-unknown',
         '--release',
@@ -57,10 +58,10 @@ try {
         '--target',
         'web',
         '--out-name',
-        'tlsnotary',
+        'core',
     ]);
     patchSpawnJs();
-    console.log(`\nbuilt ${path.join(OUT_DIR, 'tlsnotary_bg.wasm')}`);
+    console.log(`\nbuilt ${path.join(OUT_DIR, 'core_bg.wasm')}`);
 } catch (err) {
     console.error(`\nbuild-wasm: FAIL — ${err.message}`);
     process.exit(1);
