@@ -34,7 +34,7 @@ quinn = { version = "0.11.9", default-features = false, features = [
 ] }
 rcgen = "0.14.7"
 rustls = "0.23.39"
-salvo = { version = "0.92.1", default-features = false, features = ["http1", "server", "affix-state", "quinn", "serve-static", "rustls"] }
+salvo = { version = "0.90.1", default-features = false, features = ["http1", "server", "affix-state", "quinn", "serve-static", "rustls"] }
 salvo-http3 = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
@@ -42,7 +42,7 @@ serde_json = "1.0.149"
 zktlsn_core = { path = "./core" }
 smol = "2.0.2"
 thiserror = "2.0.18"
-tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.14", default-features = false }
+tlsn = { git = "https://github.com/neotheprogramist/tlsn", branch = "feat/posiedon-m31" }
 tokio = { version = "1.52.1", default-features = false, features = ["io-util", "rt", "rt-multi-thread", "macros", "net", "time", "process", "fs"] }
 tokio-rustls = "0.26.4"
 tracing = "0.1.44"
