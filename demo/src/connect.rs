@@ -419,8 +419,8 @@ where
 
 fn create_verifier_config() -> Result<VerifierConfig, ConnectError> {
     let TestTlsConfig { cert_bytes, .. } = get_or_create_test_tls_config(
-        Path::new(".data/tls/server-cert.pem"),
-        Path::new(".data/tls/server-key.pem"),
+        Path::new(".data/server/cert.pem"),
+        Path::new(".data/server/key.pem"),
     )?;
     Ok(VerifierConfig::builder()
         .root_store(RootCertStore {

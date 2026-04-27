@@ -48,8 +48,8 @@ if (!chromium) {
 const SERVER_ADDR = '127.0.0.1:8443';
 const SERVER_PORT = 8443;
 const SERVER_NAME = 'localhost';
-const SERVER_CERT_PATH = '.data/tls/server-cert.pem';
-const SERVER_KEY_PATH = '.data/tls/server-key.pem';
+const SERVER_CERT_PATH = '.data/server/cert.pem';
+const SERVER_KEY_PATH = '.data/server/key.pem';
 
 const SERVICE_HOST = '127.0.0.1';
 const SERVICE_PORT = 8444;

@@ -75,7 +75,6 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
 
     let page_state = Arc::new(PageState {
         cert_hash_hex: certificate.fingerprint_hex.clone(),
-        connect_url: format!("https://{listen_authority}/connect"),
         server_host: config.server_host.clone(),
         server_port: config.allowed_target.port(),
         server_name: config.server_name.clone(),
@@ -233,7 +232,6 @@ fn sha256_hex(data: &[u8]) -> String {
 #[derive(Debug, Clone)]
 pub struct PageState {
     pub cert_hash_hex: String,
-    pub connect_url: String,
     pub server_host: String,
     pub server_port: u16,
     pub server_name: String,
@@ -248,7 +246,6 @@ pub struct PageState {
 #[template(path = "index.html")]
 struct IndexTemplate<'a> {
     cert_hash_hex: &'a str,
-    connect_url: &'a str,
     server_host: &'a str,
     server_port: u16,
     server_name: &'a str,
@@ -274,7 +271,6 @@ async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), Serve
         .map_err(|_| ServeError::PageStateMissing)?;
     let html = IndexTemplate {
         cert_hash_hex: &state.cert_hash_hex,
-        connect_url: &state.connect_url,
         server_host: &state.server_host,
         server_port: state.server_port,
         server_name: &state.server_name,

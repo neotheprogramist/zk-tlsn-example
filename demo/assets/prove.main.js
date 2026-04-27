@@ -11,7 +11,7 @@ function appendLog(line) {
 function readConfig() {
     const d = root.dataset;
     return {
-        connectUrl: d.connectUrl,
+        connectUrl: new URL('/connect', location.origin).toString(),
         certHashHex: d.certHash,
         serverHost: d.serverHost,
         serverPort: Number(d.serverPort),

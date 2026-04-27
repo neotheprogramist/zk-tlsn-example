@@ -6,7 +6,7 @@ use demo::{
     init_logging,
     ledger::{self, AppConfig, AppState, DemoServerConfig, TransferRequest},
     service::{self, ServiceConfig},
-    tls::load_test_cert_bytes,
+    tls::get_or_create_cert_bytes,
 };
 use tokio::net::lookup_host;
 use tracing::{error, info};
@@ -17,13 +17,21 @@ use tracing::{error, info};
     about = "zk-tlsn demo: HTTPS ledger + browser WASM service"
 )]
 struct Cli {
-    #[arg(long, env = "ZKTLSN_SERVER_LISTEN_ADDR")]
+    #[arg(long, env = "ZKTLSN_SERVER_LISTEN_ADDR", default_value = "[::]:8443")]
     server_listen_addr: SocketAddr,
-    #[arg(long, env = "ZKTLSN_SERVER_CERT_PATH")]
+    #[arg(
+        long,
+        env = "ZKTLSN_SERVER_CERT_PATH",
+        default_value = ".data/server/cert.pem"
+    )]
     server_cert_path: PathBuf,
-    #[arg(long, env = "ZKTLSN_SERVER_KEY_PATH")]
+    #[arg(
+        long,
+        env = "ZKTLSN_SERVER_KEY_PATH",
+        default_value = ".data/server/key.pem"
+    )]
     server_key_path: PathBuf,
-    #[arg(long, env = "ZKTLSN_SERVICE_LISTEN_ADDR")]
+    #[arg(long, env = "ZKTLSN_SERVICE_LISTEN_ADDR", default_value = "[::]:8444")]
     service_listen_addr: SocketAddr,
     #[arg(long, env = "ZKTLSN_SERVICE_CERT_DIR", default_value = ".data/service")]
     service_cert_dir: PathBuf,
@@ -35,7 +43,7 @@ struct Cli {
         default_value = "demo/templates"
     )]
     service_template_dir: PathBuf,
-    #[arg(long, env = "ZKTLSN_SERVER_ADDR")]
+    #[arg(long, env = "ZKTLSN_SERVER_ADDR", default_value = "localhost:8443")]
     server_addr: String,
     #[arg(long, env = "ZKTLSN_SERVER_NAME", default_value = "localhost")]
     server_name: String,
@@ -96,8 +104,8 @@ async fn run(cli: Cli) -> Result<()> {
         "seeded demo transfer"
     );
 
-    let server_cert_der =
-        load_test_cert_bytes(&cli.server_cert_path).context("failed to load server certificate")?;
+    let server_cert_der = get_or_create_cert_bytes(&cli.server_cert_path, &cli.server_key_path)
+        .context("failed to prepare server certificate")?;
     let server_cert_der_hex = hex::encode(&server_cert_der);
 
     let server_cfg = DemoServerConfig {

@@ -54,8 +54,12 @@ pub(crate) fn build_self_signed(
     Ok((cert, key_pair))
 }
 
-pub fn load_test_cert_bytes(cert_path: &Path) -> Result<Vec<u8>, TlsFixtureError> {
-    parse_pem(cert_path)
+pub fn get_or_create_cert_bytes(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<Vec<u8>, TlsFixtureError> {
+    let (cert_bytes, _) = load_or_create_cert_key(cert_path, key_path)?;
+    Ok(cert_bytes)
 }
 
 pub fn get_or_create_test_tls_config(

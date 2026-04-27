@@ -70,13 +70,22 @@ The `sed` invocation shown is **macOS BSD sed**. On GNU sed (Linux), drop the `'
 ## Run the demo
 
 ```bash
-ZKTLSN_SERVER_LISTEN_ADDR=127.0.0.1:8443 \
-ZKTLSN_SERVER_CERT_PATH=.data/tls/server-cert.pem \
-ZKTLSN_SERVER_KEY_PATH=.data/tls/server-key.pem \
-ZKTLSN_SERVICE_LISTEN_ADDR=127.0.0.1:8444 \
-ZKTLSN_SERVER_ADDR=127.0.0.1:8443 \
 cargo run --release --bin zktlsn
 ```
+
+That's it — every env var has a sensible default. The defaults are:
+
+| Var                          | Default                 | Role                                                   |
+| ---------------------------- | ----------------------- | ------------------------------------------------------ |
+| `ZKTLSN_SERVER_LISTEN_ADDR`  | `[::]:8443`             | ledger socket bind (dual-stack)                        |
+| `ZKTLSN_SERVICE_LISTEN_ADDR` | `[::]:8444`             | service socket bind (dual-stack)                       |
+| `ZKTLSN_SERVER_ADDR`         | `localhost:8443`        | proxy dial target the service uses to reach the ledger |
+| `ZKTLSN_SERVER_CERT_PATH`    | `.data/server/cert.pem` | ledger TLS cert (auto-created on first run)            |
+| `ZKTLSN_SERVER_KEY_PATH`     | `.data/server/key.pem`  | ledger TLS key (auto-created on first run)             |
+
+To override anything, drop a `.env` file at the repo root — `mise.toml` declares `_.file = ".env"`, so mise injects it automatically whenever you `cd` into the directory.
+
+The two `*_LISTEN_ADDR`s use `[::]` (dual-stack) rather than `127.0.0.1` because Chrome's WebTransport (HTTP/3 over QUIC) prefers IPv6 when resolving `localhost`; a v4-only socket would refuse the QUIC handshake even though the TCP page fetch succeeds via Happy Eyeballs. macOS gives `IPV6_V6ONLY=0` by default, so one `[::]` socket serves both stacks.
 
 Always run `--release`. MPC-TLS is heavily optimisation-sensitive; debug builds make a single attestation take ~30 s instead of ~3 s.
 
@@ -87,8 +96,8 @@ The single `zktlsn` process spawns the ledger on `ZKTLSN_SERVER_LISTEN_ADDR` and
 Run the full flow yourself in Chrome — no Playwright, no harness — to inspect every step.
 
 1. **Build the wasm bundle** (once, or after any `core/` / `core-wasm/` change) — see [Build the wasm artifact](#build-the-wasm-artifact) above for the three commands.
-2. **Start the binary** with the env block above. Wait for the two `listening` log lines (HTTP/3.0 and HTTP/1.1 on `:8444`).
-3. **Open Chrome** at `https://127.0.0.1:8444/`. Accept the self-signed cert (Advanced → Proceed). The page renders one **Start attestation** button plus the configured transfer parameters.
+2. **Start the binary** (`cargo run --release --bin zktlsn`). Wait for the two `listening` log lines (HTTP/3.0 and HTTP/1.1 on `:8444`).
+3. **Open Chrome** at `https://localhost:8444/`. Accept the self-signed cert (Advanced → Proceed). The page renders one **Start attestation** button plus the configured transfer parameters. The cert's SAN covers `localhost`, `127.0.0.1`, and `::1` — any of them works; the page derives the WebTransport URL from `location.origin`, so it follows whichever you type.
 4. **Open DevTools → Console** before clicking.
 5. **Click Start attestation.** Chrome spawns a Worker, loads the wasm prover, opens two WebTransport bidi streams, and runs MPC-TLS against the ledger over the second stream while the verifier watches the first.
 6. **Watch the console.** Both the on-page `<pre>` log and DevTools Console mirror the same lines. After MPC-TLS finishes (≈3–5 s) you'll see, in order:
