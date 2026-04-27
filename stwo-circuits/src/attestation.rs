@@ -8,7 +8,7 @@ use circuits::context::{Context, Var};
 use circuits::ivalue::qm31_from_u32s;
 use circuits::ops::{eq, guess, output};
 use circuits::poseidon2::{RATE, poseidon2_sponge_circuit};
-use shared::{ATTESTATION_LEN, TX_ID_WIDTH, USER_ID_WIDTH, FiatTransferAttestation, encode_transfer_attestation};
+use shared::{AMOUNT_WIDTH, ATTESTATION_LEN, TX_ID_WIDTH, USER_ID_WIDTH, FiatTransferAttestation, encode_transfer_attestation};
 use serde::{Deserialize, Serialize};
 use stwo::core::air::Component;
 use stwo::core::channel::{Blake2sM31Channel, Channel};
@@ -17,7 +17,20 @@ use stwo::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
 use stwo::core::proof::ExtendedStarkProof;
 use stwo::core::vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher};
 
+fn att_bytes(tx_id: u64, to_user_id: u64, amount: u64) -> [u8; ATTESTATION_LEN] {
+    encode_transfer_attestation(FiatTransferAttestation::new(tx_id, to_user_id, amount))
+        .expect("fields fit encoding")
+        .as_bytes()
+        .try_into()
+        .expect("attestation must be ATTESTATION_LEN bytes")
+}
 
+fn hash_bytes_to_qm31(bytes: &[u8; 32]) -> [QM31; 8] {
+    std::array::from_fn(|i| {
+        let word = u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        qm31_from_u32s(word, 0, 0, 0)
+    })
+}
 
 fn parse_decimal_circuit(ctx: &mut Context<QM31>, digit_vars: &[Var]) -> Var {
     let ascii_zero = ctx.constant(qm31_from_u32s(48, 0, 0, 0));
@@ -40,7 +53,6 @@ fn build_attestation_circuit(
 ) -> Context<QM31> {
     let mut ctx = Context::<QM31>::default();
 
-    // Private witnesses: each byte of attestation and blinder.
     let att_vars: Vec<Var> = attestation
         .iter()
         .map(|&b| guess(&mut ctx, qm31_from_u32s(b as u32, 0, 0, 0)))
@@ -50,10 +62,9 @@ fn build_attestation_circuit(
         .map(|&b| guess(&mut ctx, qm31_from_u32s(b as u32, 0, 0, 0)))
         .collect();
 
-    // Parse tx_id, to_user_id, amount from private attestation bytes and constrain to public values.
     let parsed_tx_id = parse_decimal_circuit(&mut ctx, &att_vars[..TX_ID_WIDTH]);
     let parsed_to_user_id = parse_decimal_circuit(&mut ctx, &att_vars[TX_ID_WIDTH..TX_ID_WIDTH + USER_ID_WIDTH]);
-    let parsed_amount = parse_decimal_circuit(&mut ctx, &att_vars[TX_ID_WIDTH + USER_ID_WIDTH..]);
+    let parsed_amount = parse_decimal_circuit(&mut ctx, &att_vars[TX_ID_WIDTH + USER_ID_WIDTH..TX_ID_WIDTH + USER_ID_WIDTH + AMOUNT_WIDTH]);
     let tx_id_const = ctx.constant(qm31_from_u32s(tx_id as u32, 0, 0, 0));
     let to_user_id_const = ctx.constant(qm31_from_u32s(to_user_id as u32, 0, 0, 0));
     let amount_const = ctx.constant(qm31_from_u32s(amount as u32, 0, 0, 0));
@@ -61,15 +72,13 @@ fn build_attestation_circuit(
     eq(&mut ctx, parsed_to_user_id, to_user_id_const);
     eq(&mut ctx, parsed_amount, amount_const);
 
-    // Poseidon2 sponge over attestation bytes || blinder bytes.
-    let all_vars: Vec<Var> = att_vars.iter().chain(blinder_vars.iter()).copied().collect();
-    let blocks: Vec<[Var; RATE]> = all_vars
+    let mut blocks: Vec<[Var; RATE]> = att_vars
         .chunks(RATE)
         .map(|chunk| std::array::from_fn(|i| chunk[i]))
         .collect();
+    blocks.extend(blinder_vars.chunks(RATE).map(|chunk| std::array::from_fn(|i| chunk[i])));
     let state = poseidon2_sponge_circuit(&mut ctx, &blocks);
 
-    // Constrain all 8 sponge state elements against public commitment.
     let commitment_vars: [Var; 8] = std::array::from_fn(|i| {
         let cv = ctx.constant(commitment[i]);
         eq(&mut ctx, state[i], cv);
@@ -79,7 +88,6 @@ fn build_attestation_circuit(
         ctx.mark_as_maybe_unused(lane);
     }
 
-    // Public outputs: commitment[0..8], tx_id, to_user_id, amount.
     for cv in &commitment_vars {
         output(&mut ctx, *cv);
     }
@@ -162,29 +170,23 @@ pub fn prove_attestation(
     to_user_id: u64,
     amount: u64,
 ) -> Result<AttestationStwoProof, String> {
-    let commitment: [QM31; 8] = std::array::from_fn(|i| {
-        let word = u32::from_le_bytes(attestation_committed_hash[i * 4..i * 4 + 4].try_into().unwrap());
-        qm31_from_u32s(word, 0, 0, 0)
-    });
+    let commitment = hash_bytes_to_qm31(attestation_committed_hash);
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut ctx = build_attestation_circuit(attestation, blinder, commitment, tx_id, to_user_id, amount);
         let preprocessed = PreprocessedCircuit::preprocess_circuit(&mut ctx);
-        let output_addresses = preprocessed.params.output_addresses.clone();
         let circuit_proof = prove_circuit_assignment(
             ctx.values(),
             &preprocessed,
             &BaseColumnPool::new(),
         );
-        circuit_proof_to_attestation(circuit_proof, output_addresses)
+        circuit_proof_to_attestation(circuit_proof, preprocessed.params.output_addresses)
     }))
     .map_err(|_| "circuit constraint violated: witness does not satisfy constraints".to_string())?
 }
 
 pub fn verify_attestation(proof: &AttestationStwoProof) -> Result<(), String> {
-    // Dummy context with the same circuit structure (witnesses don't matter for verification).
-    let dummy_att_str = encode_transfer_attestation(FiatTransferAttestation::new(1, 2, 3))
-        .expect("dummy attestation fits encoding");
-    let dummy_att: [u8; ATTESTATION_LEN] = dummy_att_str.as_bytes().try_into().expect("attestation must be 32 bytes");
+    // Dummy context to recover circuit topology for verification; witnesses don't matter.
+    let dummy_att = att_bytes(1, 2, 3);
     let dummy_blinder = [0u8; 16];
     let dummy_commitment = [QM31::zero(); 8];
     let mut ctx = build_attestation_circuit(&dummy_att, &dummy_blinder, dummy_commitment, 1, 2, 3);
@@ -281,20 +283,6 @@ pub fn verify_attestation(proof: &AttestationStwoProof) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn test_att(tx_id: u64, to_user_id: u64, amount: u64) -> [u8; ATTESTATION_LEN] {
-        encode_transfer_attestation(FiatTransferAttestation::new(tx_id, to_user_id, amount))
-            .expect("test fields fit encoding")
-            .as_bytes()
-            .try_into()
-            .expect("attestation must be 32 bytes")
-    }
-
-    #[test]
-    fn test_attestation_bytes_format() {
-        let att = test_att(1, 3, 25);
-        assert_eq!(std::str::from_utf8(&att).unwrap(), "00000000010000000003000000000025");
-    }
-
     fn poseidon_hash(attestation: &[u8; ATTESTATION_LEN], blinder: &[u8; 16]) -> [u8; 32] {
         let mut h = poseidon_m31::PoseidonHasher::new();
         h.update(attestation);
@@ -303,30 +291,32 @@ mod tests {
     }
 
     #[test]
+    fn test_attestation_bytes_format() {
+        let att = att_bytes(1, 3, 25);
+        assert_eq!(std::str::from_utf8(&att).unwrap(), "00000000010000000003000000000025");
+    }
+
+    #[test]
     fn test_different_attestation_gives_different_commitment() {
         let blinder = [1u8; 16];
         assert_ne!(
-            poseidon_hash(&test_att(1, 3, 25), &blinder),
-            poseidon_hash(&test_att(999, 3, 25), &blinder),
+            poseidon_hash(&att_bytes(1, 3, 25), &blinder),
+            poseidon_hash(&att_bytes(999, 3, 25), &blinder),
         );
     }
 
     #[test]
     fn test_build_attestation_circuit() {
-        let attestation = test_att(1, 3, 25);
+        let attestation = att_bytes(1, 3, 25);
         let blinder = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         let committed_hash = poseidon_hash(&attestation, &blinder);
-        let commitment: [QM31; 8] = std::array::from_fn(|i| {
-            let word = u32::from_le_bytes(committed_hash[i * 4..i * 4 + 4].try_into().unwrap());
-            qm31_from_u32s(word, 0, 0, 0)
-        });
-        let ctx = build_attestation_circuit(&attestation, &blinder, commitment, 1, 3, 25);
+        let ctx = build_attestation_circuit(&attestation, &blinder, hash_bytes_to_qm31(&committed_hash), 1, 3, 25);
         ctx.check_vars_used();
     }
 
     #[test]
     fn test_prove_and_verify_attestation() {
-        let attestation = test_att(1, 3, 25);
+        let attestation = att_bytes(1, 3, 25);
         let blinder = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         let committed_hash = poseidon_hash(&attestation, &blinder);
         let proof = prove_attestation(&attestation, &blinder, &committed_hash, 1, 3, 25)
@@ -336,5 +326,4 @@ mod tests {
         assert_eq!((tx_id, to_user_id, amount), (1, 3, 25));
         assert!(proof.commitment_bytes().is_some());
     }
-
 }
