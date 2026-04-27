@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "core-wasm", "demo"]
+members = ["core", "core-wasm", "demo", "zk"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,7 @@ hyper-util = { version = "0.1.20", features = ["client", "http2", "tokio", "serv
 js-sys = "0.3.77"
 pin-project-lite = "0.2.15"
 pem = "3.0.4"
+poseidon-m31 = { git = "https://github.com/anhelinakruk/poseidon-m31", branch = "main" }
 pest = "2.8.6"
 pest_derive = "2.8.6"
 quinn = { version = "0.11.9", default-features = false, features = [
