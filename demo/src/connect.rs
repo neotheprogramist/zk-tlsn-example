@@ -1,4 +1,11 @@
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use async_compat::Compat;
 use salvo::{
@@ -219,10 +226,20 @@ pub async fn handle(req: &mut Request, depot: &mut Depot) -> Result<(), ConnectE
     let session = req.web_transport_mut().await?;
     tracing::debug!("connect: session handshake ready");
 
+    let verified = Arc::new(AtomicBool::new(false));
+
     loop {
-        let Some(accepted) = session.accept_bi().await? else {
-            tracing::debug!("connect: session closed");
-            return Ok(());
+        let accepted = match session.accept_bi().await {
+            Ok(Some(accepted)) => accepted,
+            Ok(None) => {
+                tracing::debug!("connect: session closed");
+                return Ok(());
+            }
+            Err(err) if verified.load(Ordering::SeqCst) => {
+                tracing::debug!(%err, "connect: session ended after notarization");
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
         };
         let proto::webtransport::server::AcceptedBi::BidiStream(_, stream) = accepted else {
             tracing::warn!("connect: expected bidirectional stream, dropping");
@@ -230,9 +247,10 @@ pub async fn handle(req: &mut Request, depot: &mut Depot) -> Result<(), ConnectE
         };
 
         let proxy_config = Arc::clone(&proxy_config);
+        let verified = Arc::clone(&verified);
         tokio::spawn(async move {
             let (wt_send, wt_recv) = proto::quic::BidiStream::split(stream);
-            if let Err(err) = dispatch_stream(wt_recv, wt_send, &proxy_config).await {
+            if let Err(err) = dispatch_stream(wt_recv, wt_send, &proxy_config, &verified).await {
                 tracing::warn!(%err, "connect: stream failed");
             }
         });
@@ -243,6 +261,7 @@ async fn dispatch_stream<R, W>(
     mut wt_recv: R,
     wt_send: W,
     proxy_config: &ProxyConfig,
+    verified: &AtomicBool,
 ) -> Result<(), ConnectError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -258,7 +277,9 @@ where
                 );
             }
             let joined = tokio::io::join(ChainedRead::new(leftover, wt_recv), wt_send);
-            run_notarize_stream(joined, proxy_config).await
+            let outcome = run_notarize_stream(joined, proxy_config).await;
+            verified.store(true, Ordering::SeqCst);
+            outcome
         }
         Role::Connect { host, port } => {
             proxy_connect(wt_recv, wt_send, proxy_config, host, port, leftover).await
