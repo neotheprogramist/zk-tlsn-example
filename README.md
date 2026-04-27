@@ -137,6 +137,27 @@ The harness spawns the binary, launches headed Chromium (Playwright is `npx`-ins
 
 Out of scope: `core::prover`, `core::parser`, `demo/*`, `scripts/*.mjs`, Playwright. Those exercise the flow; they are not the trust boundary.
 
+## Lint and format
+
+Lints first, then format checks. CI gates on this exact one-liner:
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings && npx --yes oxlint && forge fmt --check && npx --yes oxfmt --check
+```
+
+- `cargo clippy …` — Rust lint, workspace-wide, warnings are errors.
+- `npx --yes oxlint` — JS / HTML / CSS lint (oxc).
+- `forge fmt --check` — Solidity format check (Foundry, pinned by `mise.toml`).
+- `npx --yes oxfmt --check` — JS / HTML / CSS format check (oxc).
+
+To auto-fix formatting in place:
+
+```bash
+forge fmt && npx --yes oxfmt
+```
+
+`--yes` keeps `npx` non-interactive (skips the install prompt).
+
 ## Engineering standards
 
 `GUIDELINES.md` is authoritative.

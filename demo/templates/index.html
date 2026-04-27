@@ -1,31 +1,50 @@
 <!doctype html>
 <html lang="en">
-<head>
+  <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TLSNotary browser WASM prover</title>
     <style>
-        body { font-family: ui-monospace, monospace; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
-        pre { background: #111; color: #eee; padding: 1rem; overflow: auto; max-height: 40vh; }
-        button[disabled] { opacity: 0.5; cursor: not-allowed; }
+      body {
+        font-family: ui-monospace, monospace;
+        max-width: 960px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      pre {
+        background: #111;
+        color: #eee;
+        padding: 1rem;
+        overflow: auto;
+        max-height: 40vh;
+      }
+      button[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
     </style>
-</head>
-<body>
-    <main data-role="prove-root"
-          data-cert-hash="{{ cert_hash_hex }}"
-          data-server-host="{{ server_host }}"
-          data-server-port="{{ server_port }}"
-          data-server-name="{{ server_name }}"
-          data-server-cert-der-hex="{{ server_cert_der_hex }}"
-          data-from-user="{{ from_user }}"
-          data-to-user="{{ to_user }}"
-          data-transfer-amount="{{ transfer_amount }}"
-          data-tx-id="{{ tx_id }}">
-        <h1>TLSNotary browser WASM prover</h1>
-        <p>Transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to <em>{{ to_user }}</em> (tx_id = {{ tx_id }}).</p>
-        <button data-role="start">Start attestation</button>
-        <pre data-role="log"></pre>
-        <script type="module" src="/assets/prove.main.js"></script>
+  </head>
+  <body>
+    <main
+      data-role="prove-root"
+      data-cert-hash="{{ cert_hash_hex }}"
+      data-server-host="{{ server_host }}"
+      data-server-port="{{ server_port }}"
+      data-server-name="{{ server_name }}"
+      data-server-cert-der-hex="{{ server_cert_der_hex }}"
+      data-from-user="{{ from_user }}"
+      data-to-user="{{ to_user }}"
+      data-transfer-amount="{{ transfer_amount }}"
+      data-tx-id="{{ tx_id }}"
+    >
+      <h1>TLSNotary browser WASM prover</h1>
+      <p>
+        Transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to
+        <em>{{ to_user }}</em> (tx_id = {{ tx_id }}).
+      </p>
+      <button data-role="start">Start attestation</button>
+      <pre data-role="log"></pre>
+      <script type="module" src="/assets/prove.main.js"></script>
     </main>
-</body>
+  </body>
 </html>
