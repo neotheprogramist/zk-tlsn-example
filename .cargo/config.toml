@@ -2,8 +2,9 @@
 build-std = ["panic_abort", "std"]
 
 [env]
-CC_wasm32_unknown_unknown = "/opt/local/libexec/llvm-22/bin/clang"
-AR_wasm32_unknown_unknown = "/opt/local/libexec/llvm-22/bin/llvm-ar"
+CC_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/clang"
+AR_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"
+
 
 [target.wasm32-unknown-unknown]
 rustflags = [

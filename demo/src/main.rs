@@ -120,15 +120,8 @@ async fn run(cli: Cli) -> Result<()> {
         tx_id: transfer.tx_id,
     };
 
-    let server_task = tokio::spawn(ledger::serve(server_cfg, state));
-    let service_task = tokio::spawn(async move {
-        service::serve(service_cfg)
-            .await
-            .map_err(anyhow::Error::from)
-    });
-
     tokio::select! {
-        result = server_task => result.context("ledger task panicked")?.context("ledger flow failed"),
-        result = service_task => result.context("service task panicked")?.context("service flow failed"),
+        result = ledger::serve(server_cfg, state) => result.context("ledger flow failed"),
+        result = service::serve(service_cfg) => result.map_err(anyhow::Error::from).context("service flow failed"),
     }
 }
