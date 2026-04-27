@@ -48,6 +48,9 @@ struct Cli {
 }
 
 fn main() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
     init_logging().expect("failed to initialize logging");
     let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread()
