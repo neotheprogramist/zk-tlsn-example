@@ -1,5 +1,3 @@
-mod routes;
-
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -7,8 +5,10 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use salvo::{
     Depot, Request, Response, Router, Service, Writer, async_trait,
     conn::SocketAddr as SalvoSocketAddr,
+    handler,
     http::{StatusCode, uri::Scheme},
     prelude::*,
+    writing::Json,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,6 +17,7 @@ use tokio::{
     sync::RwLock,
 };
 use tokio_rustls::TlsAcceptor;
+use tracing::{info, warn};
 use zktlsn_core::{FiatTransferAttestation, encode_transfer_attestation};
 
 use crate::tls::get_or_create_test_tls_config;
@@ -38,11 +39,11 @@ enum ConnectionError {
     ServeConnection(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
-pub async fn serve(cfg: DemoServerConfig) -> Result<()> {
+pub async fn serve(cfg: DemoServerConfig, state: AppState) -> Result<()> {
     let tls = get_or_create_test_tls_config(&cfg.cert_path, &cfg.key_path)
         .context("failed to load or create TLS server configuration")?;
     let server_config = tls.server_config;
-    let router = get_app(AppConfig::demo_defaults()).context("failed to build server app")?;
+    let router = build_router(state);
     let service = Arc::new(Service::new(router));
     let listener = TcpListener::bind(cfg.listen_addr)
         .await
@@ -92,8 +93,6 @@ async fn handle_connection(
 pub enum ApiError {
     #[error("user '{0}' not found")]
     UserNotFound(String),
-    #[error("user '{0}' already exists")]
-    UserAlreadyExists(String),
     #[error("transfer '{0}' not found")]
     TransferNotFound(u64),
     #[error("amount must be greater than zero")]
@@ -106,8 +105,6 @@ pub enum ApiError {
     },
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
-    #[error("request decoding failed: {0}")]
-    RequestDecode(#[from] salvo::http::ParseError),
     #[error("missing path param '{0}'")]
     MissingPathParam(&'static str),
     #[error(transparent)]
@@ -118,11 +115,9 @@ impl ApiError {
     fn status(&self) -> StatusCode {
         match self {
             Self::UserNotFound(_) | Self::TransferNotFound(_) => StatusCode::NOT_FOUND,
-            Self::UserAlreadyExists(_) => StatusCode::CONFLICT,
             Self::InvalidAmount
             | Self::InsufficientBalance { .. }
             | Self::InvalidConfig(_)
-            | Self::RequestDecode(_)
             | Self::MissingPathParam(_)
             | Self::Attestation(_) => StatusCode::BAD_REQUEST,
         }
@@ -139,8 +134,7 @@ impl Writer for ApiError {
 
 // ─── API types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitialUser {
     pub username: String,
     pub balance: u64,
@@ -178,29 +172,6 @@ impl AppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct UserResponse {
-    pub id: u64,
-    pub username: String,
-    pub balance: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BalanceResponse {
-    pub id: u64,
-    pub username: String,
-    pub balance: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateUserRequest {
-    pub username: String,
-    pub balance: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct TransferRequest {
     pub from_username: String,
     pub to_username: String,
@@ -220,13 +191,6 @@ pub struct TransferResponse {
     pub eligible_for_mint: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ServerConfigResponse {
-    pub special_user_id: u64,
-    pub special_username: String,
-}
-
 // ─── Ledger ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -234,26 +198,6 @@ struct User {
     id: u64,
     username: String,
     balance: u64,
-}
-
-impl From<&User> for UserResponse {
-    fn from(user: &User) -> Self {
-        Self {
-            id: user.id,
-            username: user.username.clone(),
-            balance: user.balance,
-        }
-    }
-}
-
-impl From<&User> for BalanceResponse {
-    fn from(user: &User) -> Self {
-        Self {
-            id: user.id,
-            username: user.username.clone(),
-            balance: user.balance,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,7 +233,6 @@ pub(crate) struct Ledger {
     next_user_id: u64,
     next_tx_id: u64,
     special_user_id: u64,
-    special_username: String,
 }
 
 impl Ledger {
@@ -300,14 +243,12 @@ impl Ledger {
             next_user_id: 1,
             next_tx_id: 1,
             special_user_id: 0,
-            special_username: config.special_username.clone(),
         };
 
-        config.users.into_iter().try_for_each(|user| {
-            ledger
-                .register_user(user.username, user.balance)
-                .map(|_| ())
-        })?;
+        config
+            .users
+            .into_iter()
+            .try_for_each(|user| ledger.register_user(user.username, user.balance))?;
 
         if !ledger.users_by_name.contains_key(&config.special_username) {
             ledger.register_user(config.special_username.clone(), 0)?;
@@ -327,13 +268,11 @@ impl Ledger {
         Ok(ledger)
     }
 
-    pub(crate) fn register_user(
-        &mut self,
-        username: String,
-        balance: u64,
-    ) -> Result<UserResponse, ApiError> {
+    fn register_user(&mut self, username: String, balance: u64) -> Result<(), ApiError> {
         if self.users_by_name.contains_key(&username) {
-            return Err(ApiError::UserAlreadyExists(username));
+            return Err(ApiError::InvalidConfig(format!(
+                "duplicate user '{username}'"
+            )));
         }
 
         let user = User {
@@ -341,35 +280,12 @@ impl Ledger {
             username: username.clone(),
             balance,
         };
-        let response = UserResponse::from(&user);
         self.next_user_id = self
             .next_user_id
             .checked_add(1)
             .ok_or_else(|| ApiError::InvalidConfig(String::from("user id overflow")))?;
         self.users_by_name.insert(username, user);
-
-        Ok(response)
-    }
-
-    pub(crate) fn list_users(&self) -> Vec<UserResponse> {
-        self.users_by_name
-            .values()
-            .map(UserResponse::from)
-            .collect()
-    }
-
-    pub(crate) fn balance(&self, username: &str) -> Result<BalanceResponse, ApiError> {
-        self.users_by_name
-            .get(username)
-            .map(BalanceResponse::from)
-            .ok_or_else(|| ApiError::UserNotFound(String::from(username)))
-    }
-
-    pub(crate) fn config(&self) -> ServerConfigResponse {
-        ServerConfigResponse {
-            special_user_id: self.special_user_id,
-            special_username: self.special_username.clone(),
-        }
+        Ok(())
     }
 
     pub(crate) fn transfer(
@@ -462,27 +378,39 @@ impl AppState {
     }
 }
 
-pub fn get_app(config: AppConfig) -> Result<Router, ApiError> {
-    Ok(build_router(AppState::new(config)?))
-}
-
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .hoop(affix_state::inject(state))
-        .push(Router::with_path("/api/config").get(routes::get_config))
-        .push(
-            Router::with_path("/api/users")
-                .get(routes::list_users)
-                .post(routes::create_user),
-        )
-        .push(Router::with_path("/api/balance/{username}").get(routes::get_balance))
-        .push(Router::with_path("/api/transfers").post(routes::create_transfer))
-        .push(Router::with_path("/api/attestations/{tx_id}").get(routes::get_attestation))
+        .push(Router::with_path("/api/attestations/{tx_id}").get(get_attestation))
 }
 
-pub async fn seed_transfer_direct(
+pub async fn seed_transfer(
     state: &AppState,
     request: TransferRequest,
 ) -> Result<TransferResponse, ApiError> {
     state.ledger.write().await.transfer(request)
+}
+
+// ─── Route handlers ────────────────────────────────────────────────────────
+
+fn state(depot: &Depot) -> &AppState {
+    depot
+        .obtain::<AppState>()
+        .expect("AppState must be injected by affix_state middleware")
+}
+
+#[handler]
+async fn get_attestation(
+    req: &mut Request,
+    depot: &mut Depot,
+) -> Result<Json<TransferResponse>, ApiError> {
+    let tx_id: u64 = req
+        .param("tx_id")
+        .ok_or(ApiError::MissingPathParam("tx_id"))?;
+    info!(tx_id, "GET /api/attestations");
+    let ledger = state(depot).ledger.read().await;
+    ledger
+        .attestation(tx_id)
+        .inspect_err(|e| warn!(tx_id, error = %e, "Attestation lookup failed"))
+        .map(Json)
 }

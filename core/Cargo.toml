@@ -3,18 +3,13 @@ name = "zktlsn_core"
 version.workspace = true
 edition.workspace = true
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [dependencies]
-blake3.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 pest.workspace = true
 pest_derive.workspace = true
 pin-project-lite.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -23,33 +18,12 @@ futures.workspace = true
 smol.workspace = true
 tlsn.workspace = true
 
+# When core is compiled to wasm32 (via the zktlsn_core_wasm shell), tlsn needs
+# its `web` feature to link against the browser-compatible primitives, and
+# parking_lot's nightly feature is required by tlsn's MPC thread parker.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook.workspace = true
 futures.workspace = true
 getrandom = { workspace = true }
 getrandom_03 = { workspace = true }
-js-sys.workspace = true
-# parking_lot's `nightly` feature enables the Atomics.wait-based thread parker on
-# wasm32. Without it the parker's slow path panics with `unreachable`.
 parking_lot = { version = "0.12", features = ["nightly"] }
-serde-wasm-bindgen.workspace = true
 tlsn = { workspace = true, features = ["web", "mozilla-certs"] }
-tracing-web.workspace = true
-wasm-bindgen.workspace = true
-wasm-bindgen-futures.workspace = true
-web-spawn = "0.2.1"
-# web-sys features required to unify the transitive feature graph pulled in by
-# `tlsn`'s web features (web-spawn needs Worker; tlsn needs various stream APIs).
-web-sys = { workspace = true, features = [
-    "MessageEvent",
-    "ReadableStream",
-    "ReadableStreamDefaultReader",
-    "WebTransportBidirectionalStream",
-    "WebTransportReceiveStream",
-    "WebTransportSendStream",
-    "Worker",
-    "WorkerOptions",
-    "WorkerType",
-    "WritableStream",
-    "WritableStreamDefaultWriter",
-] }

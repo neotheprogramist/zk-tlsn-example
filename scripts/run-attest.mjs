@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Flow 1: browser WASM prover via Playwright (headed Chromium).
-// Spawns the demo server and the `service` binary, then launches a real
+// Browser WASM prover via Playwright (headed Chromium).
+// Spawns the single zktlsn binary, then launches a real
 // Chromium window through Playwright, navigates to the prover page, clicks
 // "Start attestation", captures the ZKTLSN_RESULT line from the page console,
 // and asserts on the revealed fields.
@@ -153,39 +153,23 @@ try {
         );
     }
 
-    console.log('[harness] starting demo server...');
-    const server = spawnCargoBinary({
+    console.log('[harness] starting zktlsn (ledger + service)...');
+    const proc = spawnCargoBinary({
         bin: 'zktlsn',
-        args: ['server'],
+        args: [],
         env: sharedEnv,
-        label: 'server',
+        label: 'zktlsn',
         color: '32',
     });
     registerCleanup({
         stop: async () => {
-            server.kill();
-            await Promise.race([server.result, sleep(2_000)]);
+            proc.kill();
+            await Promise.race([proc.result, sleep(2_000)]);
         },
     });
     await waitForTcp('127.0.0.1', SERVER_PORT);
-    console.log('[harness] demo server ready.');
-
-    console.log('[harness] starting service...');
-    const service = spawnCargoBinary({
-        bin: 'zktlsn',
-        args: ['service'],
-        env: sharedEnv,
-        label: 'service',
-        color: '33',
-    });
-    registerCleanup({
-        stop: async () => {
-            service.kill();
-            await Promise.race([service.result, sleep(2_000)]);
-        },
-    });
     await waitForTcp(SERVICE_HOST, SERVICE_PORT);
-    console.log('[harness] service ready.');
+    console.log('[harness] zktlsn ready.');
 
     console.log('[harness] launching headed Chromium via Playwright...');
     const browser = await chromium.launch({

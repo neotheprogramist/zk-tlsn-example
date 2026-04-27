@@ -5,6 +5,7 @@ const btn = document.querySelector('[data-role="start"]');
 function appendLog(line) {
     const ts = new Date().toISOString();
     logEl.textContent += `[${ts}] ${line}\n`;
+    console.log(`[${ts}] ${line}`);
 }
 
 function readConfig() {

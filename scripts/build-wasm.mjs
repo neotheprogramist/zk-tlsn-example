@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the zktlsn_core wasm bundle for Flow 1 (browser) and writes the
+// Builds the zktlsn_core_wasm bundle for the browser prover and writes the
 // wasm-bindgen output into the service's asset directory.
 //
 // Post-step: wasm-bindgen emits web-spawn's snippet with `import('../../..')`,
@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const OUT_DIR = 'demo/assets/wasm';
-const WASM_INPUT = 'target/wasm32-unknown-unknown/release/zktlsn_core.wasm';
+const WASM_INPUT = 'target/wasm32-unknown-unknown/release/zktlsn_core_wasm.wasm';
 
 function run(cmd, args) {
     return new Promise((resolve, reject) => {
@@ -45,7 +45,7 @@ try {
         '+nightly',
         'build',
         '-p',
-        'zktlsn_core',
+        'zktlsn_core_wasm',
         '--lib',
         '--target',
         'wasm32-unknown-unknown',

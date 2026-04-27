@@ -1,5 +1,3 @@
-pub mod connect;
-
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -8,7 +6,8 @@ use std::{
 };
 
 use askama::Template;
-use connect::ProxyConfig;
+
+use crate::connect::ProxyConfig;
 use salvo::{
     Error as SalvoError, affix_state, async_trait,
     conn::rustls::{Keycert, RustlsConfig},
@@ -59,6 +58,12 @@ pub enum ServeError {
         "required wasm artifact missing at {0}: run the wasm build before starting the service"
     )]
     MissingWasm(PathBuf),
+    #[error("page state missing from depot")]
+    PageStateMissing,
+    #[error("template render failed: {0}")]
+    Render(#[from] askama::Error),
+    #[error(transparent)]
+    Salvo(#[from] SalvoError),
 }
 
 pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
@@ -86,6 +91,8 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
     let proxy_config = Arc::new(ProxyConfig {
         allowed_target: config.allowed_target,
         allowed_host: config.server_host.clone(),
+        server_name: config.server_name.clone(),
+        to_username: config.to_user.clone(),
     });
 
     tracing::info!(
@@ -107,7 +114,7 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         .hoop(affix_state::inject(proxy_config))
         .get(render_index)
         .push(Router::with_path("cert-hash").get(render_cert_hash))
-        .push(Router::with_path("connect").goal(connect::handle))
+        .push(Router::with_path("connect").goal(crate::connect::handle))
         .push(Router::with_path("assets/{**}").get(StaticDir::new([config.asset_dir])));
 
     Server::new(acceptor).serve(router).await;
@@ -254,29 +261,19 @@ struct IndexTemplate<'a> {
     server_cert_der_hex: &'a str,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum PageError {
-    #[error("page state missing from depot")]
-    StateMissing,
-    #[error("template render failed: {0}")]
-    Render(#[from] askama::Error),
-    #[error(transparent)]
-    Salvo(#[from] SalvoError),
-}
-
 #[async_trait]
-impl Writer for PageError {
+impl Writer for ServeError {
     async fn write(self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
-        tracing::error!(error = %self, "page render failed");
+        tracing::error!(error = %self, "service request failed");
         res.render(StatusError::internal_server_error());
     }
 }
 
 #[handler]
-async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), PageError> {
+async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), ServeError> {
     let state = depot
         .obtain::<Arc<PageState>>()
-        .map_err(|_| PageError::StateMissing)?;
+        .map_err(|_| ServeError::PageStateMissing)?;
     let html = IndexTemplate {
         cert_hash_hex: &state.cert_hash_hex,
         connect_url: &state.connect_url,
@@ -295,10 +292,10 @@ async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), PageE
 }
 
 #[handler]
-async fn render_cert_hash(depot: &mut Depot, res: &mut Response) -> Result<(), PageError> {
+async fn render_cert_hash(depot: &mut Depot, res: &mut Response) -> Result<(), ServeError> {
     let state = depot
         .obtain::<Arc<PageState>>()
-        .map_err(|_| PageError::StateMissing)?;
+        .map_err(|_| ServeError::PageStateMissing)?;
     res.render(Text::Plain(state.cert_hash_hex.clone()));
     Ok(())
 }

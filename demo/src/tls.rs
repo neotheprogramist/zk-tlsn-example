@@ -1,7 +1,6 @@
 use std::{fs, path::Path, sync::Arc};
 
 use chrono::Datelike;
-use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use thiserror::Error;
@@ -19,24 +18,13 @@ pub enum TlsFixtureError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
-    #[error(transparent)]
-    NoInitialCipherSuite(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
 }
 
-pub const ALPN_HTTP: &[&[u8]] = &[b"h2", b"http/1.1"];
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+const ALPN_HTTP: &[&[u8]] = &[b"h2", b"http/1.1"];
 const CERT_LIFETIME_DAYS: i64 = 3650;
 
 pub struct TestTlsConfig {
     pub server_config: Arc<rustls::ServerConfig>,
-    pub client_config: Arc<rustls::ClientConfig>,
-    pub cert_bytes: Vec<u8>,
-}
-
-pub struct TestQuicConfig {
-    pub server_config: quinn::ServerConfig,
-    pub client_config: quinn::ClientConfig,
     pub cert_bytes: Vec<u8>,
 }
 
@@ -70,22 +58,6 @@ pub fn load_test_cert_bytes(cert_path: &Path) -> Result<Vec<u8>, TlsFixtureError
     parse_pem(cert_path)
 }
 
-pub fn load_test_client_tls_config(
-    cert_path: &Path,
-) -> Result<Arc<rustls::ClientConfig>, TlsFixtureError> {
-    let cert = CertificateDer::from(parse_pem(cert_path)?);
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert)?;
-
-    let mut client_config = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = alpn(ALPN_HTTP);
-
-    Ok(Arc::new(client_config))
-}
-
 pub fn get_or_create_test_tls_config(
     cert_path: &Path,
     key_path: &Path,
@@ -100,66 +72,8 @@ pub fn get_or_create_test_tls_config(
         .with_single_cert(vec![cert.clone()], key)?;
     server_config.alpn_protocols = alpn(ALPN_HTTP);
 
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert.clone())?;
-
-    let mut client_config = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = alpn(ALPN_HTTP);
-
     Ok(TestTlsConfig {
         server_config: Arc::new(server_config),
-        client_config: Arc::new(client_config),
-        cert_bytes,
-    })
-}
-
-pub async fn load_test_quic_client_config(
-    cert_path: &Path,
-) -> Result<quinn::ClientConfig, TlsFixtureError> {
-    let cert = CertificateDer::from(parse_pem(cert_path)?);
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert)?;
-
-    let mut client_crypto = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_crypto.alpn_protocols = alpn(ALPN_QUIC_HTTP);
-
-    let client_crypto = QuicClientConfig::try_from(client_crypto)?;
-    Ok(quinn::ClientConfig::new(Arc::new(client_crypto)))
-}
-
-pub async fn get_or_create_test_quic_config(
-    cert_path: &Path,
-    key_path: &Path,
-) -> Result<TestQuicConfig, TlsFixtureError> {
-    let (cert_bytes, key_bytes) = load_or_create_cert_key(cert_path, key_path)?;
-    let cert = CertificateDer::from(cert_bytes.clone());
-
-    let mut server_crypto = rustls::ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], PrivateKeyDer::Pkcs8(key_bytes.into()))?;
-    server_crypto.alpn_protocols = alpn(ALPN_QUIC_HTTP);
-
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert.clone())?;
-    let mut client_crypto = rustls::ClientConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_crypto.alpn_protocols = alpn(ALPN_QUIC_HTTP);
-
-    let server_crypto = QuicServerConfig::try_from(server_crypto)?;
-    let client_crypto = QuicClientConfig::try_from(client_crypto)?;
-
-    Ok(TestQuicConfig {
-        server_config: quinn::ServerConfig::with_crypto(Arc::new(server_crypto)),
-        client_config: quinn::ClientConfig::new(Arc::new(client_crypto)),
         cert_bytes,
     })
 }

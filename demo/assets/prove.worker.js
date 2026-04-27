@@ -13,9 +13,6 @@ self.addEventListener('unhandledrejection', (ev) => {
 
 import init, { Prover, initialize } from '/assets/wasm/core.js';
 
-const MAX_SENT_DATA = 4096;
-const MAX_RECV_DATA = 16384;
-
 function hexToBytes(hex) {
     const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
     if (clean.length % 2 !== 0) throw new Error('hex string has odd length');
@@ -44,36 +41,7 @@ function buildProverInputs(config) {
     return {
         server_name: config.serverName,
         server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
-        max_sent_data: MAX_SENT_DATA,
-        max_recv_data: MAX_RECV_DATA,
-        request: {
-            method: 'GET',
-            uri: `/api/attestations/${config.txId}`,
-            headers: [
-                ['content-type', 'application/json'],
-                ['Connection', 'close'],
-            ],
-        },
-        request_reveal: {
-            reveal_headers: ['content-type'],
-            commit_headers: ['connection'],
-            reveal_body_fields: [],
-            commit_body_fields: [],
-            reveal_keys_commit_values: [],
-        },
-        response_reveal: {
-            reveal_headers: [],
-            commit_headers: [],
-            reveal_body_fields: [
-                { Quoted: '.toUsername' },
-                { Unquoted: '.eligibleForMint' },
-            ],
-            commit_body_fields: [],
-            reveal_keys_commit_values: [
-                { keypath: '.attestation', commitment_length: 32 },
-            ],
-        },
-        hash_alg: 'blake3',
+        tx_id: Number(config.txId),
     };
 }
 
@@ -113,6 +81,9 @@ async function runProve(config) {
     const output = await prover.prove_streams(verifierStream, proxyStream);
 
     log('prover returned, parsing response body');
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    log(`prover-view REQUEST (${output.sent.length} bytes, full):\n${decoder.decode(new Uint8Array(output.sent))}`);
+    log(`prover-view RESPONSE (${output.received.length} bytes, full):\n${decoder.decode(new Uint8Array(output.received))}`);
     const body = parseResponseBody(output.response_body);
 
     return {

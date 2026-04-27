@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
 use futures::{AsyncRead, AsyncWrite, channel::oneshot};
 use tlsn::{
@@ -10,6 +10,7 @@ use tlsn::{
 
 use crate::{
     error::{Error, TranscriptError},
+    flow::{MAX_RECV_DATA, MAX_SENT_DATA},
     parser::redacted::{Body, Header, Request, Response},
 };
 
@@ -104,267 +105,211 @@ impl Verifier {
             },
         ))
     }
-}
 
-// ─── Validator ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub enum FieldAssertion {
-    HeaderEquals { key: String, value: String },
-    BodyFieldEquals { key: String, value: ExpectedValue },
-}
-
-#[derive(Debug, Clone)]
-pub enum ExpectedValue {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(String),
-}
-
-#[derive(Debug, Clone)]
-enum ValidationRule {
-    ServerName(String),
-    HashAlgorithm(HashAlgId),
-    Request(FieldAssertion),
-    Response(FieldAssertion),
-}
-
-#[derive(Debug, Clone)]
-pub struct Validator {
-    rules: Vec<ValidationRule>,
-}
-
-impl Validator {
-    #[must_use]
-    pub fn builder() -> ValidatorBuilder {
-        ValidatorBuilder::new()
+    pub async fn verify_transfer<T>(
+        self,
+        socket: T,
+        expected_server_name: &str,
+        expected_to_username: &str,
+    ) -> Result<(T, VerifierOutput), Error>
+    where
+        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        let (socket, output) = self
+            .verify(socket, transfer_protocol_policy, transfer_reveal_policy)
+            .await?;
+        validate_transfer_attestation(&output, expected_server_name, expected_to_username)?;
+        Ok((socket, output))
     }
+}
 
-    pub fn validate(&self, output: &VerifierOutput) -> Result<(), Error> {
-        for rule in &self.rules {
-            match rule {
-                ValidationRule::ServerName(expected_name) => {
-                    if output.server_name != *expected_name {
-                        return Err(TranscriptError::ServerName {
-                            expected: expected_name.clone(),
-                            actual: output.server_name.clone(),
-                        }
-                        .into());
-                    }
-                }
-                ValidationRule::HashAlgorithm(expected_alg) => {
-                    for commitment in &output.transcript_commitments {
-                        if let tlsn::transcript::TranscriptCommitment::Hash(hash) = commitment
-                            && hash.hash.alg != *expected_alg
-                        {
-                            return Err(TranscriptError::HashAlgorithm {
-                                expected: *expected_alg,
-                                actual: hash.hash.alg,
-                                direction: hash.direction,
-                            }
-                            .into());
-                        }
-                    }
-                }
-                ValidationRule::Request(assertion) => {
-                    Self::validate_assertion(
-                        assertion,
-                        &output.parsed_request.headers,
-                        &output.parsed_request.body,
-                        output.transcript.sent_unsafe(),
-                        "request",
-                    )?;
-                }
-                ValidationRule::Response(assertion) => {
-                    Self::validate_assertion(
-                        assertion,
-                        &output.parsed_response.headers,
-                        &output.parsed_response.body,
-                        output.transcript.received_unsafe(),
-                        "response",
-                    )?;
-                }
-            }
-        }
-
-        Ok(())
+fn transfer_protocol_policy(protocol: &TlsCommitProtocolConfig) -> Result<(), String> {
+    let TlsCommitProtocolConfig::Mpc(mpc) = protocol else {
+        return Err("expected MPC-TLS protocol".to_string());
+    };
+    if mpc.max_sent_data() > MAX_SENT_DATA {
+        return Err("max_sent_data exceeds limit".to_string());
     }
-
-    fn validate_assertion(
-        assertion: &FieldAssertion,
-        headers: &HashMap<String, Vec<Header>>,
-        body: &HashMap<String, Body>,
-        data: &[u8],
-        ctx: &'static str,
-    ) -> Result<(), Error> {
-        match assertion {
-            FieldAssertion::HeaderEquals { key, value } => {
-                let header = headers
-                    .get(&key.to_lowercase())
-                    .and_then(|h| h.first())
-                    .ok_or_else(|| TranscriptError::MissingHeader {
-                        ctx,
-                        key: key.clone(),
-                    })?;
-                let range =
-                    header
-                        .value
-                        .as_ref()
-                        .ok_or_else(|| TranscriptError::HeaderWithoutValue {
-                            ctx,
-                            key: key.clone(),
-                        })?;
-                let actual = std::str::from_utf8(&data[range.clone()])?;
-                if actual != value {
-                    return Err(TranscriptError::HeaderMismatch {
-                        ctx,
-                        key: key.clone(),
-                        expected: value.clone(),
-                        actual: actual.to_string(),
-                    }
-                    .into());
-                }
-            }
-            FieldAssertion::BodyFieldEquals { key, value } => {
-                let field = body
-                    .get(key)
-                    .ok_or_else(|| TranscriptError::MissingBodyField {
-                        ctx,
-                        key: key.clone(),
-                    })?;
-                Self::validate_value(value, field, data, ctx, key)?;
-            }
-        }
-        Ok(())
+    if mpc.max_recv_data() > MAX_RECV_DATA {
+        return Err("max_recv_data exceeds limit".to_string());
     }
+    Ok(())
+}
 
-    fn validate_value(
-        expected: &ExpectedValue,
-        field: &Body,
-        data: &[u8],
-        ctx: &'static str,
-        key: &str,
-    ) -> Result<(), Error> {
-        let range = match field {
-            Body::KeyValue { value, .. } => value.as_ref(),
-            Body::Value(r) => Some(r),
+fn transfer_reveal_policy(
+    server_identity_revealed: bool,
+    reveal_payload_present: bool,
+) -> Result<(), String> {
+    if !server_identity_revealed {
+        return Err("missing required server identity reveal".to_string());
+    }
+    if !reveal_payload_present {
+        return Err("missing required transcript reveal payload".to_string());
+    }
+    Ok(())
+}
+
+fn validate_transfer_attestation(
+    output: &VerifierOutput,
+    server_name: &str,
+    to_username: &str,
+) -> Result<(), Error> {
+    expect_server_name(output, server_name)?;
+    expect_hash_algorithm(output, HashAlgId::BLAKE3)?;
+    expect_header(
+        &output.parsed_request.headers,
+        output.transcript.sent_unsafe(),
+        "request",
+        "content-type",
+        "application/json",
+    )?;
+    expect_body_string(
+        &output.parsed_response.body,
+        output.transcript.received_unsafe(),
+        "response",
+        ".toUsername",
+        to_username,
+    )?;
+    expect_body_bool(
+        &output.parsed_response.body,
+        output.transcript.received_unsafe(),
+        "response",
+        ".eligibleForMint",
+        true,
+    )
+}
+
+fn expect_server_name(output: &VerifierOutput, expected: &str) -> Result<(), Error> {
+    if output.server_name == expected {
+        return Ok(());
+    }
+    Err(TranscriptError::ServerName {
+        expected: expected.to_string(),
+        actual: output.server_name.clone(),
+    }
+    .into())
+}
+
+fn expect_hash_algorithm(output: &VerifierOutput, expected: HashAlgId) -> Result<(), Error> {
+    for commitment in &output.transcript_commitments {
+        if let tlsn::transcript::TranscriptCommitment::Hash(hash) = commitment
+            && hash.hash.alg != expected
+        {
+            return Err(TranscriptError::HashAlgorithm {
+                expected,
+                actual: hash.hash.alg,
+                direction: hash.direction,
+            }
+            .into());
         }
-        .ok_or_else(|| TranscriptError::MissingFieldValue {
+    }
+    Ok(())
+}
+
+fn expect_header(
+    headers: &HashMap<String, Vec<Header>>,
+    data: &[u8],
+    ctx: &'static str,
+    key: &str,
+    expected: &str,
+) -> Result<(), Error> {
+    let header = headers
+        .get(&key.to_lowercase())
+        .and_then(|headers| headers.first())
+        .ok_or_else(|| TranscriptError::MissingHeader {
             ctx,
             key: key.to_string(),
         })?;
-
-        let actual = std::str::from_utf8(&data[range.clone()])?;
-
-        let mismatch = |expected: String, actual: String| TranscriptError::FieldMismatch {
+    let actual = text_at(data, header.value.as_ref(), || {
+        TranscriptError::HeaderWithoutValue {
             ctx,
             key: key.to_string(),
-            expected,
-            actual,
-        };
-
-        match expected {
-            ExpectedValue::Null if actual == "null" => Ok(()),
-            ExpectedValue::Null => Err(mismatch("null".into(), actual.to_string()).into()),
-            ExpectedValue::Bool(exp) => match actual.parse::<bool>() {
-                Ok(act) if &act == exp => Ok(()),
-                Ok(act) => Err(mismatch(exp.to_string(), act.to_string()).into()),
-                Err(_) => Err(mismatch(exp.to_string(), actual.to_string()).into()),
-            },
-            ExpectedValue::Number(exp) => match actual.parse::<f64>() {
-                Ok(act) if (exp - act).abs() < f64::EPSILON => Ok(()),
-                Ok(act) => Err(mismatch(exp.to_string(), act.to_string()).into()),
-                Err(_) => Err(mismatch(exp.to_string(), actual.to_string()).into()),
-            },
-            ExpectedValue::String(exp) if exp == actual => Ok(()),
-            ExpectedValue::String(exp) => {
-                Err(mismatch(format!("'{exp}'"), format!("'{actual}'")).into())
-            }
         }
+    })?;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(TranscriptError::HeaderMismatch {
+        ctx,
+        key: key.to_string(),
+        expected: expected.to_string(),
+        actual: actual.to_string(),
+    }
+    .into())
+}
+
+fn expect_body_string(
+    body: &HashMap<String, Body>,
+    data: &[u8],
+    ctx: &'static str,
+    key: &str,
+    expected: &str,
+) -> Result<(), Error> {
+    let actual = body_text(body, data, ctx, key)?;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(field_mismatch(ctx, key, format!("'{expected}'"), format!("'{actual}'")).into())
+}
+
+fn expect_body_bool(
+    body: &HashMap<String, Body>,
+    data: &[u8],
+    ctx: &'static str,
+    key: &str,
+    expected: bool,
+) -> Result<(), Error> {
+    let actual = body_text(body, data, ctx, key)?;
+    match actual.parse::<bool>() {
+        Ok(actual) if actual == expected => Ok(()),
+        Ok(actual) => {
+            Err(field_mismatch(ctx, key, expected.to_string(), actual.to_string()).into())
+        }
+        Err(_) => Err(field_mismatch(ctx, key, expected.to_string(), actual.to_string()).into()),
     }
 }
 
-#[derive(Debug, Default)]
-pub struct ValidatorBuilder {
-    rules: Vec<ValidationRule>,
+fn body_text<'a>(
+    body: &HashMap<String, Body>,
+    data: &'a [u8],
+    ctx: &'static str,
+    key: &str,
+) -> Result<&'a str, Error> {
+    let field = body
+        .get(key)
+        .ok_or_else(|| TranscriptError::MissingBodyField {
+            ctx,
+            key: key.to_string(),
+        })?;
+    let range = match field {
+        Body::KeyValue { value, .. } => value.as_ref(),
+        Body::Value(range) => Some(range),
+    };
+    text_at(data, range, || TranscriptError::MissingFieldValue {
+        ctx,
+        key: key.to_string(),
+    })
 }
 
-impl ValidatorBuilder {
-    fn new() -> Self {
-        Self::default()
-    }
+fn text_at<'a>(
+    data: &'a [u8],
+    range: Option<&Range<usize>>,
+    missing: impl FnOnce() -> TranscriptError,
+) -> Result<&'a str, Error> {
+    let range = range.ok_or_else(missing)?;
+    Ok(std::str::from_utf8(&data[range.clone()])?)
+}
 
-    #[must_use]
-    pub fn expected_server_name(mut self, name: impl Into<String>) -> Self {
-        self.rules.push(ValidationRule::ServerName(name.into()));
-        self
-    }
-
-    #[must_use]
-    pub fn expected_hash_alg(mut self, alg: HashAlgId) -> Self {
-        self.rules.push(ValidationRule::HashAlgorithm(alg));
-        self
-    }
-
-    #[must_use]
-    pub fn request_header_equals(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        self.rules
-            .push(ValidationRule::Request(FieldAssertion::HeaderEquals {
-                key: key.into(),
-                value: value.into(),
-            }));
-        self
-    }
-
-    #[must_use]
-    pub fn response_header_equals(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        self.rules
-            .push(ValidationRule::Response(FieldAssertion::HeaderEquals {
-                key: key.into(),
-                value: value.into(),
-            }));
-        self
-    }
-
-    #[must_use]
-    pub fn request_body_field_equals(
-        mut self,
-        key: impl Into<String>,
-        value: ExpectedValue,
-    ) -> Self {
-        self.rules
-            .push(ValidationRule::Request(FieldAssertion::BodyFieldEquals {
-                key: key.into(),
-                value,
-            }));
-        self
-    }
-
-    #[must_use]
-    pub fn response_body_field_equals(
-        mut self,
-        key: impl Into<String>,
-        value: ExpectedValue,
-    ) -> Self {
-        self.rules
-            .push(ValidationRule::Response(FieldAssertion::BodyFieldEquals {
-                key: key.into(),
-                value,
-            }));
-        self
-    }
-
-    #[must_use]
-    pub fn build(self) -> Validator {
-        Validator { rules: self.rules }
+fn field_mismatch(
+    ctx: &'static str,
+    key: &str,
+    expected: String,
+    actual: String,
+) -> TranscriptError {
+    TranscriptError::FieldMismatch {
+        ctx,
+        key: key.to_string(),
+        expected,
+        actual,
     }
 }

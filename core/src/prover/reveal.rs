@@ -97,13 +97,9 @@ impl TranscriptDirection {
         range: &Range<usize>,
     ) -> Result<(), Error> {
         match self {
-            Self::Sent => {
-                builder.reveal_sent(range)?;
-            }
-            Self::Received => {
-                builder.reveal_recv(range)?;
-            }
-        }
+            Self::Sent => builder.reveal_sent(range)?,
+            Self::Received => builder.reveal_recv(range)?,
+        };
         Ok(())
     }
 
@@ -113,13 +109,9 @@ impl TranscriptDirection {
         range: &Range<usize>,
     ) -> Result<(), Error> {
         match self {
-            Self::Sent => {
-                builder.commit_sent(range)?;
-            }
-            Self::Received => {
-                builder.commit_recv(range)?;
-            }
-        }
+            Self::Sent => builder.commit_sent(range)?,
+            Self::Received => builder.commit_recv(range)?,
+        };
         Ok(())
     }
 }
@@ -137,6 +129,39 @@ impl DisclosureAction {
             Self::Commit => "commit",
         }
     }
+}
+
+struct DisclosureBuilders<'b, 't> {
+    prove_config: &'b mut ProveConfigBuilder<'t>,
+    transcript_commit_config: &'b mut TranscriptCommitConfigBuilder<'t>,
+}
+
+fn apply_disclosure(
+    direction: TranscriptDirection,
+    action: DisclosureAction,
+    target: &str,
+    label: &str,
+    range: &Range<usize>,
+    source: &[u8],
+    builders: &mut DisclosureBuilders<'_, '_>,
+) -> Result<(), Error> {
+    match action {
+        DisclosureAction::Reveal => direction.apply_reveal(builders.prove_config, range)?,
+        DisclosureAction::Commit => {
+            direction.apply_commit(builders.transcript_commit_config, range)?
+        }
+    }
+    info!(
+        direction = direction.label(),
+        action = action.label(),
+        target = %target,
+        label = %label,
+        range_start = range.start,
+        range_end = range.end,
+        preview = %preview_range(source, range),
+        "Applied transcript disclosure rule"
+    );
+    Ok(())
 }
 
 fn preview_range(source: &[u8], range: &Range<usize>) -> String {
@@ -167,65 +192,6 @@ fn sanitize_log_text(input: &str) -> String {
     out
 }
 
-fn log_disclosure(
-    direction: TranscriptDirection,
-    action: DisclosureAction,
-    target: &str,
-    label: &str,
-    range: &Range<usize>,
-    source: &[u8],
-) {
-    info!(
-        direction = direction.label(),
-        action = action.label(),
-        target = %target,
-        label = %label,
-        range_start = range.start,
-        range_end = range.end,
-        preview = %preview_range(source, range),
-        "Applied transcript disclosure rule"
-    );
-}
-
-fn log_unmatched_disclosure(
-    direction: TranscriptDirection,
-    action: &str,
-    target: &str,
-    label: &str,
-) {
-    info!(
-        direction = direction.label(),
-        action = %action,
-        target = %target,
-        label = %label,
-        "Configured transcript disclosure rule did not match content"
-    );
-}
-
-struct DisclosureBuilders<'builder, 'transcript> {
-    prove_config: &'builder mut ProveConfigBuilder<'transcript>,
-    transcript_commit_config: &'builder mut TranscriptCommitConfigBuilder<'transcript>,
-}
-
-fn apply_disclosure(
-    direction: TranscriptDirection,
-    action: DisclosureAction,
-    target: &str,
-    label: &str,
-    range: &Range<usize>,
-    source: &[u8],
-    builders: &mut DisclosureBuilders<'_, '_>,
-) -> Result<(), Error> {
-    match action {
-        DisclosureAction::Reveal => direction.apply_reveal(builders.prove_config, range)?,
-        DisclosureAction::Commit => {
-            direction.apply_commit(builders.transcript_commit_config, range)?
-        }
-    }
-    log_disclosure(direction, action, target, label, range, source);
-    Ok(())
-}
-
 fn calculate_padded_range(value: &Range<usize>, commitment_length: usize) -> Range<usize> {
     let value_len = value.end - value.start;
     if value_len > commitment_length {
@@ -234,115 +200,15 @@ fn calculate_padded_range(value: &Range<usize>, commitment_length: usize) -> Ran
     value.start..(value.start + commitment_length)
 }
 
-fn apply_header_rules<M>(
-    direction: TranscriptDirection,
-    action: DisclosureAction,
-    message: &M,
-    source: &[u8],
-    header_names: &[String],
-    builders: &mut DisclosureBuilders<'_, '_>,
-) -> Result<(), Error>
-where
-    M: HttpMessage<Header = Header, Body = Body>,
-{
-    for header_name in header_names {
-        let key = header_name.to_lowercase();
-        match message.headers().get(&key) {
-            Some(headers) => {
-                for (idx, header) in headers.iter().enumerate() {
-                    let range = header.name.header_full_range(&header.value);
-                    let label = format!("{header_name}[{idx}]");
-                    apply_disclosure(
-                        direction, action, "header", &label, &range, source, builders,
-                    )?;
-                }
-            }
-            None => log_unmatched_disclosure(direction, action.label(), "header", header_name),
-        }
-    }
-
-    Ok(())
-}
-
-fn apply_body_field_rules<M>(
-    direction: TranscriptDirection,
-    action: DisclosureAction,
-    message: &M,
-    source: &[u8],
-    body_fields: &[BodyFieldConfig],
-    builders: &mut DisclosureBuilders<'_, '_>,
-) -> Result<(), Error>
-where
-    M: HttpMessage<Header = Header, Body = Body>,
-{
-    for body_field in body_fields {
-        let keypath = body_field.keypath();
-        match message.body().get(keypath) {
-            Some(parsed_body_field) => {
-                let range = body_field.selection_range(parsed_body_field);
-                apply_disclosure(direction, action, "body", keypath, &range, source, builders)?;
-            }
-            None => log_unmatched_disclosure(direction, action.label(), "body", keypath),
-        }
-    }
-
-    Ok(())
-}
-
-fn apply_reveal_key_commit_value_rules<M>(
-    direction: TranscriptDirection,
-    message: &M,
-    source: &[u8],
-    key_value_rules: &[KeyValueCommitConfig],
-    builders: &mut DisclosureBuilders<'_, '_>,
-) -> Result<(), Error>
-where
-    M: HttpMessage<Header = Header, Body = Body>,
-{
-    for key_value_rule in key_value_rules {
-        match message.body().get(&key_value_rule.keypath) {
-            Some(Body::KeyValue { key, value }) => {
-                let key_range = key.with_quotes_and_colon();
-                apply_disclosure(
-                    direction,
-                    DisclosureAction::Reveal,
-                    "body-key",
-                    &key_value_rule.keypath,
-                    &key_range,
-                    source,
-                    builders,
-                )?;
-
-                let value_range = key_value_rule.value_range(value);
-                apply_disclosure(
-                    direction,
-                    DisclosureAction::Commit,
-                    "body-value",
-                    &key_value_rule.keypath,
-                    &value_range,
-                    source,
-                    builders,
-                )?;
-            }
-            Some(Body::Value(_)) => {
-                return Err(Error::InvalidInput {
-                    context: "reveal+commit body rule",
-                    details: format!(
-                        "expected key-value pair for keypath {}, got standalone value",
-                        key_value_rule.keypath
-                    ),
-                });
-            }
-            None => log_unmatched_disclosure(
-                direction,
-                "reveal+commit",
-                "body-key-value",
-                &key_value_rule.keypath,
-            ),
-        }
-    }
-
-    Ok(())
+fn apply_rules<R, T>(
+    rules: &[R],
+    mut find: impl FnMut(&R) -> Result<T, Error>,
+    mut disclose: impl FnMut(&R, T) -> Result<(), Error>,
+) -> Result<(), Error> {
+    rules.iter().try_for_each(|rule| {
+        let target = find(rule)?;
+        disclose(rule, target)
+    })
 }
 
 fn apply_message_reveal_config<M>(
@@ -371,22 +237,102 @@ where
         (&config.reveal_headers, DisclosureAction::Reveal),
         (&config.commit_headers, DisclosureAction::Commit),
     ] {
-        apply_header_rules(direction, action, message, source, names, builders)?;
+        apply_rules(
+            names,
+            |name| {
+                message.headers().get(&name.to_lowercase()).ok_or_else(|| {
+                    Error::RevealRuleNotMatched {
+                        direction: direction.label(),
+                        target: "header",
+                        rule: name.clone(),
+                    }
+                })
+            },
+            |name, headers| {
+                headers.iter().enumerate().try_for_each(|(idx, header)| {
+                    let range = header.name.header_full_range(&header.value);
+                    let label = format!("{name}[{idx}]");
+                    apply_disclosure(
+                        direction, action, "header", &label, &range, source, builders,
+                    )
+                })
+            },
+        )?;
     }
 
     for (fields, action) in [
         (&config.reveal_body_fields, DisclosureAction::Reveal),
         (&config.commit_body_fields, DisclosureAction::Commit),
     ] {
-        apply_body_field_rules(direction, action, message, source, fields, builders)?;
+        apply_rules(
+            fields,
+            |field| {
+                message
+                    .body()
+                    .get(field.keypath())
+                    .ok_or_else(|| Error::RevealRuleNotMatched {
+                        direction: direction.label(),
+                        target: "body",
+                        rule: field.keypath().to_string(),
+                    })
+            },
+            |field, body_field| {
+                let range = field.selection_range(body_field);
+                apply_disclosure(
+                    direction,
+                    action,
+                    "body",
+                    field.keypath(),
+                    &range,
+                    source,
+                    builders,
+                )
+            },
+        )?;
     }
 
-    apply_reveal_key_commit_value_rules(
-        direction,
-        message,
-        source,
+    apply_rules(
         &config.reveal_keys_commit_values,
-        builders,
+        |rule| {
+            message
+                .body()
+                .get(&rule.keypath)
+                .ok_or_else(|| Error::RevealRuleNotMatched {
+                    direction: direction.label(),
+                    target: "body-key-value",
+                    rule: rule.keypath.clone(),
+                })
+                .and_then(|body_field| match body_field {
+                    Body::KeyValue { key, value } => Ok((key, value)),
+                    Body::Value(_) => Err(Error::RevealStructureMismatch {
+                        rule: rule.keypath.clone(),
+                        expected: "key-value",
+                        actual: "value",
+                    }),
+                })
+        },
+        |rule, (key, value)| {
+            let key_range = key.with_quotes_and_colon();
+            apply_disclosure(
+                direction,
+                DisclosureAction::Reveal,
+                "body-key",
+                &rule.keypath,
+                &key_range,
+                source,
+                builders,
+            )?;
+            let value_range = rule.value_range(value);
+            apply_disclosure(
+                direction,
+                DisclosureAction::Commit,
+                "body-value",
+                &rule.keypath,
+                &value_range,
+                source,
+                builders,
+            )
+        },
     )
 }
 
@@ -408,7 +354,7 @@ pub(super) fn reveal_request<'transcript>(
         && config.reveal_keys_commit_values.is_empty()
     {
         let full_range = 0..request.len();
-        apply_disclosure(
+        return apply_disclosure(
             TranscriptDirection::Sent,
             DisclosureAction::Reveal,
             "message",
@@ -416,8 +362,7 @@ pub(super) fn reveal_request<'transcript>(
             &full_range,
             request,
             &mut builders,
-        )?;
-        return Ok(());
+        );
     }
 
     let raw_request_str = String::from_utf8(request.to_vec())?;

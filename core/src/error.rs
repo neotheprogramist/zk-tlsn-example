@@ -41,10 +41,24 @@ pub enum Error {
     #[error(transparent)]
     InvalidTranscript(#[from] TranscriptError),
 
-    #[error("{context}: {details}")]
-    InvalidInput {
-        context: &'static str,
-        details: String,
+    #[error("invalid DNS server name '{server_name}': {reason}")]
+    DnsInvalid { server_name: String, reason: String },
+
+    #[error(transparent)]
+    RequestBuild(#[from] hyper::http::Error),
+
+    #[error("reveal rule '{rule}' did not match any {target} in {direction}")]
+    RevealRuleNotMatched {
+        direction: &'static str,
+        target: &'static str,
+        rule: String,
+    },
+
+    #[error("reveal rule '{rule}' expected a {expected} body field, got a {actual}")]
+    RevealStructureMismatch {
+        rule: String,
+        expected: &'static str,
+        actual: &'static str,
     },
 
     // ---- TLSN session driver ----
@@ -94,55 +108,6 @@ pub enum Error {
 
     #[error(transparent)]
     Utf8Str(#[from] std::str::Utf8Error),
-
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-
-    // ---- ZK commitment checks ----
-    #[error("no received commitments found in transcript")]
-    NoReceivedCommitments,
-
-    #[error("no received secrets found in transcript")]
-    NoReceivedSecrets,
-
-    #[error("invalid commitment direction, expected Received")]
-    InvalidCommitmentDirection,
-
-    #[error("invalid hash algorithm, expected BLAKE3")]
-    InvalidHashAlgorithm,
-
-    #[error("hash verification failed: computed hash does not match committed hash")]
-    HashVerificationFailed,
-
-    // ---- nargo/bb tool pipeline ----
-    #[error("required CLI tool `{tool}` is not installed or not on PATH")]
-    MissingTool { tool: String },
-
-    #[error("unsupported {tool} version: expected `{expected}`, got `{actual}`")]
-    UnsupportedToolVersion {
-        tool: String,
-        expected: String,
-        actual: String,
-    },
-
-    #[error(
-        "command failed: `{program} {args}` ({status}) stderr: {stderr}",
-        args = .args.join(" ")
-    )]
-    CommandFailed {
-        program: String,
-        args: Vec<String>,
-        status: String,
-        stderr: String,
-    },
-
-    #[error("cached Barretenberg SRS not found at {path}. Run the fixture binary first.")]
-    MissingCachedSrs { path: String },
-
-    #[error(
-        "cached Barretenberg SRS at {path} is invalid or stale. Rerun the fixture binary to refresh it."
-    )]
-    InvalidCachedSrs { path: String },
 }
 
 #[derive(Error, Debug)]

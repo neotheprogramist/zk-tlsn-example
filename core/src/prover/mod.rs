@@ -1,9 +1,7 @@
-mod builder;
 mod reveal;
 
 use std::sync::Arc;
 
-pub use builder::ProverBuilder;
 use futures::{AsyncRead, AsyncWrite, channel::oneshot, join};
 use http_body_util::{BodyExt, Empty};
 use hyper::{Request, StatusCode, body::Bytes};
@@ -32,7 +30,6 @@ pub struct ProverOutput {
     pub response_body: Vec<u8>,
 }
 
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
 pub struct Prover {
     runtime: Arc<dyn Runtime>,
     tls_client_config: TlsClientConfig,
@@ -45,19 +42,21 @@ pub struct Prover {
 
 impl Prover {
     #[must_use]
-    pub fn builder(
+    pub fn new(
         runtime: Arc<dyn Runtime>,
         tls_client_config: TlsClientConfig,
         tls_commit_config: TlsCommitConfig,
         request: Request<Empty<Bytes>>,
-    ) -> ProverBuilder {
-        ProverBuilder {
+        request_reveal_config: RevealConfig,
+        response_reveal_config: RevealConfig,
+    ) -> Self {
+        Self {
             runtime,
             tls_client_config,
             tls_commit_config,
             request,
-            request_reveal_config: RevealConfig::default(),
-            response_reveal_config: RevealConfig::default(),
+            request_reveal_config,
+            response_reveal_config,
             hash_alg: HashAlgId::BLAKE3,
         }
     }
@@ -235,181 +234,3 @@ impl Prover {
         Ok(prover_output)
     }
 }
-
-// `Prover`'s Rust-facing API is generic over `AsyncRead + AsyncWrite` sockets.
-// `wasm-bindgen` can't export generic methods, so the `wasm` module
-// monomorphizes `prove::<WebTransportIo, WebTransportIo>` into a concrete
-// JS-callable entry point. All TLS/request config construction is driven from
-// a single JSON payload to keep the boundary small.
-#[cfg(target_arch = "wasm32")]
-mod wasm {
-    use std::sync::Arc;
-
-    use http_body_util::Empty;
-    use hyper::{Method, Request, body::Bytes};
-    use serde::{Deserialize, Serialize};
-    use thiserror::Error;
-    use tlsn::{
-        config::{
-            tls::TlsConfigError,
-            tls_commit::{TlsCommitConfigError, mpc::MpcTlsConfigError},
-        },
-        connection::{DnsName, InvalidDnsNameError},
-    };
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::WebTransportBidirectionalStream;
-
-    use super::{Prover, RevealConfig};
-    use crate::{
-        CertificateDer, HashAlgId, MpcTlsConfig, RootCertStore, ServerName, TlsClientConfig,
-        TlsCommitConfig,
-        transport::{WasmRuntime, WebTransportIo},
-    };
-
-    #[wasm_bindgen(start)]
-    pub fn start() {
-        console_error_panic_hook::set_once();
-    }
-
-    /// Must be awaited once, from the Flow 1 Worker, before constructing the
-    /// first `Prover`. Starts the `web-spawn` spawner worker that tlsn's MPC
-    /// parallelism dispatches onto.
-    #[wasm_bindgen]
-    pub async fn initialize() -> Result<(), JsError> {
-        JsFuture::from(web_spawn::start_spawner())
-            .await
-            .map_err(|err| JsError::new(&format!("web-spawn spawner failed to start: {err:?}")))?;
-        Ok(())
-    }
-
-    #[derive(Debug, Error)]
-    enum JsBoundaryError {
-        #[error("invalid JsProverInputs JSON: {0}")]
-        Json(#[from] serde_json::Error),
-        #[error("invalid server_name: {0}")]
-        DnsName(#[from] InvalidDnsNameError),
-        #[error("invalid HTTP method: {0}")]
-        HttpMethod(#[from] hyper::http::method::InvalidMethod),
-        #[error("failed to build HTTP request: {0}")]
-        HttpBuild(#[from] hyper::http::Error),
-        #[error("tls client config: {0}")]
-        TlsClientConfig(#[from] TlsConfigError),
-        #[error("mpc tls config: {0}")]
-        MpcTlsConfig(#[from] MpcTlsConfigError),
-        #[error("tls commit config: {0}")]
-        TlsCommitConfig(#[from] TlsCommitConfigError),
-        #[error("unsupported hash_alg `{0}` (expected `blake3`, `sha256`, or `keccak256`)")]
-        UnsupportedHashAlg(String),
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct JsProverInputs {
-        pub server_name: String,
-        pub server_cert_der: Vec<u8>,
-        pub max_sent_data: usize,
-        pub max_recv_data: usize,
-        pub request: JsHttpRequest,
-        pub request_reveal: RevealConfig,
-        pub response_reveal: RevealConfig,
-        pub hash_alg: String,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct JsHttpRequest {
-        pub method: String,
-        pub uri: String,
-        pub headers: Vec<(String, String)>,
-    }
-
-    #[derive(Debug, Serialize)]
-    pub struct JsProverOutput {
-        pub sent: Vec<u8>,
-        pub received: Vec<u8>,
-        pub response_body: Vec<u8>,
-        pub commitment_count: usize,
-    }
-
-    #[wasm_bindgen]
-    impl Prover {
-        /// JS constructor: accepts a JSON blob of `JsProverInputs` and builds
-        /// a `Prover` with the wasm runtime. Rust callers should use
-        /// `Prover::builder(...)` instead.
-        #[wasm_bindgen(constructor)]
-        pub fn new(inputs_json: &str) -> Result<Prover, JsError> {
-            Ok(Self::from_js_inputs(inputs_json)?)
-        }
-
-        /// Concrete monomorphization of `prove::<WebTransportIo, _>` for the
-        /// browser. Takes two `WebTransportBidirectionalStream` handles from
-        /// JS, wraps them as `WebTransportIo`, and delegates to the generic
-        /// `prove` method.
-        pub async fn prove_streams(
-            self,
-            verifier_stream: WebTransportBidirectionalStream,
-            server_stream: WebTransportBidirectionalStream,
-        ) -> Result<JsValue, JsError> {
-            let verifier_io = WebTransportIo::from_bidi(verifier_stream)?;
-            let server_io = WebTransportIo::from_bidi(server_stream)?;
-            let (_verifier_io, output) = self.prove(verifier_io, server_io).await?;
-            let js_output = JsProverOutput {
-                sent: output.sent,
-                received: output.received,
-                response_body: output.response_body,
-                commitment_count: output.transcript_commitments.len(),
-            };
-            let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
-            Ok(js_output.serialize(&serializer)?)
-        }
-    }
-
-    impl Prover {
-        fn from_js_inputs(inputs_json: &str) -> Result<Prover, JsBoundaryError> {
-            let inputs: JsProverInputs = serde_json::from_str(inputs_json)?;
-
-            let dns_name = DnsName::try_from(inputs.server_name.as_str())?;
-            let root_store = RootCertStore {
-                roots: vec![CertificateDer(inputs.server_cert_der)],
-            };
-
-            let tls_client_config = TlsClientConfig::builder()
-                .server_name(ServerName::Dns(dns_name))
-                .root_store(root_store)
-                .build()?;
-
-            let mpc_config = MpcTlsConfig::builder()
-                .max_sent_data(inputs.max_sent_data)
-                .max_recv_data(inputs.max_recv_data)
-                .build()?;
-            let tls_commit_config = TlsCommitConfig::builder().protocol(mpc_config).build()?;
-
-            let method = Method::from_bytes(inputs.request.method.as_bytes())?;
-            let mut request_builder = Request::builder().method(method).uri(&inputs.request.uri);
-            for (name, value) in &inputs.request.headers {
-                request_builder = request_builder.header(name, value);
-            }
-            let request = request_builder.body(Empty::<Bytes>::new())?;
-
-            let hash_alg = match inputs.hash_alg.as_str() {
-                "blake3" => HashAlgId::BLAKE3,
-                "sha256" => HashAlgId::SHA256,
-                "keccak256" => HashAlgId::KECCAK256,
-                other => return Err(JsBoundaryError::UnsupportedHashAlg(other.to_string())),
-            };
-
-            Ok(Prover::builder(
-                Arc::new(WasmRuntime),
-                tls_client_config,
-                tls_commit_config,
-                request,
-            )
-            .request_reveal_config(inputs.request_reveal)
-            .response_reveal_config(inputs.response_reveal)
-            .hash_alg(hash_alg)
-            .build())
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub use wasm::{JsHttpRequest, JsProverInputs, JsProverOutput, initialize, start};

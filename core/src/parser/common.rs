@@ -1,9 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use pest::{
-    RuleType,
-    iterators::{Pair, Pairs},
-};
+use pest::{RuleType, iterators::Pair};
 
 use crate::parser::{
     error::{ParseError, Result},
@@ -61,23 +58,29 @@ pub fn parse_three_field_line<R: RuleType + PartialEq>(
     Ok((a.extract_range(), b.extract_range(), c.extract_range()))
 }
 
-pub trait HttpMessageBuilder: Sized {
-    type Rule: RuleType + PartialEq + Copy;
-    type Message;
-    type Header;
-    type Body;
+pub fn parse_http_message<R, H, B, M>(
+    mut pairs: pest::iterators::Pairs<'_, R>,
+    parse_first_line: impl FnOnce(Pair<'_, R>) -> Result<(Range<usize>, Range<usize>, Range<usize>)>,
+    parse_headers: impl FnOnce(Pair<'_, R>) -> Result<HashMap<String, Vec<H>>>,
+    parse_body: impl FnOnce(pest::iterators::Pairs<'_, R>) -> Result<HashMap<String, B>>,
+    build: impl FnOnce(
+        (Range<usize>, Range<usize>, Range<usize>),
+        HashMap<String, Vec<H>>,
+        HashMap<String, B>,
+    ) -> M,
+) -> Result<M>
+where
+    R: RuleType,
+{
+    let first_line_pair = pairs
+        .next()
+        .ok_or_else(|| ParseError::MissingField("first line".to_string()))?;
+    let headers_pair = pairs
+        .next()
+        .ok_or_else(|| ParseError::MissingField("headers section".to_string()))?;
 
-    fn build_message(
-        &self,
-        first_line: (Range<usize>, Range<usize>, Range<usize>),
-        headers: HashMap<String, Vec<Self::Header>>,
-        body: HashMap<String, Self::Body>,
-    ) -> Self::Message;
-
-    fn parse_first_line(
-        &self,
-        pair: pest::iterators::Pair<'_, Self::Rule>,
-    ) -> Result<(Range<usize>, Range<usize>, Range<usize>)>;
-
-    fn parse(&self, pairs: Pairs<'_, Self::Rule>) -> Result<Self::Message>;
+    let first_line = parse_first_line(first_line_pair)?;
+    let headers = parse_headers(headers_pair)?;
+    let body = parse_body(pairs)?;
+    Ok(build(first_line, headers, body))
 }
