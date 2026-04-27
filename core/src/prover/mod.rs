@@ -57,7 +57,7 @@ impl Prover {
             request,
             request_reveal_config,
             response_reveal_config,
-            hash_alg: HashAlgId::BLAKE3,
+            hash_alg: HashAlgId::POSEIDON2,
         }
     }
 

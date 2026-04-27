@@ -1,5 +1,5 @@
 use circuit_air::components::prelude::Zero;
-use circuit_air::{CircuitInteractionElements, components::{CircuitComponents, N_COMPONENTS}};
+use circuit_air::{CircuitInteractionElements, components::CircuitComponents};
 use circuit_air::{lookup_sum, statement::INTERACTION_POW_BITS};
 use circuit_common::preprocessed::PreprocessedCircuit;
 use circuit_prover::prover::{BaseColumnPool, CircuitProof, prove_circuit_assignment};
