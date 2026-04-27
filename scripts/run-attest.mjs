@@ -149,7 +149,7 @@ try {
     );
     if (!fs.existsSync(wasmPath)) {
         throw new Error(
-            `missing ${wasmPath}. Build the wasm first:\n  node scripts/build-wasm.mjs`,
+            `missing ${wasmPath}. Build the wasm first — see "Build the wasm artifact" in README.md`,
         );
     }
 

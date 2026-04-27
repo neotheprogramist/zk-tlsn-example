@@ -6,8 +6,6 @@ use std::{
 };
 
 use askama::Template;
-
-use crate::connect::ProxyConfig;
 use salvo::{
     Error as SalvoError, affix_state, async_trait,
     conn::rustls::{Keycert, RustlsConfig},
@@ -24,7 +22,7 @@ use salvo::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::tls::build_self_signed;
+use crate::{connect::ProxyConfig, tls::build_self_signed};
 
 const CERT_LIFETIME_DAYS: i64 = 14;
 

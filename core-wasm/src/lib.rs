@@ -7,10 +7,9 @@ mod io;
 mod prover;
 mod runtime;
 
+pub use prover::Prover;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-
-pub use prover::Prover;
 
 #[wasm_bindgen(start)]
 pub fn start() {

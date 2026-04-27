@@ -8,7 +8,7 @@ Proof of concept, not production code. Single flow, end-to-end, audit-friendly.
 
 - Rust toolchain pinned in `rust-toolchain.toml` (nightly is required for the wasm build).
 - `wasm-bindgen-cli` 0.2.118 on `PATH`.
-- Node 20+ for the build script and the optional Playwright harness.
+- Node 20+ for the optional Playwright harness.
 
 ## Repo layout
 
@@ -48,13 +48,24 @@ demo/src/
 
 ## Build the wasm artifact
 
-`demo/assets/wasm/` is gitignored. Rebuild whenever `core/` or `core-wasm/` change:
+`demo/assets/wasm/` is gitignored. Rebuild whenever `core/` or `core-wasm/` change. Three steps, all CLI:
 
 ```bash
-node scripts/build-wasm.mjs
+cargo +nightly build -p zktlsn_core_wasm --lib --target wasm32-unknown-unknown --release
+
+wasm-bindgen target/wasm32-unknown-unknown/release/zktlsn_core_wasm.wasm \
+  --out-dir demo/assets/wasm --target web --out-name core
+
+sed -i '' "s|'\.\./\.\./\.\.'|'\.\./\.\./\.\./core\.js'|g" demo/assets/wasm/snippets/*/js/spawn.js
 ```
 
-The script runs `cargo +nightly build` for the wasm target, runs `wasm-bindgen --target web`, and rewrites `web-spawn`'s relative import to a path Chrome can resolve.
+What each step does:
+
+1. **`cargo +nightly build`** — compiles `zktlsn_core_wasm` to `target/wasm32-unknown-unknown/release/zktlsn_core_wasm.wasm`. Nightly is required (the workspace `rust-toolchain.toml` pins stable for everything else; `+nightly` overrides it for this one invocation).
+2. **`wasm-bindgen --target web`** — emits the JS glue (`core.js`, `core_bg.wasm`, plus `snippets/web-spawn-*/js/spawn.js`) into `demo/assets/wasm/`.
+3. **`sed -i ''`** — rewrites `web-spawn`'s `import('../../..')` (a directory URL Chrome can't dynamically import) to `import('../../../core.js')`. The `|` delimiter avoids escaping the slashes; the `\.` escapes make the match literal. Two occurrences in `spawn.js` get rewritten.
+
+The `sed` invocation shown is **macOS BSD sed**. On GNU sed (Linux), drop the `''` after `-i`.
 
 ## Run the demo
 
@@ -75,10 +86,7 @@ The single `zktlsn` process spawns the ledger on `ZKTLSN_SERVER_LISTEN_ADDR` and
 
 Run the full flow yourself in Chrome — no Playwright, no harness — to inspect every step.
 
-1. **Build the wasm bundle** (once, or after any `core/` / `core-wasm/` change):
-   ```bash
-   node scripts/build-wasm.mjs
-   ```
+1. **Build the wasm bundle** (once, or after any `core/` / `core-wasm/` change) — see [Build the wasm artifact](#build-the-wasm-artifact) above for the three commands.
 2. **Start the binary** with the env block above. Wait for the two `listening` log lines (HTTP/3.0 and HTTP/1.1 on `:8444`).
 3. **Open Chrome** at `https://127.0.0.1:8444/`. Accept the self-signed cert (Advanced → Proceed). The page renders one **Start attestation** button plus the configured transfer parameters.
 4. **Open DevTools → Console** before clicking.
@@ -102,10 +110,9 @@ The flow is fully deterministic — same `tx_id` every time, same disclosed fiel
 
 ## Automated e2e (optional)
 
-For CI or quick sanity checks, the Playwright harness drives the same flow headlessly:
+For CI or quick sanity checks, the Playwright harness drives the same flow headlessly. Build the wasm bundle first ([Build the wasm artifact](#build-the-wasm-artifact)), then:
 
 ```bash
-node scripts/build-wasm.mjs
 node scripts/run-attest.mjs
 ```
 
