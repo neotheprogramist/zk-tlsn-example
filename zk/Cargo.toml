@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-circuits = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/poseidon-instead-blake" }
-circuit-prover = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/poseidon-instead-blake" }
-circuit-common = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/poseidon-instead-blake" }
-circuit-air = { git = "https://github.com/piotr-stec/stwo-circuits", branch="feat/poseidon-instead-blake" }
-stwo = { git = "https://github.com/piotr-stec/stwo", branch = "keccak-latest", features = ["parallel"], default-features = false }
+circuits = { git = "https://github.com/neotheprogramist/stwo-circuits", branch="replace-blake-with-poseidon" }
+circuit-prover = { git = "https://github.com/neotheprogramist/stwo-circuits", branch="replace-blake-with-poseidon" }
+circuit-common = { git = "https://github.com/neotheprogramist/stwo-circuits", branch="replace-blake-with-poseidon" }
+circuit-verifier = { git = "https://github.com/neotheprogramist/stwo-circuits", branch="replace-blake-with-poseidon" }
+# circuit-air = { git = "https://github.com/neotheprogramist/stwo-circuits", branch="replace-blake-with-poseidon" }
+stwo = { version = "2.2.0", features = ["prover"] }
 poseidon-m31.workspace = true

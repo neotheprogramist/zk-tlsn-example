@@ -31,3 +31,4 @@ tokio-rustls.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zktlsn_core.workspace = true
+zk = { path = "../zk" }

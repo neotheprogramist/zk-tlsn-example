@@ -1,8 +1,11 @@
-use circuit_air::components::prelude::Zero;
-use circuit_air::{CircuitInteractionElements, components::CircuitComponents};
-use circuit_air::{lookup_sum, statement::INTERACTION_POW_BITS};
+// use circuit_air::{CircuitInteractionElements, components::CircuitComponents};
+// use circuit_air::{lookup_sum, statement::INTERACTION_POW_BITS};
 use circuit_common::preprocessed::PreprocessedCircuit;
+use circuit_prover::circuit_air::circuit_components::CircuitComponents;
 use circuit_prover::prover::{BaseColumnPool, CircuitProof, prove_circuit_assignment};
+use circuit_prover::witness::components::prelude::Zero;
+use circuit_verifier::circuit_claim::{CircuitInteractionElements, lookup_sum};
+use circuit_verifier::statement::INTERACTION_POW_BITS;
 use circuits::context::{Context, Var};
 use circuits::ivalue::qm31_from_u32s;
 use circuits::ops::{eq, guess, output};
@@ -10,8 +13,8 @@ use circuits::poseidon2::{RATE, poseidon2_sponge_circuit};
 use stwo::core::air::Component;
 use stwo::core::channel::{Blake2sM31Channel, Channel};
 use stwo::core::fields::qm31::QM31;
-use stwo::core::pcs::{CommitmentSchemeVerifier, TreeVec};
-use stwo::core::vcs_lifted::blake2_merkle::Blake2sM31MerkleChannel;
+use stwo::core::pcs::{CommitmentSchemeVerifier, PcsConfig, TreeVec};
+use stwo::core::vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher};
 
 const TX_ID_WIDTH: usize = 10;
 const USER_ID_WIDTH: usize = 10;
@@ -104,7 +107,7 @@ fn build_attestation_circuit(
 }
 
 pub struct AttestationProof {
-    pub circuit_proof: CircuitProof,
+    pub circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
     pub output_addresses: Vec<usize>,
 }
 
@@ -145,7 +148,7 @@ pub fn prove_attestation(
         let preprocessed = PreprocessedCircuit::preprocess_circuit(&mut ctx);
         let output_addresses = preprocessed.params.output_addresses.clone();
         let circuit_proof =
-            prove_circuit_assignment(ctx.values(), &preprocessed, &BaseColumnPool::new());
+            prove_circuit_assignment(ctx.values(), &preprocessed, &BaseColumnPool::new(), PcsConfig::default());
         circuit_proof
             .stark_proof
             .as_ref()
