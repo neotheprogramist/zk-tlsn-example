@@ -1,0 +1,41 @@
+{% extends "_base.html" %} {% block title %}zkp — recursive STWO counter{% endblock %} {% block
+content %}
+<p><a href="/">← back to demos</a></p>
+<h1>zkp — recursive STWO counter</h1>
+<p>
+  Each step's proof verifies the previous proof in-circuit and binds the new counter via
+  <code>n_new = prev_n + 1</code>. Proof generation takes several seconds per step on this machine;
+  verification (auto-run after every prove) is much faster.
+</p>
+
+<section class="kv-grid">
+  <dl>
+    <dt>State</dt>
+    <dd data-role="state">— (uninitialized)</dd>
+
+    <dt>Steps proven</dt>
+    <dd data-role="steps">—</dd>
+
+    <dt>Last prove</dt>
+    <dd data-role="last-prove">—</dd>
+
+    <dt>Last proof size</dt>
+    <dd data-role="last-size">—</dd>
+
+    <dt>Status</dt>
+    <dd data-role="status" class="status-idle">idle</dd>
+  </dl>
+</section>
+
+<p>
+  <button data-role="base">Generate base proof</button>
+  <button data-role="increment" disabled>Increment</button>
+  <button data-role="prove" disabled>Prove</button>
+  <button data-role="reset">Reset</button>
+</p>
+
+<h2>Log</h2>
+<pre data-role="log"></pre>
+{% endblock %} {% block scripts %}
+<script type="module" src="/assets/zkp.main.mjs"></script>
+{% endblock %}

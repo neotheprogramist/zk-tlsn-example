@@ -1,15 +1,51 @@
-use std::{collections::HashMap, ops::Range};
+//! JSON path tracking and PEG-pair traversal helpers.
+//!
+//! - `PathStack` / `PathSegment` build dotted JSON paths during traversal.
+//! - `HeaderValue` lets the same parser produce either full or redacted headers.
+//! - `parse_headers` / `parse_standard_body` / `parse_redacted_body` are the
+//!   traversal entry points used by `types::parse_*`.
+
+use std::{collections::HashMap, fmt, ops::Range};
 
 use pest::iterators::{Pair, Pairs};
 
-use crate::parser::{
-    common::{assert_end_of_iterator, assert_rule},
-    error::{ParseError, Result},
-    http::{Body, Header},
-    parse::Rule,
-    path::{PathSegment, PathStack},
-    traits::RangeExtractor,
+use super::{
+    ParseError, RangeExtractor, Result,
+    types::{Body, Header, Rule, assert_end_of_iterator, assert_rule},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    Key(String),
+    Index(usize),
+}
+
+#[derive(Debug, Clone, Default)]
+struct PathStack {
+    segments: Vec<PathSegment>,
+}
+
+impl PathStack {
+    fn push(&mut self, segment: PathSegment) {
+        self.segments.push(segment);
+    }
+
+    fn pop(&mut self) -> Option<PathSegment> {
+        self.segments.pop()
+    }
+}
+
+impl fmt::Display for PathStack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for segment in &self.segments {
+            match segment {
+                PathSegment::Key(k) => write!(f, ".{k}")?,
+                PathSegment::Index(i) => write!(f, "[{i}]")?,
+            }
+        }
+        Ok(())
+    }
+}
 
 pub trait HeaderValue: Sized {
     fn parse<'a>(inner: &mut impl Iterator<Item = Pair<'a, Rule>>) -> Result<Self>;

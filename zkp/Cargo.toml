@@ -1,0 +1,31 @@
+[package]
+name = "zkp"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook.workspace = true
+getrandom.workspace = true
+js-sys.workspace = true
+serde = { workspace = true }
+serde-wasm-bindgen.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["console", "Performance", "Window", "WorkerGlobalScope"] }
+
+# stwo + stwo-circuits — sourced from root [workspace.dependencies].
+stwo = { workspace = true, features = ["prover", "std"] }
+stwo-constraint-framework = { workspace = true, features = ["prover", "std"] }
+circuits.workspace = true
+circuit-common.workspace = true
+circuit-prover.workspace = true
+circuit-verifier.workspace = true
+circuits-stark-verifier.workspace = true
+circuits-stark-verifier-examples.workspace = true
+num-traits.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

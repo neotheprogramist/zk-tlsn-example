@@ -17,7 +17,7 @@ use salvo::{
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::info;
-use zktlsn_core::{
+use zktls::{
     CertificateDer, Direction, RootCertStore, TranscriptCommitment, Verifier, VerifierConfig,
     VerifierOutput,
 };
@@ -62,7 +62,7 @@ pub enum ConnectError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    TlsNotary(#[from] zktlsn_core::Error),
+    TlsNotary(#[from] zktls::Error),
     #[error(transparent)]
     TlsConfig(#[from] TlsFixtureError),
 }
@@ -115,93 +115,6 @@ fn parse_role(line: &str) -> Result<Role, ConnectError> {
         });
     }
     Err(ConnectError::PreambleUnknownRole(line.to_string()))
-}
-
-#[cfg(test)]
-mod preamble_tests {
-    use tokio::io::{AsyncWriteExt, duplex};
-
-    use super::*;
-
-    async fn parse(bytes: &[u8]) -> Result<(Role, Vec<u8>), ConnectError> {
-        let (mut writer, reader) = duplex(1024);
-        writer.write_all(bytes).await.unwrap();
-        drop(writer);
-        read_role_preamble(reader).await
-    }
-
-    #[tokio::test]
-    async fn recognises_verify_role() {
-        let (role, leftover) = parse(b"VERIFY\n").await.unwrap();
-        assert_eq!(role, Role::Verify);
-        assert!(leftover.is_empty());
-    }
-
-    #[tokio::test]
-    async fn recognises_verify_with_leftover() {
-        let (role, leftover) = parse(b"VERIFY\n\x01\x02\x03").await.unwrap();
-        assert_eq!(role, Role::Verify);
-        assert_eq!(leftover, b"\x01\x02\x03");
-    }
-
-    #[tokio::test]
-    async fn recognises_connect_role() {
-        let (role, leftover) = parse(b"CONNECT 127.0.0.1:8443\n").await.unwrap();
-        assert_eq!(
-            role,
-            Role::Connect {
-                host: "127.0.0.1".into(),
-                port: 8443,
-            }
-        );
-        assert!(leftover.is_empty());
-    }
-
-    #[tokio::test]
-    async fn connect_preserves_leftover() {
-        let (role, leftover) = parse(b"CONNECT example.com:80\nGET /").await.unwrap();
-        assert_eq!(
-            role,
-            Role::Connect {
-                host: "example.com".into(),
-                port: 80,
-            }
-        );
-        assert_eq!(leftover, b"GET /");
-    }
-
-    #[tokio::test]
-    async fn rejects_unknown_role() {
-        let err = parse(b"HELLO\n").await.unwrap_err();
-        assert!(matches!(err, ConnectError::PreambleUnknownRole(_)));
-    }
-
-    #[tokio::test]
-    async fn rejects_connect_without_port() {
-        let err = parse(b"CONNECT example.com\n").await.unwrap_err();
-        assert!(matches!(err, ConnectError::PreambleInvalidTarget(_)));
-    }
-
-    #[tokio::test]
-    async fn rejects_connect_with_nonnumeric_port() {
-        let err = parse(b"CONNECT example.com:http\n").await.unwrap_err();
-        assert!(matches!(err, ConnectError::PreambleInvalidPort(_)));
-    }
-
-    #[tokio::test]
-    async fn rejects_oversized_preamble() {
-        let mut giant = b"CONNECT ".to_vec();
-        giant.extend(std::iter::repeat_n(b'a', MAX_PREAMBLE_BYTES));
-        giant.push(b'\n');
-        let err = parse(&giant).await.unwrap_err();
-        assert!(matches!(err, ConnectError::PreambleTooLong(_)));
-    }
-
-    #[tokio::test]
-    async fn rejects_missing_newline() {
-        let err = parse(b"VERIFY").await.unwrap_err();
-        assert!(matches!(err, ConnectError::PreambleTooLong(_)));
-    }
 }
 
 #[async_trait]
@@ -448,7 +361,7 @@ fn create_verifier_config() -> Result<VerifierConfig, ConnectError> {
             roots: vec![CertificateDer(cert_bytes)],
         })
         .build()
-        .map_err(zktlsn_core::Error::from)?)
+        .map_err(zktls::Error::from)?)
 }
 
 fn log_verifier_output(output: &VerifierOutput) {

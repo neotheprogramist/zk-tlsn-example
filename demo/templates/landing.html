@@ -1,0 +1,23 @@
+{% extends "_base.html" %} {% block title %}zk-tlsn-example demos{% endblock %} {% block content %}
+<h1>zk-tlsn-example</h1>
+<p>Two browser-WASM demonstrations running against this single local server.</p>
+
+<section class="demo-card">
+  <h2>zktls — notarized HTTP attestation</h2>
+  <p>
+    WebTransport-based MPC-TLS attestation against a local notary. Click "Start attestation" to run
+    the prover end-to-end.
+  </p>
+  <p><a href="/zktls">Open zktls demo →</a></p>
+</section>
+
+<section class="demo-card">
+  <h2>zkp — counter via inductive recursive proofs</h2>
+  <p>
+    Click <em>Generate base proof</em>, then alternate <em>Increment</em> and <em>Prove</em>. Each
+    step's proof embeds a verifier of the previous proof and a circuit-level constraint
+    <code>n_new = prev_n + 1</code>. Proving runs entirely in your browser via stwo + stwo-circuits.
+  </p>
+  <p><a href="/zkp">Open zkp demo →</a></p>
+</section>
+{% endblock %}

@@ -4,12 +4,12 @@ use futures::AsyncReadExt;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use web_sys::WebTransportBidirectionalStream;
-use zktlsn_core::{
-    Prover as CoreProver, transfer_request, transfer_request_reveal, transfer_response_reveal,
-    transfer_tls_configs,
-};
 
-use crate::{error::Error, io::WebTransportIo, runtime::WasmRuntime};
+use super::{WasmRuntime, io::WebTransportIo};
+use crate::{
+    Error, Prover as CoreProver, transfer_request, transfer_request_reveal,
+    transfer_response_reveal, transfer_tls_configs,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsProverInputs {

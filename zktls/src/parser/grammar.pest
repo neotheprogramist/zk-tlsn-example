@@ -21,7 +21,11 @@ body_full           = _{ chunked_body | content_length_body }
 chunk_size          = _{ ASCII_HEX_DIGIT+ }
 chunked_body        = _{ chunk_size ~ json ~ "0" }
 content_length_body = _{ json }
-body_redacted       = _{ pair_redacted+ }
+// Redacted body: nulled-out bytes (\0) are WHITESPACE per the rule above, so
+// braces, redacted values, and redacted commas all disappear. What's left is
+// a sequence of visible `pair_redacted` items, optionally separated by
+// surviving commas, optionally surrounded by surviving braces.
+body_redacted       = _{ "{"? ~ pair_redacted ~ (","? ~ pair_redacted)* ~ "}"? }
 
 json   = _{ object | array }
 pair   =  { quoted_key ~ ":" ~ value }
@@ -34,7 +38,10 @@ array  =  {
   | "[" ~ value ~ ("," ~ value)* ~ "]"
 }
 
-pair_redacted = ${ quoted_key ~ ":" ~ value? }
+// `value?` is followed-by-`:`-aware so it doesn't greedily consume the next
+// pair's key when our own value was redacted (e.g. `"a":\0\0\0"b":1` should
+// match as two pairs `"a":<missing>` + `"b":1`, not as `"a":"b"` + `:1`).
+pair_redacted = ${ quoted_key ~ ":" ~ (value ~ !(":"))? }
 
 quoted_key = _{ "\"" ~ key ~ "\"" }
 key        =  { (ASCII_ALPHANUMERIC | "_")+ }

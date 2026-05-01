@@ -1,39 +1,17 @@
-self.addEventListener("error", (ev) => {
-  const detail = [
-    ev.message || null,
-    ev.filename ? `at ${ev.filename}:${ev.lineno}:${ev.colno}` : null,
-    ev.error ? ev.error.stack || ev.error.message || String(ev.error) : null,
-  ]
-    .filter(Boolean)
-    .join(" | ");
-  self.postMessage({ kind: "error", message: "worker self error: " + (detail || "(no detail)") });
-});
-self.addEventListener("unhandledrejection", (ev) => {
-  const r = ev.reason;
-  self.postMessage({
-    kind: "error",
-    message: "worker unhandledrejection: " + (r?.stack || r?.message || String(r)),
-  });
-});
+import init, { Prover, initialize } from "/assets/wasm/zktls.js";
+import { installWorkerErrorForwarder } from "./flow.mjs";
 
-import init, { Prover, initialize } from "/assets/wasm/core.js";
+installWorkerErrorForwarder();
+
+const post = (kind, payload = {}) => self.postMessage({ kind, ...payload });
+const log = (line) => post("log", { line });
 
 function hexToBytes(hex) {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
   if (clean.length % 2 !== 0) throw new Error("hex string has odd length");
   const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(clean.substr(i * 2, 2), 16);
-  }
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
   return out;
-}
-
-function post(kind, payload) {
-  self.postMessage({ kind, ...payload });
-}
-
-function log(line) {
-  post("log", { line });
 }
 
 async function writePreamble(stream, line) {
@@ -42,23 +20,9 @@ async function writePreamble(stream, line) {
   writer.releaseLock();
 }
 
-function buildProverInputs(config) {
-  return {
-    server_name: config.serverName,
-    server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
-    tx_id: Number(config.txId),
-  };
-}
-
-function parseResponseBody(bodyBytes) {
-  const text = new TextDecoder().decode(new Uint8Array(bodyBytes));
-  return JSON.parse(text.trim());
-}
-
 async function runProve(config) {
   log("initialising WASM");
   await init();
-
   log("starting web-spawn worker pool");
   await initialize();
 
@@ -73,18 +37,22 @@ async function runProve(config) {
     log("creating verifier + proxy bidi streams");
     const verifierStream = await session.createBidirectionalStream();
     const proxyStream = await session.createBidirectionalStream();
-
     await writePreamble(verifierStream, "VERIFY\n");
     await writePreamble(proxyStream, `CONNECT ${config.serverHost}:${config.serverPort}\n`);
     log("role preambles written");
 
     log("constructing Prover");
-    const prover = new Prover(JSON.stringify(buildProverInputs(config)));
+    const prover = new Prover(
+      JSON.stringify({
+        server_name: config.serverName,
+        server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
+        tx_id: Number(config.txId),
+      }),
+    );
 
     log("running prover.prove_streams(verifierStream, proxyStream)");
     const output = await prover.prove_streams(verifierStream, proxyStream);
 
-    log("prover returned, parsing response body");
     const decoder = new TextDecoder("utf-8", { fatal: false });
     log(
       `prover-view REQUEST (${output.sent.length} bytes, full):\n${decoder.decode(new Uint8Array(output.sent))}`,
@@ -92,7 +60,7 @@ async function runProve(config) {
     log(
       `prover-view RESPONSE (${output.received.length} bytes, full):\n${decoder.decode(new Uint8Array(output.received))}`,
     );
-    const body = parseResponseBody(output.response_body);
+    const body = JSON.parse(new TextDecoder().decode(new Uint8Array(output.response_body)).trim());
 
     return {
       flow: "notarize-wasm",

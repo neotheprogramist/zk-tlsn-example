@@ -108,6 +108,15 @@ pub enum Error {
 
     #[error(transparent)]
     Utf8Str(#[from] std::str::Utf8Error),
+
+    // ---- browser-only ----
+    #[cfg(target_arch = "wasm32")]
+    #[error("invalid JsProverInputs JSON: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[cfg(target_arch = "wasm32")]
+    #[error("verifier outcome frame too large: {0} bytes")]
+    FrameTooLarge(usize),
 }
 
 #[derive(Error, Debug)]

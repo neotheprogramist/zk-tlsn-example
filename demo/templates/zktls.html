@@ -1,0 +1,27 @@
+{% extends "_base.html" %} {% block title %}zktls — browser WASM prover{% endblock %} {% block
+content %}
+<p><a href="/">← back to demos</a></p>
+<main
+  data-role="prove-root"
+  data-cert-hash="{{ cert_hash_hex }}"
+  data-server-host="{{ server_host }}"
+  data-server-port="{{ server_port }}"
+  data-server-name="{{ server_name }}"
+  data-server-cert-der-hex="{{ server_cert_der_hex }}"
+  data-from-user="{{ from_user }}"
+  data-to-user="{{ to_user }}"
+  data-transfer-amount="{{ transfer_amount }}"
+  data-tx-id="{{ tx_id }}"
+>
+  <h1>zktls — browser WASM prover</h1>
+  <p>
+    Transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to
+    <em>{{ to_user }}</em> (tx_id = {{ tx_id }}).
+  </p>
+  <button data-role="start">Start attestation</button>
+  <h2>Log</h2>
+  <pre data-role="log"></pre>
+</main>
+{% endblock %} {% block scripts %}
+<script type="module" src="/assets/zktls.main.mjs"></script>
+{% endblock %}

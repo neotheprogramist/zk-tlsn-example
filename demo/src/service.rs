@@ -11,7 +11,7 @@ use salvo::{
     conn::rustls::{Keycert, RustlsConfig},
     handler,
     http::{
-        StatusError,
+        StatusCode, StatusError,
         header::{HeaderName, HeaderValue},
     },
     prelude::{
@@ -65,9 +65,13 @@ pub enum ServeError {
 }
 
 pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
-    let wasm_path = config.asset_dir.join("wasm").join("core_bg.wasm");
-    if !wasm_path.exists() {
-        return Err(ServeError::MissingWasm(wasm_path));
+    for required in [
+        config.asset_dir.join("wasm").join("zktls_bg.wasm"),
+        config.asset_dir.join("wasm").join("zkp_bg.wasm"),
+    ] {
+        if !required.exists() {
+            return Err(ServeError::MissingWasm(required));
+        }
     }
 
     let certificate = ServiceCertificate::load_or_create(&config.cert_dir)?;
@@ -109,8 +113,11 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         .hoop(cross_origin_isolation)
         .hoop(affix_state::inject(page_state))
         .hoop(affix_state::inject(proxy_config))
-        .get(render_index)
+        .get(render_landing)
+        .push(Router::with_path("zktls").get(render_zktls))
+        .push(Router::with_path("zkp").get(render_zkp))
         .push(Router::with_path("cert-hash").get(render_cert_hash))
+        .push(Router::with_path("favicon.ico").get(empty_no_content))
         .push(Router::with_path("connect").goal(crate::connect::handle))
         .push(Router::with_path("assets/{**}").get(StaticDir::new([config.asset_dir])));
 
@@ -243,8 +250,8 @@ pub struct PageState {
 }
 
 #[derive(Template)]
-#[template(path = "index.html")]
-struct IndexTemplate<'a> {
+#[template(path = "zktls.html")]
+struct ZktlsTemplate<'a> {
     cert_hash_hex: &'a str,
     server_host: &'a str,
     server_port: u16,
@@ -256,6 +263,14 @@ struct IndexTemplate<'a> {
     server_cert_der_hex: &'a str,
 }
 
+#[derive(Template)]
+#[template(path = "landing.html")]
+struct LandingTemplate;
+
+#[derive(Template)]
+#[template(path = "zkp.html")]
+struct ZkpTemplate;
+
 #[async_trait]
 impl Writer for ServeError {
     async fn write(self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
@@ -265,11 +280,25 @@ impl Writer for ServeError {
 }
 
 #[handler]
-async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), ServeError> {
+async fn render_landing(res: &mut Response) -> Result<(), ServeError> {
+    let html = LandingTemplate.render()?;
+    res.render(Text::Html(html));
+    Ok(())
+}
+
+#[handler]
+async fn render_zkp(res: &mut Response) -> Result<(), ServeError> {
+    let html = ZkpTemplate.render()?;
+    res.render(Text::Html(html));
+    Ok(())
+}
+
+#[handler]
+async fn render_zktls(depot: &mut Depot, res: &mut Response) -> Result<(), ServeError> {
     let state = depot
         .obtain::<Arc<PageState>>()
         .map_err(|_| ServeError::PageStateMissing)?;
-    let html = IndexTemplate {
+    let html = ZktlsTemplate {
         cert_hash_hex: &state.cert_hash_hex,
         server_host: &state.server_host,
         server_port: state.server_port,
@@ -283,6 +312,11 @@ async fn render_index(depot: &mut Depot, res: &mut Response) -> Result<(), Serve
     .render()?;
     res.render(Text::Html(html));
     Ok(())
+}
+
+#[handler]
+async fn empty_no_content(res: &mut Response) {
+    res.status_code(StatusCode::NO_CONTENT);
 }
 
 #[handler]

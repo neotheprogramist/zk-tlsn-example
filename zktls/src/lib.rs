@@ -8,6 +8,9 @@ pub mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 mod verifier;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 pub use attestation::{
     AMOUNT_WIDTH, ATTESTATION_LEN, FiatTransferAttestation, TX_ID_WIDTH, USER_ID_WIDTH,
     encode_transfer_attestation, parse_transfer_attestation,
