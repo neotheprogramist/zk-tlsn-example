@@ -1,22 +1,9 @@
 // Shared worker scaffolding for the /zktls and /zkp flows.
 // - startWorker / installPageErrorForwarders run on the main thread.
 // - installWorkerErrorForwarder runs inside a worker.
-// - appendLog / fmtMs / fmtKB are pure formatters.
+// - emit_* helpers live in log.mjs.
 
-export function appendLog(el, line) {
-  const ts = new Date().toISOString().split("T")[1].replace("Z", "");
-  el.textContent += `[${ts}] ${line}\n`;
-  el.scrollTop = el.scrollHeight;
-  console.log(`[${ts}] ${line}`);
-}
-
-export function fmtMs(ms) {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`;
-}
-
-export function fmtKB(bytes) {
-  return `${(bytes / 1024).toFixed(1)} KB`;
-}
+import { eventErr } from "./log.mjs";
 
 function detail(ev) {
   return [
@@ -44,12 +31,14 @@ export function startWorker(url, onMessage) {
   return worker;
 }
 
-export function installPageErrorForwarders(prefix) {
+export function installPageErrorForwarders() {
   window.addEventListener("error", (e) => {
-    console.error(`${prefix} ` + (e.error?.stack || e.message));
+    eventErr("runtime.page.error", { message: e.error?.stack || e.message });
   });
   window.addEventListener("unhandledrejection", (e) => {
-    console.error(`${prefix} ` + (e.reason?.stack || e.reason));
+    eventErr("runtime.page.unhandled_rejection", {
+      message: e.reason?.stack || String(e.reason),
+    });
   });
 }
 

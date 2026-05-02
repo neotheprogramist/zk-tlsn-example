@@ -1,10 +1,10 @@
 import init, { Prover, initialize } from "/assets/wasm/zktls.js";
+import { event } from "./log.mjs";
 import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
 
 const post = (kind, payload = {}) => self.postMessage({ kind, ...payload });
-const log = (line) => post("log", { line });
 
 function hexToBytes(hex) {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -21,27 +21,29 @@ async function writePreamble(stream, line) {
 }
 
 async function runProve(config) {
-  log("initialising WASM");
+  event("zktls.worker.wasm.init.start");
   await init();
-  log("starting web-spawn worker pool");
+  event("zktls.worker.wasm.init.done");
+  event("zktls.worker.pool.start");
   await initialize();
+  event("zktls.worker.pool.ready");
 
-  log("opening WebTransport session");
+  event("zktls.transport.session.opening");
   const session = new WebTransport(config.connectUrl, {
     serverCertificateHashes: [{ algorithm: "sha-256", value: hexToBytes(config.certHashHex) }],
   });
   try {
     await session.ready;
-    log("WebTransport session ready");
+    event("zktls.transport.session.ready");
 
-    log("creating verifier + proxy bidi streams");
+    event("zktls.transport.streams.creating");
     const verifierStream = await session.createBidirectionalStream();
     const proxyStream = await session.createBidirectionalStream();
     await writePreamble(verifierStream, "VERIFY\n");
     await writePreamble(proxyStream, `CONNECT ${config.serverHost}:${config.serverPort}\n`);
-    log("role preambles written");
+    event("zktls.transport.streams.preambles_written");
 
-    log("constructing Prover");
+    event("zktls.prover.constructing");
     const prover = new Prover(
       JSON.stringify({
         server_name: config.serverName,
@@ -50,16 +52,21 @@ async function runProve(config) {
       }),
     );
 
-    log("running prover.prove_streams(verifierStream, proxyStream)");
+    event("zktls.prover.prove_streams.start");
     const output = await prover.prove_streams(verifierStream, proxyStream);
+    event("zktls.prover.prove_streams.done");
 
     const decoder = new TextDecoder("utf-8", { fatal: false });
-    log(
-      `prover-view REQUEST (${output.sent.length} bytes, full):\n${decoder.decode(new Uint8Array(output.sent))}`,
-    );
-    log(
-      `prover-view RESPONSE (${output.received.length} bytes, full):\n${decoder.decode(new Uint8Array(output.received))}`,
-    );
+    event("zktls.prover.view", {
+      direction: "request",
+      bytes: output.sent.length,
+      body: decoder.decode(new Uint8Array(output.sent)),
+    });
+    event("zktls.prover.view", {
+      direction: "response",
+      bytes: output.received.length,
+      body: decoder.decode(new Uint8Array(output.received)),
+    });
     const body = JSON.parse(new TextDecoder().decode(new Uint8Array(output.response_body)).trim());
 
     return {
@@ -73,9 +80,11 @@ async function runProve(config) {
   } finally {
     try {
       await session.close({ closeCode: 0, reason: "notarize-done" });
-      log("WebTransport session closed");
+      event("zktls.transport.session.closed");
     } catch (err) {
-      log("WebTransport session close failed: " + (err?.message || String(err)));
+      event("zktls.transport.session.close_failed", {
+        message: err?.message || String(err),
+      });
     }
   }
 }

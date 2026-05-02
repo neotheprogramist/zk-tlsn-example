@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// E2E: drive /zktls in headed Chromium and assert everything we can observe —
-// the JSON result, the backend tracing output, and the browser DevTools
-// Protocol console stream.
+// E2E: drive /zktls in headed Chromium and assert against the structured
+// event stream emitted by both the WASM prover (via web_sys::console) and
+// the JS page (via demo/assets/log.mjs). All assertions are structural —
+// no magic prefixes; the harness parses the shared
+// `{ts} LEVEL event_name k=v` grammar via parseEventLine.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -17,14 +19,15 @@ import {
   runCleanup,
   setupBrowserCapture,
   startDemoBinary,
-  waitForConsoleResult,
+  waitForEvent,
 } from "./lib/harness.mjs";
 
 const EXPECTED_COMMITMENT_COUNT = 2;
 const EXPECTED_REQUEST_BYTES = 87; // GET /api/attestations/1 + content-type header
 const EXPECTED_RESPONSE_BYTES = 312; // HTTP 200 + JSON body for tx_id=1, alice→treasury, amount=25
 const EXPECTED_ATTESTATION_HASH_HASHES = 32; // ATTESTATION_LEN — see zktls::FiatTransferAttestation
-const ALLOWED_BACKEND_ERROR_PATTERN = /Connection error error=tls handshake eof/; // Chrome's TCP probe
+// `demo.ledger.connection.error error=tls handshake eof` is Chrome's TCP probe.
+const ALLOWED_BACKEND_ERROR_PATTERN = /demo\.ledger\.connection\.error.*tls handshake eof/;
 
 try {
   const wasmPath = path.join(process.cwd(), "demo/assets/wasm/zktls_bg.wasm");
@@ -39,13 +42,13 @@ try {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   const browserCapture = setupBrowserCapture(page);
-  await installPageErrorForwarder(page, "ZKTLS_ERROR");
+  await installPageErrorForwarder(page);
 
-  const resultPromise = waitForConsoleResult({
+  const resultPromise = waitForEvent({
     page,
-    resultPrefix: "ZKTLS_RESULT",
-    errorPrefix: "ZKTLS_ERROR",
-    label: "ZKTLS_RESULT",
+    event: "zktls.notarize.done",
+    errorEvents: ["zktls.notarize.failed", "runtime.page.error"],
+    label: "zktls.notarize.done",
   });
 
   console.log("[harness] navigating to /zktls...");
@@ -53,10 +56,10 @@ try {
   console.log('[harness] clicking "Start attestation"...');
   await page.locator('[data-role="start"]').click();
 
-  console.log("[harness] prover running, awaiting ZKTLS_RESULT (may take 20–60s)...");
+  console.log("[harness] prover running, awaiting zktls.notarize.done (may take 20–60s)...");
   const result = await resultPromise;
 
-  // ─── Result-JSON assertions ─────────────────────────────────────────────
+  // ─── Result-event assertions ────────────────────────────────────────────
   assertEquals("flow", "notarize-wasm", result.flow);
   assertEquals("server_name", SERVER_NAME, result.server_name);
   assertEquals("to_username", TO_USER, result.to_username);
@@ -66,82 +69,81 @@ try {
 
   // ─── Backend tracing assertions ─────────────────────────────────────────
   // Service + ledger boot.
-  backend.expectInOrder([
-    [/seeded demo transfer.*tx_id=1.*from=alice.*to=treasury.*amount=25/, "ledger seed"],
-    [/service: listening on https:\/\//, "service listening"],
-    [/TLS demo server listening.*listen_addr=127\.0\.0\.1:8443/, "ledger TCP bind"],
-    [/listening \[HTTP\/3\.0\] on https:\/\/127\.0\.0\.1:8444/, "salvo HTTP/3"],
-    [/listening \[HTTP\/1\.1\] on https:\/\/127\.0\.0\.1:8444/, "salvo HTTP/1.1"],
+  backend.expectEventInOrder([
+    {
+      event: "demo.transfer.seeded",
+      fields: { tx_id: 1, from: "alice", to: "treasury", amount: 25 },
+    },
+    { event: "demo.service.listening" },
+    {
+      event: "demo.ledger.listening",
+      fields: { listen_addr: "127.0.0.1:8443" },
+    },
   ]);
 
   // MPC-TLS lifecycle.
-  backend.expectAtLeast(/Accepted connection addr=127\.0\.0\.1:/, 1, "ledger Accepted connection");
-  backend.expectCount(/starting MPC-TLS/, 1, "starting MPC-TLS");
-  backend.expectCount(/finished MPC-TLS/, 1, "finished MPC-TLS");
-  backend.expectCount(/GET \/api\/attestations.*tx_id=1/, 1, "ledger /api/attestations hit");
+  if (backend.countEvent({ event: "demo.ledger.connection.accepted" }) < 1) {
+    throw new Error("expected ≥1 demo.ledger.connection.accepted event");
+  }
+  backend.expectEventCount(
+    { event: "demo.ledger.attestations.lookup", fields: { tx_id: 1 } },
+    1,
+    "ledger /api/attestations hit",
+  );
 
   // Notarization transcript fields match the JSON result.
-  const transcriptLine = backend.findText(
-    /Received notarization transcript from prover/,
-    "transcript receipt",
+  const transcript = backend.expectEvent(
+    { event: "zktls.notarize.transcript.received" },
+    "zktls.notarize.transcript.received",
   );
-  if (!transcriptLine.includes(`server_name=${SERVER_NAME}`)) {
-    throw new Error(`transcript line missing server_name=${SERVER_NAME}: ${transcriptLine}`);
-  }
-  if (!transcriptLine.includes(`commitment_count=${EXPECTED_COMMITMENT_COUNT}`)) {
-    throw new Error(
-      `transcript line wrong commitment_count (expected ${EXPECTED_COMMITMENT_COUNT}): ${transcriptLine}`,
-    );
-  }
-  const sentMatch = transcriptLine.match(/sent_len=(\d+)/);
-  const recvMatch = transcriptLine.match(/received_len=(\d+)/);
+  assertEquals("transcript.server_name", SERVER_NAME, transcript.fields.server_name);
   assertEquals(
-    "transcript.sent_len",
-    EXPECTED_REQUEST_BYTES,
-    sentMatch ? Number(sentMatch[1]) : null,
+    "transcript.commitment_count",
+    EXPECTED_COMMITMENT_COUNT,
+    transcript.fields.commitment_count,
   );
-  assertEquals(
-    "transcript.received_len",
-    EXPECTED_RESPONSE_BYTES,
-    recvMatch ? Number(recvMatch[1]) : null,
-  );
+  assertEquals("transcript.sent_len", EXPECTED_REQUEST_BYTES, transcript.fields.sent_len);
+  assertEquals("transcript.received_len", EXPECTED_RESPONSE_BYTES, transcript.fields.received_len);
 
-  // verifier-view banners.
-  backend.expectCount(
-    new RegExp(`verifier-view REQUEST \\(${EXPECTED_REQUEST_BYTES} bytes;`),
+  // verifier-view banners (now structured: zktls.verifier.view direction=… bytes=…).
+  backend.expectEventCount(
+    {
+      event: "zktls.verifier.view",
+      fields: { direction: "request", bytes: EXPECTED_REQUEST_BYTES },
+    },
     1,
-    `verifier-view REQUEST (${EXPECTED_REQUEST_BYTES} bytes)`,
+    "zktls.verifier.view direction=request",
   );
-  backend.expectCount(
-    new RegExp(`verifier-view RESPONSE \\(${EXPECTED_RESPONSE_BYTES} bytes;`),
-    1,
-    `verifier-view RESPONSE (${EXPECTED_RESPONSE_BYTES} bytes)`,
+  const responseView = backend.expectEvent(
+    {
+      event: "zktls.verifier.view",
+      fields: { direction: "response", bytes: EXPECTED_RESPONSE_BYTES },
+    },
+    "zktls.verifier.view direction=response",
   );
 
   // Verifier-view RESPONSE body must show exactly ATTESTATION_LEN '#' after
   // `"attestation":` — the structural pin that says the redacted-body grammar
   // produced the right ranges and the commit set covered the full 32-char
   // attestation block.
-  const responseBodyLine = backend.findText(/"attestation":·#+/, "verifier-view attestation block");
-  const hashRun = responseBodyLine.match(/"attestation":·(#+)/);
+  const body = String(responseView.fields.body ?? "");
+  const hashRun = body.match(/"attestation":·(#+)/);
   if (!hashRun) {
-    throw new Error(`verifier-view body has no #-run after "attestation":\n${responseBodyLine}`);
+    throw new Error(`verifier-view body has no #-run after "attestation":\n${body}`);
   }
   assertEquals("attestation hash count", EXPECTED_ATTESTATION_HASH_HASHES, hashRun[1].length);
-
-  // Verifier-view RESPONSE must show the revealed fields.
-  if (!responseBodyLine.includes(`"toUsername":"${TO_USER}"`)) {
+  if (!body.includes(`"toUsername":"${TO_USER}"`)) {
     throw new Error(`verifier-view body missing revealed toUsername=${TO_USER}`);
   }
-  if (!responseBodyLine.includes(`"eligibleForMint":true`)) {
+  if (!body.includes(`"eligibleForMint":true`)) {
     throw new Error(`verifier-view body missing revealed eligibleForMint=true`);
   }
 
   // Final verifier outcome.
-  backend.expectCount(
-    /Sending verification outcome.*success=true/,
+  backend.expectEventCount(
+    { event: "zktls.verifier.outcome.sent", fields: { success: true } },
     1,
-    "verification outcome success=true",
+    "zktls.verifier.outcome.sent success=true",
   );
 
   // Backend errors: only the harmless Chrome TCP-probe handshake EOF.
@@ -152,55 +154,59 @@ try {
   }
 
   // ─── Browser console assertions ─────────────────────────────────────────
-  browserCapture.console.expectInOrder([
-    [/spawning prover worker/, "main: spawn worker"],
-    [/initialising WASM/, "worker: wasm init"],
-    [/starting web-spawn worker pool/, "worker: web-spawn"],
-    [/opening WebTransport session/, "worker: WT open"],
-    [/WebTransport session ready/, "worker: WT ready"],
-    [/creating verifier \+ proxy bidi streams/, "worker: bidi streams"],
-    [/role preambles written/, "worker: preambles"],
-    [/constructing Prover/, "worker: Prover ctor"],
-    [/running prover\.prove_streams/, "worker: prove_streams"],
-    [
-      new RegExp(`prover-view REQUEST \\(${EXPECTED_REQUEST_BYTES} bytes, full\\):`),
-      `prover-view REQUEST (${EXPECTED_REQUEST_BYTES} bytes)`,
-    ],
-    [
-      new RegExp(`prover-view RESPONSE \\(${EXPECTED_RESPONSE_BYTES} bytes, full\\):`),
-      `prover-view RESPONSE (${EXPECTED_RESPONSE_BYTES} bytes)`,
-    ],
-    [/WebTransport session closed/, "worker: WT closed"],
-    [/^ZKTLS_RESULT /, "ZKTLS_RESULT line"],
+  browserCapture.console.expectEventInOrder([
+    { event: "zktls.action.start.click" },
+    { event: "zktls.worker.wasm.init.start" },
+    { event: "zktls.worker.wasm.init.done" },
+    { event: "zktls.worker.pool.start" },
+    { event: "zktls.worker.pool.ready" },
+    { event: "zktls.transport.session.opening" },
+    { event: "zktls.transport.session.ready" },
+    { event: "zktls.transport.streams.creating" },
+    { event: "zktls.transport.streams.preambles_written" },
+    { event: "zktls.prover.constructing" },
+    { event: "zktls.prover.prove_streams.start" },
+    { event: "zktls.prover.prove_streams.done" },
+    {
+      event: "zktls.prover.view",
+      fields: { direction: "request", bytes: EXPECTED_REQUEST_BYTES },
+    },
+    {
+      event: "zktls.prover.view",
+      fields: { direction: "response", bytes: EXPECTED_RESPONSE_BYTES },
+    },
+    { event: "zktls.transport.session.closed" },
+    { event: "zktls.notarize.done" },
   ]);
 
   // The prover-view RESPONSE must contain the actual HTTP response that the
   // prover saw — full bytes, including the values the verifier didn't reveal
   // to itself.
-  const proverResponse = browserCapture.console.findText(
-    /prover-view RESPONSE \(\d+ bytes, full\):/,
-    "prover-view RESPONSE block",
+  const proverResponse = browserCapture.console.expectEvent(
+    {
+      event: "zktls.prover.view",
+      fields: { direction: "response", bytes: EXPECTED_RESPONSE_BYTES },
+    },
+    "zktls.prover.view direction=response",
   );
-  if (!proverResponse.includes("HTTP/1.1 200 OK")) {
-    throw new Error(`prover-view RESPONSE missing 'HTTP/1.1 200 OK': ${proverResponse}`);
+  const proverBody = String(proverResponse.fields.body ?? "");
+  if (!proverBody.includes("HTTP/1.1 200 OK")) {
+    throw new Error(`prover-view RESPONSE missing 'HTTP/1.1 200 OK': ${proverBody}`);
   }
-  if (!proverResponse.includes(`"toUsername":"${TO_USER}"`)) {
+  if (!proverBody.includes(`"toUsername":"${TO_USER}"`)) {
     throw new Error(`prover-view RESPONSE missing toUsername=${TO_USER}`);
   }
-  if (!proverResponse.includes(`"amount":${TRANSFER_AMOUNT}`)) {
+  if (!proverBody.includes(`"amount":${TRANSFER_AMOUNT}`)) {
     throw new Error(`prover-view RESPONSE missing amount=${TRANSFER_AMOUNT}`);
   }
 
   // No errors of any flavour reached the page console.
-  browserCapture.console.expectCount(/^ZKTLS_RESULT /, 1, "ZKTLS_RESULT count");
-  browserCapture.console.expectCount(/^ZKTLS_ERROR /, 0, "ZKTLS_ERROR count");
-  browserCapture.console.expectAbsent(/^ZKTLS_ERROR /, "ZKTLS_ERROR line");
+  browserCapture.console.expectEventCount({ event: "zktls.notarize.done" }, 1);
+  browserCapture.console.expectEventCount({ event: "zktls.notarize.failed" }, 0);
+  browserCapture.console.expectEventCount({ event: "runtime.page.error" }, 0);
   for (const item of browserCapture.console.items) {
     if (item.type === "pageerror") {
       throw new Error(`unexpected page error: ${item.text}`);
-    }
-    if (item.type === "error" && !item.text.startsWith("ZKTLS_RESULT ")) {
-      throw new Error(`unexpected console.error: ${item.text}`);
     }
   }
   browserCapture.expectNoRequestFailures();

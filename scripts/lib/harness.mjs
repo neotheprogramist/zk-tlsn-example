@@ -1,24 +1,95 @@
 // Shared E2E harness used by scripts/e2e-zktls.mjs and scripts/e2e-zkp.mjs.
 // Owns: cargo binary spawning + log capture, Playwright bootstrap, headed
-// Chromium launch, readiness probing, cleanup/SIGINT handling, console-line
-// waiting, structured assertion helpers over backend tracing and browser
+// Chromium launch, readiness probing, cleanup/SIGINT handling, structured
+// event-line parsing, and assertion helpers over backend tracing + browser
 // CDP console output.
 
 import { execFileSync, spawn } from "node:child_process";
 import net from "node:net";
 import { createRequire } from "node:module";
 
-// ─── Pattern matching + structured log ─────────────────────────────────────
+// ─── Event-line grammar ────────────────────────────────────────────────────
+//
+//   {rfc3339-ts}  {LEVEL} {event_name} key=value key=value ...
+//
+// Produced identically by Rust `tracing-subscriber` `compact()` (native +
+// wasm) and the JS `event()` helper in `demo/assets/log.mjs`.
 
-function lineMatches(text, pattern) {
-  if (typeof pattern === "string") return text.includes(pattern);
-  if (pattern instanceof RegExp) return pattern.test(text);
-  throw new Error(`unsupported pattern type: ${typeof pattern}`);
+const EVENT_HEAD_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s+(INFO|WARN|ERROR|DEBUG|TRACE)\s+(\S+)(?:\s+(.+))?$/;
+
+function parseFieldValue(raw) {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (raw === "null") return null;
+  if (raw === "undefined") return undefined;
+  if (raw.startsWith('"')) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  if (/^-?\d+$/.test(raw)) return Number(raw);
+  if (/^-?\d+\.\d+(?:[eE][-+]?\d+)?$/.test(raw)) return Number(raw);
+  return raw;
 }
 
-function patternLabel(pattern) {
-  return pattern instanceof RegExp ? pattern.source : pattern;
+function splitFieldChunks(rest) {
+  const out = [];
+  let i = 0;
+  while (i < rest.length) {
+    while (i < rest.length && rest[i] === " ") i++;
+    if (i >= rest.length) break;
+    const start = i;
+    let inString = false;
+    let escape = false;
+    while (i < rest.length) {
+      const c = rest[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (c === "\\") escape = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') {
+        inString = true;
+      } else if (c === " ") {
+        break;
+      }
+      i++;
+    }
+    out.push(rest.slice(start, i));
+  }
+  return out;
 }
+
+export function parseEventLine(text) {
+  const m = EVENT_HEAD_RE.exec(text);
+  if (!m) return null;
+  const [, ts, level, event, rest] = m;
+  const fields = {};
+  if (rest) {
+    for (const chunk of splitFieldChunks(rest)) {
+      const eq = chunk.indexOf("=");
+      if (eq <= 0) continue;
+      fields[chunk.slice(0, eq)] = parseFieldValue(chunk.slice(eq + 1));
+    }
+  }
+  return { ts, level, event, fields };
+}
+
+function fieldsMatch(actual, expected) {
+  if (!expected) return true;
+  for (const [k, v] of Object.entries(expected)) {
+    if (typeof v === "function") {
+      if (!v(actual[k])) return false;
+    } else if (JSON.stringify(actual[k]) !== JSON.stringify(v)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ─── Log accessor ──────────────────────────────────────────────────────────
 
 function tail(items, n, getText) {
   return items
@@ -27,81 +98,90 @@ function tail(items, n, getText) {
     .join("\n");
 }
 
+function describeEventQuery({ event, fields }) {
+  if (!fields) return event;
+  return `${event} ${Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === "function" ? "<predicate>" : JSON.stringify(v)}`)
+    .join(" ")}`;
+}
+
 // Returns a structured accessor over a captured line stream. `items` is a
 // live array (mutated by the producer). `getText(item)` extracts the line
-// payload used for matching.
+// payload used for matching. Items are augmented (lazily) with a parsed
+// `event` shape `{ts, level, event, fields}` if `getText(item)` matches the
+// event grammar; otherwise the parsed shape is `null`.
 export function makeLog(name, items, getText = (i) => i.text ?? i) {
   const fail = (msg) =>
     new Error(`${name} log: ${msg}\nlast 30 ${name} lines:\n${tail(items, 30, getText)}`);
-  const norm = (p) => (Array.isArray(p) ? p : [p, patternLabel(p)]);
+
+  const eventOf = (item) => {
+    if (item._parsed === undefined) item._parsed = parseEventLine(getText(item));
+    return item._parsed;
+  };
 
   return {
     items,
     name,
 
-    expect(pattern, label) {
-      const idx = items.findIndex((i) => lineMatches(getText(i), pattern));
-      if (idx === -1) throw fail(`missing ${label ?? patternLabel(pattern)}`);
-      return items[idx];
+    expectEvent(query, label) {
+      const idx = items.findIndex((i) => {
+        const e = eventOf(i);
+        return e && e.event === query.event && fieldsMatch(e.fields, query.fields);
+      });
+      if (idx === -1) throw fail(`missing event ${label ?? describeEventQuery(query)}`);
+      return eventOf(items[idx]);
     },
 
-    expectAll(patterns) {
-      for (const p of patterns) {
-        const [pat, lbl] = norm(p);
-        this.expect(pat, lbl);
-      }
-    },
-
-    expectInOrder(patterns) {
+    expectEventInOrder(queries) {
       let cursor = 0;
-      for (const p of patterns) {
-        const [pat, lbl] = norm(p);
+      for (const q of queries) {
         let found = -1;
         for (let i = cursor; i < items.length; i++) {
-          if (lineMatches(getText(items[i]), pat)) {
+          const e = eventOf(items[i]);
+          if (e && e.event === q.event && fieldsMatch(e.fields, q.fields)) {
             found = i;
             break;
           }
         }
         if (found === -1) {
-          throw fail(`${lbl} not found in order (after position ${cursor})`);
+          throw fail(
+            `event ${describeEventQuery(q)} not found in order (after position ${cursor})`,
+          );
         }
         cursor = found + 1;
       }
     },
 
-    expectAbsent(pattern, label) {
-      const idx = items.findIndex((i) => lineMatches(getText(i), pattern));
+    expectEventAbsent(query, label) {
+      const idx = items.findIndex((i) => {
+        const e = eventOf(i);
+        return e && e.event === query.event && fieldsMatch(e.fields, query.fields);
+      });
       if (idx !== -1) {
-        throw fail(
-          `unexpected ${label ?? patternLabel(pattern)} at position ${idx}: ${getText(items[idx])}`,
-        );
+        throw fail(`unexpected event ${label ?? describeEventQuery(query)} at position ${idx}`);
       }
     },
 
-    count(pattern) {
-      return items.filter((i) => lineMatches(getText(i), pattern)).length;
+    countEvent(query) {
+      return items.filter((i) => {
+        const e = eventOf(i);
+        return e && e.event === query.event && fieldsMatch(e.fields, query.fields);
+      }).length;
     },
 
-    expectCount(pattern, expected, label) {
-      const got = this.count(pattern);
+    expectEventCount(query, expected, label) {
+      const got = this.countEvent(query);
       if (got !== expected) {
         throw fail(
-          `expected ${expected} occurrences of ${label ?? patternLabel(pattern)}, got ${got}`,
+          `expected ${expected} occurrences of ${label ?? describeEventQuery(query)}, got ${got}`,
         );
       }
     },
 
-    expectAtLeast(pattern, min, label) {
-      const got = this.count(pattern);
-      if (got < min) {
-        throw fail(`expected ≥${min} occurrences of ${label ?? patternLabel(pattern)}, got ${got}`);
-      }
-    },
-
-    // Returns the matched line text (whole captured payload), or throws.
-    findText(pattern, label) {
-      return getText(this.expect(pattern, label));
+    findEvents(query) {
+      return items
+        .map((i) => eventOf(i))
+        .filter((e) => e && e.event === query.event && fieldsMatch(e.fields, query.fields));
     },
   };
 }
@@ -128,9 +208,9 @@ function formatLogLine(label, color, line) {
   return `[${color}m[${label}][0m ${line}`;
 }
 
-// ANSI escape sequences in the binary's tracing output break substring/regex
-// matching. Strip them for the captured buffer; the live forwarded line keeps
-// them so the terminal stays coloured.
+// ANSI escape sequences in the binary's tracing output break event-line
+// parsing. The Rust subscriber is now configured `with_ansi(false)`, but keep
+// this strip for safety in case anything downstream re-injects colour.
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s) => s.replace(ANSI_RE, "");
@@ -343,17 +423,18 @@ export function setupBrowserCapture(page) {
   };
 }
 
-// ─── Console-line capture (synchronous predicate-based wait) ───────────────
+// ─── Event-line wait (synchronous predicate-based) ─────────────────────────
 
-// Listens to page console for a `<resultPrefix> <json>` line where the parsed
-// JSON satisfies `predicate`. Rejects on `<errorPrefix> ...` or `pageerror`.
-export function waitForConsoleResult({
+// Listens to the page console for an event line whose `event` matches and
+// whose parsed fields satisfy `predicate`. Rejects on any matching error
+// event or `pageerror`.
+export function waitForEvent({
   page,
-  resultPrefix,
-  errorPrefix,
+  event,
   predicate = () => true,
+  errorEvents = [],
   timeoutMs = 120_000,
-  label = resultPrefix,
+  label = event,
 }) {
   return new Promise((resolve, reject) => {
     let finished = false;
@@ -366,29 +447,16 @@ export function waitForConsoleResult({
       if (err) reject(err);
       else resolve(value);
     };
-    const timer = setTimeout(async () => {
-      const tail = await page
-        .evaluate(() => document.querySelector('[data-role="log"]')?.textContent ?? "")
-        .catch(() => "");
-      finish(
-        null,
-        new Error(
-          `timed out waiting for ${label} after ${timeoutMs}ms\npage log tail:\n` +
-            tail.trim().split("\n").slice(-15).join("\n"),
-        ),
-      );
+    const timer = setTimeout(() => {
+      finish(null, new Error(`timed out waiting for event ${label} after ${timeoutMs}ms`));
     }, timeoutMs);
     const onConsole = (msg) => {
-      const text = msg.text();
-      if (text.startsWith(resultPrefix + " ")) {
-        try {
-          const parsed = JSON.parse(text.slice(resultPrefix.length + 1));
-          if (predicate(parsed)) finish(parsed);
-        } catch {
-          // Ignore malformed lines and keep listening.
-        }
-      } else if (text.startsWith(errorPrefix + " ")) {
-        finish(null, new Error(text));
+      const parsed = parseEventLine(msg.text());
+      if (!parsed) return;
+      if (parsed.event === event && predicate(parsed.fields)) {
+        finish(parsed.fields);
+      } else if (errorEvents.includes(parsed.event)) {
+        finish(null, new Error(`${parsed.event}: ${JSON.stringify(parsed.fields)}`));
       }
     };
     const onPageError = (err) => {
@@ -399,13 +467,16 @@ export function waitForConsoleResult({
   });
 }
 
-export async function installPageErrorForwarder(page, errorPrefix) {
-  await page.addInitScript((prefix) => {
-    window.addEventListener("error", (e) =>
-      console.error(`${prefix} ` + (e.error?.stack || e.message)),
-    );
+export async function installPageErrorForwarder(page) {
+  await page.addInitScript(() => {
+    function emitErr(message) {
+      console.error(
+        `${new Date().toISOString()}  ERROR runtime.page.error message=${JSON.stringify(message)}`,
+      );
+    }
+    window.addEventListener("error", (e) => emitErr(e.error?.stack || e.message));
     window.addEventListener("unhandledrejection", (e) =>
-      console.error(`${prefix} ` + (e.reason?.stack || e.reason)),
+      emitErr(e.reason?.stack || String(e.reason)),
     );
-  }, errorPrefix);
+  });
 }

@@ -1,12 +1,11 @@
-import { appendLog, fmtKB, fmtMs, installPageErrorForwarders, startWorker } from "./flow.mjs";
+import { event, eventErr } from "./log.mjs";
+import { installPageErrorForwarders, startWorker } from "./flow.mjs";
 
 const els = {
   state: document.querySelector('[data-role="state"]'),
   steps: document.querySelector('[data-role="steps"]'),
   lastProve: document.querySelector('[data-role="last-prove"]'),
   lastSize: document.querySelector('[data-role="last-size"]'),
-  status: document.querySelector('[data-role="status"]'),
-  log: document.querySelector('[data-role="log"]'),
   btnBase: document.querySelector('[data-role="base"]'),
   btnIncrement: document.querySelector('[data-role="increment"]'),
   btnProve: document.querySelector('[data-role="prove"]'),
@@ -15,12 +14,7 @@ const els = {
 
 const state = { counter: null, pendingIncrement: false, busy: false, stepsProven: 0 };
 
-installPageErrorForwarders("ZKP_ERROR");
-
-function setStatus(kind, text) {
-  els.status.className = `status-${kind}`;
-  els.status.textContent = text;
-}
+installPageErrorForwarders();
 
 function render() {
   if (state.counter === null) {
@@ -45,36 +39,26 @@ function render() {
   els.btnReset.disabled = state.busy;
 }
 
-function emitResult(isBase, msg) {
-  const result = isBase
-    ? {
-        kind: "base",
-        counter: msg.counter,
-        prove_ms: Math.round(msg.proveMs),
-        proof_size_bytes: msg.sizeBytes,
-        steps_proven: state.stepsProven,
-      }
-    : {
-        kind: "step",
-        counter: msg.counter,
-        prev_counter: msg.counter - 1,
-        prove_ms: Math.round(msg.proveMs),
-        proof_size_bytes: msg.sizeBytes,
-        steps_proven: state.stepsProven,
-      };
-  console.log("ZKP_RESULT " + JSON.stringify(result));
+function emitProofResult(isBase, msg) {
+  const fields = {
+    kind: isBase ? "base" : "step",
+    counter: msg.counter,
+    prove_ms: Math.round(msg.proveMs),
+    proof_size_bytes: msg.sizeBytes,
+    verified: msg.verified === true,
+    verify_ms: Math.round(msg.verifyMs ?? 0),
+    steps_proven: state.stepsProven,
+  };
+  if (!isBase) fields.prev_counter = msg.counter - 1;
+  event("zkp.proof.done", fields);
 }
 
 const worker = startWorker("/assets/zkp.worker.mjs", (msg) => {
   switch (msg.kind) {
     case "ready":
-      appendLog(els.log, `worker ready (wasm init ${fmtMs(msg.initMs)})`);
-      setStatus("idle", "ready");
+      event("zkp.worker.ready", { init_ms: Math.round(msg.initMs) });
       state.busy = false;
       render();
-      break;
-    case "log":
-      appendLog(els.log, msg.line);
       break;
     case "base_done":
     case "step_done": {
@@ -83,24 +67,15 @@ const worker = startWorker("/assets/zkp.worker.mjs", (msg) => {
       state.pendingIncrement = false;
       state.stepsProven = isBase ? 1 : state.stepsProven + 1;
       state.busy = false;
-      els.lastProve.textContent = fmtMs(msg.proveMs);
-      els.lastSize.textContent = fmtKB(msg.sizeBytes);
-      setStatus("ok", `proven ✓ counter=${msg.counter}`);
-      appendLog(
-        els.log,
-        isBase
-          ? `base done: prove ${fmtMs(msg.proveMs)}, size ${msg.sizeBytes} B`
-          : `step ${msg.counter - 1}→${msg.counter} (verifies step-shape): prove ${fmtMs(msg.proveMs)}, size ${msg.sizeBytes} B`,
-      );
-      emitResult(isBase, msg);
+      els.lastProve.textContent = `${Math.round(msg.proveMs)} ms`;
+      els.lastSize.textContent = `${(msg.sizeBytes / 1024).toFixed(1)} KB`;
+      emitProofResult(isBase, msg);
       render();
       break;
     }
     case "error":
       state.busy = false;
-      setStatus("err", `error: ${msg.message}`);
-      appendLog(els.log, "ERROR " + msg.message);
-      console.error("ZKP_ERROR " + msg.message);
+      eventErr("zkp.proof.failed", { message: msg.message });
       render();
       break;
     case "reset_done":
@@ -110,20 +85,18 @@ const worker = startWorker("/assets/zkp.worker.mjs", (msg) => {
       state.busy = false;
       els.lastProve.textContent = "—";
       els.lastSize.textContent = "—";
-      setStatus("idle", "reset");
-      appendLog(els.log, "reset");
+      event("zkp.action.reset");
       render();
       break;
     default:
-      appendLog(els.log, "unknown worker message kind=" + msg.kind);
+      eventErr("zkp.worker.message.unknown", { kind: msg.kind });
   }
 });
 
 els.btnBase.addEventListener("click", () => {
   if (state.busy || state.counter !== null) return;
   state.busy = true;
-  setStatus("running", "generating base proof…");
-  appendLog(els.log, "→ prove_base");
+  event("zkp.action.prove_base.click");
   render();
   worker.postMessage({ kind: "prove_base" });
 });
@@ -131,16 +104,17 @@ els.btnBase.addEventListener("click", () => {
 els.btnIncrement.addEventListener("click", () => {
   if (state.busy || state.counter === null || state.pendingIncrement) return;
   state.pendingIncrement = true;
-  setStatus("idle", `pending: ${state.counter + 1}`);
-  appendLog(els.log, `+ increment (pending ${state.counter + 1})`);
+  event("zkp.action.increment.click", { pending: state.counter + 1 });
   render();
 });
 
 els.btnProve.addEventListener("click", () => {
   if (state.busy || !state.pendingIncrement) return;
   state.busy = true;
-  setStatus("running", `proving ${state.counter}→${state.counter + 1}…`);
-  appendLog(els.log, `→ prove_step ${state.counter}→${state.counter + 1}`);
+  event("zkp.action.prove_step.click", {
+    prev_counter: state.counter,
+    counter: state.counter + 1,
+  });
   render();
   worker.postMessage({ kind: "prove_step" });
 });
@@ -148,12 +122,11 @@ els.btnProve.addEventListener("click", () => {
 els.btnReset.addEventListener("click", () => {
   if (state.busy) return;
   state.busy = true;
-  setStatus("running", "resetting…");
+  event("zkp.action.reset.click");
   render();
   worker.postMessage({ kind: "reset" });
 });
 
-setStatus("running", "loading wasm…");
-appendLog(els.log, "loading wasm…");
+event("zkp.page.loading");
 worker.postMessage({ kind: "init" });
 render();

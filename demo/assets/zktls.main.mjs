@@ -1,10 +1,10 @@
-import { appendLog, installPageErrorForwarders, startWorker } from "./flow.mjs";
+import { event, eventErr } from "./log.mjs";
+import { installPageErrorForwarders, startWorker } from "./flow.mjs";
 
 const root = document.querySelector('[data-role="prove-root"]');
-const log = document.querySelector('[data-role="log"]');
 const btn = document.querySelector('[data-role="start"]');
 
-installPageErrorForwarders("ZKTLS_ERROR");
+installPageErrorForwarders();
 
 function readConfig() {
   const d = root.dataset;
@@ -24,18 +24,14 @@ function readConfig() {
 
 btn.addEventListener("click", () => {
   btn.disabled = true;
-  appendLog(log, "spawning prover worker");
+  event("zktls.action.start.click");
   const worker = startWorker("/assets/zktls.worker.mjs", (msg) => {
-    if (msg.kind === "log") {
-      appendLog(log, msg.line);
-    } else if (msg.kind === "result") {
-      appendLog(log, "ZKTLS_RESULT " + JSON.stringify(msg.result));
-      console.log("ZKTLS_RESULT " + JSON.stringify(msg.result));
+    if (msg.kind === "result") {
+      event("zktls.notarize.done", msg.result);
       worker.terminate();
       btn.disabled = false;
     } else if (msg.kind === "error") {
-      appendLog(log, "ZKTLS_ERROR " + msg.message);
-      console.error("ZKTLS_ERROR " + msg.message);
+      eventErr("zktls.notarize.failed", { message: msg.message });
       worker.terminate();
       btn.disabled = false;
     }

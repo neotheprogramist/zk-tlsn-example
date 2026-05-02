@@ -1,10 +1,10 @@
 import init, { Prover } from "/assets/wasm/zkp.js";
+import { eventErr } from "./log.mjs";
 import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
 
 const post = (msg) => self.postMessage(msg);
-const log = (line) => post({ kind: "log", line });
 
 let prover = null;
 
@@ -28,22 +28,32 @@ self.addEventListener("message", async (ev) => {
       case "prove_base": {
         const p = await ensureProver();
         const summary = p.prove_base();
+        const verifyT0 = performance.now();
+        const verified = p.verify_current();
+        const verifyMs = performance.now() - verifyT0;
         post({
           kind: "base_done",
           counter: summary.counter,
           proveMs: summary.prove_ms,
           sizeBytes: summary.proof_size_bytes,
+          verified,
+          verifyMs,
         });
         break;
       }
       case "prove_step": {
         const p = await ensureProver();
         const summary = p.prove_step();
+        const verifyT0 = performance.now();
+        const verified = p.verify_current();
+        const verifyMs = performance.now() - verifyT0;
         post({
           kind: "step_done",
           counter: summary.counter,
           proveMs: summary.prove_ms,
           sizeBytes: summary.proof_size_bytes,
+          verified,
+          verifyMs,
         });
         break;
       }
@@ -54,7 +64,7 @@ self.addEventListener("message", async (ev) => {
         break;
       }
       default:
-        log("unknown message kind=" + msg.kind);
+        eventErr("zkp.worker.message.unknown", { kind: msg.kind });
     }
   } catch (err) {
     post({ kind: "error", message: err && err.message ? err.message : String(err) });

@@ -16,11 +16,10 @@ content %}
   <h1>zktls — browser WASM prover</h1>
   <p>
     Transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to
-    <em>{{ to_user }}</em> (tx_id = {{ tx_id }}).
+    <em>{{ to_user }}</em> (tx_id = {{ tx_id }}). Open DevTools console for the structured event
+    stream.
   </p>
   <button data-role="start">Start attestation</button>
-  <h2>Log</h2>
-  <pre data-role="log"></pre>
 </main>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zktls.main.mjs"></script>

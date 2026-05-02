@@ -5,7 +5,8 @@ content %}
 <p>
   Each step's proof verifies the previous proof in-circuit and binds the new counter via
   <code>n_new = prev_n + 1</code>. Proof generation takes several seconds per step on this machine;
-  verification (auto-run after every prove) is much faster.
+  verification (auto-run after every prove) is much faster. Open DevTools console for the structured
+  event stream.
 </p>
 
 <section class="kv-grid">
@@ -21,9 +22,6 @@ content %}
 
     <dt>Last proof size</dt>
     <dd data-role="last-size">—</dd>
-
-    <dt>Status</dt>
-    <dd data-role="status" class="status-idle">idle</dd>
   </dl>
 </section>
 
@@ -33,9 +31,6 @@ content %}
   <button data-role="prove" disabled>Prove</button>
   <button data-role="reset">Reset</button>
 </p>
-
-<h2>Log</h2>
-<pre data-role="log"></pre>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zkp.main.mjs"></script>
 {% endblock %}

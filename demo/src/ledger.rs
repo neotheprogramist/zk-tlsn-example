@@ -49,7 +49,7 @@ pub async fn serve(cfg: DemoServerConfig, state: AppState) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", cfg.listen_addr))?;
 
-    tracing::info!(listen_addr = %cfg.listen_addr, "TLS demo server listening");
+    tracing::info!(listen_addr = %cfg.listen_addr, "demo.ledger.listening");
 
     loop {
         let (stream, addr) = listener
@@ -59,10 +59,10 @@ pub async fn serve(cfg: DemoServerConfig, state: AppState) -> Result<()> {
         let service = Arc::clone(&service);
         let server_config = server_config.clone();
 
-        tracing::info!(%addr, "Accepted connection");
+        tracing::info!(%addr, "demo.ledger.connection.accepted");
         tokio::spawn(async move {
             if let Err(error) = handle_connection(service, server_config, stream).await {
-                tracing::error!(error = %error, "Connection error");
+                tracing::error!(error = %error, "demo.ledger.connection.error");
             }
         });
     }
@@ -407,10 +407,10 @@ async fn get_attestation(
     let tx_id: u64 = req
         .param("tx_id")
         .ok_or(ApiError::MissingPathParam("tx_id"))?;
-    info!(tx_id, "GET /api/attestations");
+    info!(tx_id, "demo.ledger.attestations.lookup");
     let ledger = state(depot).ledger.read().await;
     ledger
         .attestation(tx_id)
-        .inspect_err(|e| warn!(tx_id, error = %e, "Attestation lookup failed"))
+        .inspect_err(|e| warn!(tx_id, error = %e, "demo.ledger.attestations.lookup.failed"))
         .map(Json)
 }

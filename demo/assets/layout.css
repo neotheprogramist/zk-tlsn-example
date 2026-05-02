@@ -70,17 +70,3 @@ pre {
 .kv-grid dd {
   margin: 0;
 }
-
-.status-idle {
-  opacity: 0.7;
-}
-.status-running {
-  color: #c08400;
-}
-.status-ok {
-  color: #1a7f37;
-}
-.status-err {
-  color: #b42318;
-  font-weight: bold;
-}

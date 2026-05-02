@@ -120,7 +120,7 @@ fn parse_role(line: &str) -> Result<Role, ConnectError> {
 #[async_trait]
 impl Writer for ConnectError {
     async fn write(self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
-        tracing::warn!(error = %self, "connect handshake failed");
+        tracing::warn!(error = %self, "demo.connect.handshake.failed");
         let status = match &self {
             Self::StateMissing => StatusError::internal_server_error(),
             _ => StatusError::bad_gateway(),
@@ -137,7 +137,7 @@ pub async fn handle(req: &mut Request, depot: &mut Depot) -> Result<(), ConnectE
         .clone();
 
     let session = req.web_transport_mut().await?;
-    tracing::debug!("connect: session handshake ready");
+    tracing::debug!("demo.connect.session.ready");
 
     let verified = Arc::new(AtomicBool::new(false));
 
@@ -145,17 +145,17 @@ pub async fn handle(req: &mut Request, depot: &mut Depot) -> Result<(), ConnectE
         let accepted = match session.accept_bi().await {
             Ok(Some(accepted)) => accepted,
             Ok(None) => {
-                tracing::debug!("connect: session closed");
+                tracing::debug!("demo.connect.session.closed");
                 return Ok(());
             }
             Err(err) if verified.load(Ordering::SeqCst) => {
-                tracing::debug!(%err, "connect: session ended after notarization");
+                tracing::debug!(%err, "demo.connect.session.ended_after_notarization");
                 return Ok(());
             }
             Err(err) => return Err(err.into()),
         };
         let proto::webtransport::server::AcceptedBi::BidiStream(_, stream) = accepted else {
-            tracing::warn!("connect: expected bidirectional stream, dropping");
+            tracing::warn!("demo.connect.stream.not_bidirectional");
             continue;
         };
 
@@ -164,7 +164,7 @@ pub async fn handle(req: &mut Request, depot: &mut Depot) -> Result<(), ConnectE
         tokio::spawn(async move {
             let (wt_send, wt_recv) = proto::quic::BidiStream::split(stream);
             if let Err(err) = dispatch_stream(wt_recv, wt_send, &proxy_config, &verified).await {
-                tracing::warn!(%err, "connect: stream failed");
+                tracing::warn!(%err, "demo.connect.stream.failed");
             }
         });
     }
@@ -186,7 +186,7 @@ where
             if !leftover.is_empty() {
                 tracing::warn!(
                     leftover_bytes = leftover.len(),
-                    "VERIFY stream had bytes before TLSN session; proceeding"
+                    "demo.connect.verify.stream.leftover"
                 );
             }
             let joined = tokio::io::join(ChainedRead::new(leftover, wt_recv), wt_send);
@@ -226,7 +226,7 @@ where
     let mut tcp = tokio::net::TcpStream::connect(proxy_config.allowed_target)
         .await
         .map_err(ConnectError::TcpConnect)?;
-    tracing::debug!(target = %proxy_config.allowed_target, "connect(proxy): tcp connected");
+    tracing::debug!(target = %proxy_config.allowed_target, "demo.connect.proxy.tcp_connected");
 
     let (tcp_read, mut tcp_write) = tcp.split();
 
@@ -345,7 +345,7 @@ where
         commitment_count: output.transcript_commitments.len(),
         message: "Attestation-only flow completed",
     };
-    info!(success = true, "Sending verification outcome");
+    info!(success = true, "zktls.verifier.outcome.sent");
     write_json_frame(&mut io, &outcome).await?;
     io.close().await?;
     Ok(())
@@ -389,15 +389,19 @@ fn log_verifier_output(output: &VerifierOutput) {
         commitment_count = commitments.len(),
         parsed_request = ?output.parsed_request,
         parsed_response = ?output.parsed_response,
-        "Received notarization transcript from prover"
+        "zktls.notarize.transcript.received"
     );
     info!(
-        "verifier-view REQUEST ({} bytes; revealed = visible char, # = committed-not-revealed, · = redacted):\n{request_view}",
-        sent.len(),
+        direction = "request",
+        bytes = sent.len(),
+        body = ?request_view,
+        "zktls.verifier.view"
     );
     info!(
-        "verifier-view RESPONSE ({} bytes; revealed = visible char, # = committed-not-revealed, · = redacted):\n{response_view}",
-        received.len(),
+        direction = "response",
+        bytes = received.len(),
+        body = ?response_view,
+        "zktls.verifier.view"
     );
 }
 

@@ -100,7 +100,7 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         listen = %listen_authority,
         cert_sha256 = %certificate.fingerprint_hex,
         allowed_target = %config.allowed_target,
-        "service: listening on https://{listen_authority}/"
+        "demo.service.listening"
     );
 
     let rustls_config: RustlsConfig = certificate.rustls_config();
@@ -274,7 +274,7 @@ struct ZkpTemplate;
 #[async_trait]
 impl Writer for ServeError {
     async fn write(self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
-        tracing::error!(error = %self, "service request failed");
+        tracing::error!(error = %self, "demo.service.request.failed");
         res.render(StatusError::internal_server_error());
     }
 }

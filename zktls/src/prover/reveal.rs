@@ -159,7 +159,7 @@ fn apply_disclosure(
         range_start = range.start,
         range_end = range.end,
         preview = %preview_range(source, range),
-        "Applied transcript disclosure rule"
+        "zktls.reveal.range"
     );
     Ok(())
 }

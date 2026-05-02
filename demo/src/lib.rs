@@ -7,7 +7,10 @@ use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 use thiserror::Error;
-use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan};
+use tracing_subscriber::{
+    EnvFilter,
+    fmt::{format::FmtSpan, time::UtcTime},
+};
 
 static LOGGING_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -32,13 +35,17 @@ pub fn init_logging() -> Result<()> {
 }
 
 fn try_init_logging(filter: &str) -> Result<(), LoggingError> {
-    let filter = EnvFilter::try_new(filter)?;
+    let filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(filter))?;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
+        .with_timer(UtcTime::rfc_3339())
+        .with_target(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_level(true)
+        .with_ansi(false)
         .with_span_events(FmtSpan::NONE)
+        .compact()
         .try_init()?;
     Ok(())
 }

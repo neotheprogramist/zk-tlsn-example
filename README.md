@@ -3,7 +3,7 @@
 Two browser-WASM ZK demos sharing one local server:
 
 - **`zktls`** (`/zktls`) — a WASM prover runs MPC-TLS against a small fiat-transfer ledger and produces a selectively disclosed attestation that a native Rust verifier validates.
-- **`zkp`** (`/zkp`) — a recursive STWO counter. Click _Generate base proof_, then alternate _Increment_ and _Prove_; each step's proof verifies the previous proof in-circuit (`circuits-stark-verifier`) and binds the new counter via the constraint `n_new = prev_n + 1`. Both proving and verification happen entirely in the browser via stwo + stwo-circuits.
+- **`zkp`** (`/zkp`) — a recursive STWO counter. Click _Generate base proof_, then alternate _Increment_ and _Prove_; each step's proof verifies the previous proof in-circuit (`circuits-stark-verifier`) and binds the new counter via the constraint `n_new = prev_n + 1`. After every prove the Worker also runs a host-side STARK verifier (`zkp::verify::verify_record`) that calls `stwo::core::verifier::verify` against the freshly produced proof and binds `claim.output_values[0]` to the prover-tracked counter. Both proving and verification happen entirely in the browser.
 
 `/` is a landing page with links to each demo. Proof of concept, not production code. Engineering standards live in `GUIDELINES.md`.
 
@@ -16,7 +16,7 @@ demo/       HTTP/3 service, ledger, landing — depends on zktls (native side)
 scripts/    E2E harness + per-flow drivers
 ```
 
-Both wasm crates produce `<crate>_bg.wasm` consumed by `demo/assets/wasm/`. The audit boundary is `zktls::verifier` (native, gated `cfg(not(target_arch = "wasm32"))`).
+Both wasm crates produce `<crate>_bg.wasm` consumed by `demo/assets/wasm/`. The audit boundary covers `zktls::verifier` (native, gated `cfg(not(target_arch = "wasm32"))`) and the `zkp` recursion glue (`zkp::recursion`, `zkp::verify`); see the [Audit scope](#audit-scope) table below.
 
 ## Prerequisites
 
@@ -83,23 +83,23 @@ Always `--release`. MPC-TLS is heavily optimisation-sensitive; debug builds make
 3. **Open Chrome** at `https://localhost:8444/`. Accept the self-signed cert (Advanced → Proceed). Click **Open zktls demo →** (or navigate directly to `https://localhost:8444/zktls`). The cert SAN covers `localhost`, `127.0.0.1`, and `::1` — any works.
 4. **Open DevTools → Console** before clicking.
 5. **Click Start attestation.** Chrome spawns a Worker, loads the wasm prover, opens two WebTransport bidi streams, and runs MPC-TLS against the ledger over the second stream while the verifier watches the first.
-6. **Watch the console.** After MPC-TLS finishes (≈3–5 s) you'll see, in order:
-   - `prover-view REQUEST (NN bytes, full): GET /api/attestations/1 …`
-   - `prover-view RESPONSE (NN bytes, full): HTTP/1.1 200 OK …`
-   - `ZKTLS_RESULT {"flow":"notarize-wasm","server_name":"localhost","to_username":"treasury","amount":25,"eligible_for_mint":true,"commitment_count":2}`
-7. **Cross-check the binary log.** The terminal shows:
-   - `verifier-view REQUEST (NN bytes; revealed = visible char, # = committed-not-revealed, · = redacted): …`
-   - `verifier-view RESPONSE (…): …`
-   - `Sending verification outcome success=true`
+6. **Watch the console.** Logs use the shared `{ts} LEVEL event_name k=v` grammar (see [Logging](#logging)). After MPC-TLS finishes (≈3–5 s) you'll see, in order:
+   - `… INFO zktls.prover.view direction=request bytes=87 body="GET /api/attestations/1 HTTP/1.1\n…"`
+   - `… INFO zktls.prover.view direction=response bytes=312 body="HTTP/1.1 200 OK\n…"`
+   - `… INFO zktls.notarize.done flow=notarize-wasm server_name=localhost to_username=treasury amount=25 eligible_for_mint=true commitment_count=2`
+7. **Cross-check the binary log.** The terminal shows the same grammar:
+   - `… INFO zktls.verifier.view direction=request bytes=87 body="…"`
+   - `… INFO zktls.verifier.view direction=response bytes=312 body="…"`
+   - `… INFO zktls.verifier.outcome.sent success=true`
 
-   Three byte states in `verifier-view`:
+   The `body` field is a JSON-quoted multi-line string with three byte states:
    - **visible char** — revealed: the verifier sees the actual byte.
    - **`#`** — committed but not revealed: pinned by a hash commitment, value hidden. After `"attestation":` you should see exactly **32 `#`**, matching `zktls::FiatTransferAttestation` (`ATTESTATION_LEN` = 10 + 10 + 12).
    - **`·`** — neither revealed nor committed.
 
    Distinction comes from `output.transcript.sent_authed()` / `received_authed()` (revealed ranges) and the `Hash` commitments in `output.transcript_commitments`.
 
-8. **Failure mode:** `ZKTLS_ERROR …` instead of `ZKTLS_RESULT …` — the prover or verifier rejected; the message contains the cause. Binary stderr shows the matching server-side error.
+8. **Failure mode:** `… ERROR zktls.notarize.failed message="…"` — the prover or verifier rejected; the field carries the cause. Binary stderr shows the matching server-side error.
 
 ## Manual walkthrough — zkp (recursive STWO counter)
 
@@ -107,95 +107,126 @@ Always `--release`. MPC-TLS is heavily optimisation-sensitive; debug builds make
 2. **Start the binary** (`cargo run --release --bin zktlsn`). Wait for the two `listening` log lines on `:8444`.
 3. **Open Chrome** at `https://localhost:8444/`, accept the cert, click **Open zkp demo →** (or navigate to `https://localhost:8444/zkp`). The page shows a key/value grid (state, steps proven, last prove time, last proof size, status), four buttons, and a scrolling log.
 4. **Open DevTools → Console** before clicking.
-5. **Click Generate base proof.** After ≈6–8 s the state shows `0 ✓ verified` and the console emits `ZKP_RESULT {"kind":"base","counter":0,"prove_ms":NNNN,"proof_size_bytes":~51000,"steps_proven":1}`.
+5. **Click Generate base proof.** After the prove + verify cycle the state shows `0 ✓ verified` and the console emits `… INFO zkp.proof.done kind=base counter=0 prove_ms=NNNN proof_size_bytes=NNNN verified=true verify_ms=NNNN steps_proven=1`. The Worker calls `Prover::verify_current()` immediately after `prove_base()`, so the `verified` field is a real host-side STARK check (`zkp::verify::verify_record`), not a label.
 6. **Click Increment.** State shows `1 (pending — click Prove)`.
-7. **Click Prove.** Status flips to `proving 0→1…`. The worker builds the inductive circuit: `circuits-stark-verifier::verify(...)` re-checks the prev proof, then `n_new = prev_n + 1` is enforced via `eq(context, n_new_var, add(context, prev_n_var, one))`. After ≈7–8 s `ZKP_RESULT {"kind":"step","counter":1,…}` lands.
+7. **Click Prove.** The worker builds the inductive circuit: `circuits-stark-verifier::verify(...)` re-checks the prev proof, then `n_new = prev_n + 1` is enforced via `eq(context, n_new_var, add(context, prev_n_var, one))`. The Worker again runs `verify_current()` and emits `… INFO zkp.proof.done kind=step counter=1 prev_counter=0 verified=true …`.
 8. **Repeat Increment + Prove** as desired. From step 2 onward prove times stabilise — the constant-size-recursion punchline.
 9. **Click Reset** to drop in-memory state. State doesn't persist across reloads.
-10. **Failure mode:** `ZKP_ERROR …` (status badge red) — the worker rejected the prove; the line carries the exception.
+10. **Failure mode:** `… ERROR zkp.proof.failed message="…"` — the worker rejected the prove or the host verifier rejected the proof; the field carries the exception.
 
-The chain is fully deterministic — same trivial base proof every time, same step-shape proofs from step 1 onward, same `~48–51 KB` band.
+The chain is fully deterministic — same trivial base proof every time, same step-shape proofs from step 1 onward. Proof size is set by the explicit `PcsConfig` in `zkp::recursion::tuned_pcs_config` (`pow_bits = 20`, `log_blowup = 1`, `n_queries = 19` ≈ 39-bit FRI soundness); switching back to `PcsConfig::default()` would shrink proofs but drop soundness to ~13 bits. 39 bits is the WASM ceiling — a higher `n_queries` trips an upstream `unreachable` panic inside the in-circuit step verifier in the browser; the host `cargo test` accepts any setting. See the doc comment on `tuned_pcs_config` for the trade-off.
+
+## Logging
+
+One event grammar across the whole stack:
+
+```
+{rfc3339-ts}  {LEVEL} {event_name} key=value key=value ...
+```
+
+- `event_name` is dot-namespaced (e.g. `demo.transfer.seeded`, `zktls.notarize.done`, `zkp.prove.step.done`, `runtime.page.error`).
+- Field values are bare for `[A-Za-z0-9_.-]+`; anything else is JSON-stringified (`body="multi\nline"`).
+- Multi-line bodies (the rendered `verifier-view`/`prover-view` transcripts) live inside one quoted field; assertions key off `bytes=` / `direction=` and parse the body back via `JSON.parse`.
+
+Three producers, one grammar:
+
+- **Rust native** — `tracing-subscriber::fmt().compact().with_timer(UtcTime::rfc_3339()).with_ansi(false)`. Initialised once in `demo/src/lib.rs`. Override the filter with `RUST_LOG=…`.
+- **Rust wasm** (`zkp/src/lib.rs`) — `event_info(name, &[(key, &display)])` builds the same line and ships it through `web_sys::console::log_1`.
+- **JS** (`demo/assets/log.mjs`) — `event(name, fields)` / `eventWarn` / `eventErr` build the same line and call `console.log` / `console.error`.
+
+The Playwright harness (`scripts/lib/harness.mjs`) parses lines via `parseEventLine`, then `expectEvent`, `expectEventInOrder`, and `expectEventCount` match structurally on `event` + `fields`. Both browser (CDP-backed `page.on("console")`) and backend (`spawnCargoBinary` stdout/stderr) feed the same parser. There is no in-page log widget — DevTools console is the source of truth.
 
 ## Tests
 
-The repo's correctness signal is the two E2E scripts. There are no `cargo test` unit tests — they would only re-cover what the E2E flow already exercises end-to-end, and the audit narrative is "click a button, watch the trust boundary do its thing." Run both before merging:
+The repo's correctness signal is the two E2E scripts plus the `zkp` host integration tests. Run all three before merging:
 
 ```bash
+RUSTUP_TOOLCHAIN=nightly-2025-07-14 cargo test -p zkp --release
 node scripts/e2e-zktls.mjs    # drives /zktls
 node scripts/e2e-zkp.mjs      # drives /zkp
 ```
 
-Both spawn the `zktlsn` binary, launch headed Chromium (Playwright is `npx`-installed on first run), drive the demo through real button clicks, and assert against three observation surfaces:
+`cargo test -p zkp` runs `tests/recursion.rs` (3-step happy-path: base → step → step + host verifier on each) and `tests/mutations.rs` (4 transcript-mutation tripwires that assert the prover or verifier rejects when any one of `claim.output_values[0]`, `params.n_blake_gates`, `params.output_addresses[0]`, or `stark_proof.commitments[0]` is corrupted). It needs the same nightly toolchain the wasm build uses because `stwo` requires nightly features.
 
-1. **JSON results.** The structured `ZKTLS_RESULT` / `ZKP_RESULT` lines on the page console.
-2. **Backend tracing output.** The `zktlsn` binary's stdout/stderr, captured line-by-line.
-3. **Browser DevTools Protocol stream.** Every `console.*` call, every `pageerror`, every `requestfailed` event from Playwright's CDP-backed event handlers.
+Both `e2e-*.mjs` scripts spawn the `zktlsn` binary, launch headed Chromium (Playwright is `npx`-installed on first run), drive the demo through real button clicks, and assert against three observation surfaces. All assertions go through the structured event grammar (see [Logging](#logging)) — `expectEvent`, `expectEventInOrder`, `expectEventCount` over a parsed `{ts, level, event, fields}` record:
+
+1. **Browser DevTools Protocol stream.** Every `console.*` call lands in the harness as a candidate event; the parser keys off `event=` to skip Playwright noise.
+2. **Backend tracing output.** The `zktlsn` binary's stdout/stderr, parsed with the same grammar.
+3. **Page errors / failed requests.** `pageerror` and `requestfailed` events from Playwright's CDP handlers — neither must occur.
 
 ### `e2e-zktls.mjs` — zktls flow
 
-Result-JSON assertions (one `ZKTLS_RESULT`):
+Result-event assertions (one `zktls.notarize.done`):
 
 - `flow=notarize-wasm`, `server_name=localhost`, `to_username=treasury`, `amount=25`, `eligible_for_mint=true`, `commitment_count=2`.
 
-Backend tracing (in order):
+Backend events (in order):
 
-- ledger seed line (`tx_id=1 from=alice to=treasury amount=25`),
-- `service: listening on https://...`, `listening [HTTP/3.0]`, `listening [HTTP/1.1]`,
-- ≥1 `Accepted connection`, exactly one `starting MPC-TLS` → `finished MPC-TLS`,
-- exactly one `GET /api/attestations tx_id=1` (ledger hit),
-- one `Received notarization transcript` with `server_name=localhost`, `commitment_count=2`, `sent_len=87`, `received_len=312`,
-- one `verifier-view REQUEST (87 bytes;` and one `verifier-view RESPONSE (312 bytes;`,
-- response-body line shows **exactly 32 `#`** after `"attestation":` (= `ATTESTATION_LEN`), plus revealed `"toUsername":"treasury"` and `"eligibleForMint":true`,
-- one `Sending verification outcome success=true`,
-- no `ERROR` lines beyond Chrome's harmless `tls handshake eof` TCP probe.
+- `demo.transfer.seeded tx_id=1 from=alice to=treasury amount=25`,
+- `demo.service.listening`, `demo.ledger.listening listen_addr=127.0.0.1:8443`,
+- ≥1 `demo.ledger.connection.accepted`, exactly one `demo.ledger.attestations.lookup tx_id=1`,
+- one `zktls.notarize.transcript.received` with `server_name=localhost`, `commitment_count=2`, `sent_len=87`, `received_len=312`,
+- one `zktls.verifier.view direction=request bytes=87` and one `direction=response bytes=312`,
+- the response-direction `body=` field (a JSON-quoted multi-line string) contains exactly 32 `#` after `"attestation":` (= `ATTESTATION_LEN`), plus revealed `"toUsername":"treasury"` and `"eligibleForMint":true`,
+- one `zktls.verifier.outcome.sent success=true`,
+- no `ERROR` lines beyond Chrome's harmless `demo.ledger.connection.error error=tls handshake eof` TCP probe.
 
-Browser CDP console (in order):
+Browser console events (in order):
 
-- worker boot sequence: `spawning prover worker`, `initialising WASM`, `starting web-spawn worker pool`, `opening WebTransport session`, `WebTransport session ready`, `creating verifier + proxy bidi streams`, `role preambles written`, `constructing Prover`, `running prover.prove_streams`,
-- `prover-view REQUEST (87 bytes, full):` and `prover-view RESPONSE (312 bytes, full):` — the latter contains `HTTP/1.1 200 OK`, `"toUsername":"treasury"`, and `"amount":25`,
-- `WebTransport session closed`, then exactly one `ZKTLS_RESULT`,
-- zero `ZKTLS_ERROR`, zero `pageerror`, zero `requestfailed`, zero unexpected `console.error`.
+- `zktls.action.start.click`, `zktls.worker.wasm.init.start` → `done`, `zktls.worker.pool.start` → `ready`, `zktls.transport.session.opening` → `ready`, `zktls.transport.streams.creating` → `preambles_written`, `zktls.prover.constructing` → `prove_streams.start` → `prove_streams.done`,
+- `zktls.prover.view direction=request bytes=87` and `direction=response bytes=312` — the response-direction `body` contains `HTTP/1.1 200 OK`, `"toUsername":"treasury"`, and `"amount":25`,
+- `zktls.transport.session.closed`, then exactly one `zktls.notarize.done`,
+- zero `zktls.notarize.failed`, zero `runtime.page.error`, zero `pageerror`, zero `requestfailed`.
 
 ### `e2e-zkp.mjs` — zkp flow
 
-Default `N=3` inductive steps; override with `ZKP_E2E_STEPS`. Result-JSON assertions (one base + N steps):
+Default `N=3` inductive steps; override with `ZKP_E2E_STEPS`. Result-event assertions (one base + N steps of `zkp.proof.done`):
 
 - counter chain advances by exactly `+1` per Increment/Prove pair, ending at `N`,
-- every `proof_size_bytes ∈ [5_000, 500_000]`, every `prove_ms ∈ [0, 600_000]`,
+- every `proof_size_bytes ∈ [5_000, 1_000_000]`, every `prove_ms ∈ [0, 600_000]`, every `verify_ms ∈ [0, 600_000]`,
+- every `verified=true` (pinned in addition to `expectEventCount({event:"zkp.proof.failed"}, 0)`, so a silent boolean flip can't slip past),
 - prove times for steps 2+ stay within ±50 % of their mean (uniform-recursion sanity check),
-- the page-displayed state grid agrees with the console-emitted final counter.
+- the page-displayed state grid agrees with the final counter.
 
-Backend tracing (zkp runs entirely in the browser, so backend just serves files):
+Backend events (zkp runs entirely in the browser, so backend just serves files):
 
-- `service: listening on...`, `listening [HTTP/3.0]`, `listening [HTTP/1.1]`,
-- `starting MPC-TLS` and `Received notarization transcript` must **not** appear,
+- `demo.service.listening` is present,
+- no `zktls.notarize.transcript.received` (must not appear),
 - no `ERROR` lines beyond the allowed Chrome TCP probe.
 
-Browser CDP console:
+Browser console events (in order):
 
-- page boot: `loading wasm…`, `worker ready (wasm init …)`, `→ prove_base`, `zkp: prove_base start` / `done ms=N size=N`, `ZKP_RESULT {"kind":"base"}`,
-- per step `i` in 1..N: `+ increment (pending i)`, `→ prove_step (i-1)→i`, `zkp: prove_step from n=(i-1) start`, `zkp: prove_step n=(i-1)->i done ms=N size=N`, `step (i-1)→i (verifies step-shape): prove ... size ... B`, `ZKP_RESULT {"kind":"step","counter":i,…}`,
-- exactly 1 `ZKP_RESULT base` + exactly N `ZKP_RESULT step`, zero `ZKP_ERROR`, zero `pageerror`, zero `requestfailed`.
+- page boot: `zkp.page.loading`, `zkp.worker.ready`, `zkp.action.prove_base.click`, `zkp.prove.base.start` → `zkp.prove.base.done` → `zkp.verify.done` → `zkp.proof.done kind=base`,
+- per step `i` in 1..N: `zkp.action.increment.click pending=i`, `zkp.action.prove_step.click prev_counter=i-1 counter=i`, `zkp.prove.step.start prev_counter=i-1`, `zkp.prove.step.done prev_counter=i-1 counter=i`, `zkp.verify.done`, `zkp.proof.done kind=step counter=i`,
+- exactly 1 `zkp.proof.done kind=base` + exactly N `zkp.proof.done kind=step`, zero `zkp.proof.failed`, zero `runtime.page.error`, zero `pageerror`, zero `requestfailed`.
 
-After the loop, emits one `ZKP_E2E_RESULT { flow, final_counter, base_prove_ms, base_size_bytes, step_count, step_prove_ms[], step_size_bytes[] }` summary line and exits 0.
+After the loop, the harness prints a JSON summary `{ flow, final_counter, base_prove_ms, base_verify_ms, base_size_bytes, step_count, step_prove_ms[], step_verify_ms[], step_size_bytes[] }` for the human reader and exits 0.
 
 ## Audit scope
 
-| Component                        | Trust property enforced                                                                                    |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `zktls::verifier`                | Validates the MPC-TLS session, enforces transcript commitment policy, validates disclosed transfer fields. |
-| `zktls::flow`                    | Canonical request, reveal config, and TLS config for the fixed transfer-attestation flow.                  |
-| `zktls::FiatTransferAttestation` | 32-character zero-padded decimal attestation encoding shared by ledger and verifier.                       |
+| Component                        | Trust property enforced                                                                                                                                                                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `zktls::verifier`                | Validates the MPC-TLS session, enforces transcript commitment policy, validates disclosed transfer fields.                                                                                                                                 |
+| `zktls::flow`                    | Canonical request, reveal config, and TLS config for the fixed transfer-attestation flow.                                                                                                                                                  |
+| `zktls::FiatTransferAttestation` | 32-character zero-padded decimal attestation encoding shared by ledger and verifier.                                                                                                                                                       |
+| `zkp::recursion`                 | Base AIR fixes `n=0`; step AIR verifies the prev proof in-circuit and constrains `n_new = prev_n + 1`; rejects the one M31 boundary that wraps; PcsConfig pinned to ~39-bit FRI soundness (the WASM ceiling — see `tuned_pcs_config` doc). |
+| `zkp::verify`                    | Host-side STARK verifier that re-runs `stwo::core::verifier::verify` against the produced `CircuitProof` and binds `claim.output_values[0]` to `record.counter`.                                                                           |
 
-Out of scope: `zktls::prover`, `zktls::parser`, `zktls::wasm`, `demo/*`, `zkp/*`, `scripts/*.mjs`, Playwright. Those exercise the flows; they are not the trust boundary. The `zkp` demo's trust properties are the upstream `stwo` + `stwo-circuits` libraries', not this repo's.
+Out of scope: `zktls::prover`, `zktls::parser`, `zktls::wasm`, `demo/*`, `scripts/*.mjs`, Playwright. Those exercise the flows; they are not the trust boundary.
+
+`zkp/*` ships its own host-side STARK verifier (`zkp::verify::verify_record`, exposed to JS as `Prover::verify_current`) and is exercised by `zkp/tests/recursion.rs` (3-step happy-path) and `zkp/tests/mutations.rs` (4 transcript-mutation tripwires). The crate uses an explicit `PcsConfig` (`pow_bits = 20`, `log_blowup = 1`, `n_queries = 19` ≈ 39-bit FRI soundness) — well below an audit-grade 96 bits, but the highest setting the in-circuit step verifier tolerates inside browser WASM today (higher hits an upstream `unreachable` panic; see the doc comment on `tuned_pcs_config` and upstream [stwo#1311 — "Uncaught panics on invalid FRI inputs"](https://github.com/starkware-libs/stwo/issues/1311)). The audit-grade soundness gap is also tracked upstream as [stwo#1399 — "Necessity to write a comment in PcsConfig::default to indicate that it is insecure"](https://github.com/starkware-libs/stwo/issues/1399), which calls out that `PcsConfig::default()` should be renamed `default_insecure`. Cryptographic soundness still bottoms out on the upstream `stwo` + `stwo-circuits` primitives; the recursion glue, the prover-claim/host-verifier binding, and the counter-overflow guard are local concerns and reviewable here.
 
 ## Lint and format
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings && \
+cargo clippy --workspace --exclude zkp --all-targets -- -D warnings && \
+  RUSTUP_TOOLCHAIN=nightly-2025-07-14 cargo clippy -p zkp --all-targets -- -D warnings && \
+  RUSTUP_TOOLCHAIN=nightly-2025-07-14 cargo clippy -p zkp --target wasm32-unknown-unknown --all-targets -- -D warnings && \
   cargo +nightly-2025-07-14 fmt --all -- --check && \
   npx --yes oxlint && npx --yes oxfmt --check
 ```
+
+`zkp` is split off because its host build now pulls `stwo` (for the host verifier `zkp::verify::verify_record`), and `stwo` needs the same nightly toolchain the wasm build uses. Everything else stays on stable, where `salvo` requires `1.92`+.
 
 Auto-fix formatting in place:
 

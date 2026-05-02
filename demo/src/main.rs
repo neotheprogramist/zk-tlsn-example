@@ -63,7 +63,7 @@ fn main() {
         .build()
         .expect("failed to construct multi-thread tokio runtime");
     if let Err(err) = runtime.block_on(run(cli)) {
-        error!(error = %format!("{err:#}"), "zktlsn run failed");
+        error!(error = %format!("{err:#}"), "zktlsn.run.failed");
         std::process::exit(1);
     }
 }
@@ -101,7 +101,7 @@ async fn run(cli: Cli) -> Result<()> {
         from = %transfer.from_username,
         to = %transfer.to_username,
         amount = transfer.amount,
-        "seeded demo transfer"
+        "demo.transfer.seeded"
     );
 
     let server_cert_der = get_or_create_cert_bytes(&cli.server_cert_path, &cli.server_key_path)
