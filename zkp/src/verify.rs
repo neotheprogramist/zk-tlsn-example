@@ -1,11 +1,12 @@
 //! Host-side verifier for `ProofRecord`.
 //!
-//! Mirrors the channel/commit sequence in `circuit_prover::prover::prove_circuit_with_precompute`
-//! and then hands off to `stwo::core::verifier::verify`. This is a real STARK
-//! verification — independent of the in-circuit verifier the recursion uses
-//! to chain proofs — and binds `record.counter` to `claim.output_values[0]`
-//! so a caller (JS, demo, host test) can rely on the counter value without
-//! trusting the prover.
+//! Mirrors the channel/commit sequence in
+//! `circuit_prover::prover::prove_circuit_with_precompute` and then hands off
+//! to `stwo::core::verifier::verify`. This is a real STARK verification —
+//! independent of the in-circuit verifiers the merge AIR uses to chain
+//! proofs — and binds `record.{lo, hi, count}` to
+//! `claim.output_values[0..3]` so a caller (JS, demo, host test) can rely on
+//! the public outputs without trusting the prover.
 
 use circuit_prover::prover::CircuitProof;
 use circuit_verifier::{
@@ -15,6 +16,7 @@ use stwo::{
     core::{
         air::{Component, Components},
         channel::{Channel, MerkleChannel},
+        fields::{m31::M31, qm31::QM31},
         pcs::CommitmentSchemeVerifier,
         vcs_lifted::blake2_merkle::{Blake2sM31MerkleChannel, Blake2sM31MerkleHasher},
         verifier::VerificationError,
@@ -34,12 +36,20 @@ pub enum VerifyError {
     /// the in-circuit verifier was sealed with.
     #[error("interaction-phase PoW nonce invalid")]
     InteractionPow,
-    /// `record.counter` does not match `claim.output_values[0]`. The proof
-    /// itself is valid but the asserted counter is a lie.
-    #[error(
-        "counter binding mismatch: record.counter = {record}, claim.output_values[0] = {claim}"
-    )]
-    CounterMismatch { record: u32, claim: String },
+    /// `claim.output_values` had fewer than 3 entries — the leaf/merge AIR
+    /// always emits exactly `(lo, hi, count)`. A different shape means the
+    /// proof was produced by a different circuit and shouldn't be accepted.
+    #[error("expected 3 output values (lo, hi, count); claim has {actual}")]
+    OutputCardinalityMismatch { actual: usize },
+    /// One of `record.{lo, hi, count}` does not match
+    /// `claim.output_values[i]`. The proof itself is valid but the asserted
+    /// outputs are a lie.
+    #[error("output binding mismatch at slot {slot}: record = {record}, claim = {claim}")]
+    OutputMismatch {
+        slot: &'static str,
+        record: u32,
+        claim: String,
+    },
     /// Underlying STARK verification failed.
     #[error(transparent)]
     Stark(#[from] VerificationError),
@@ -47,7 +57,7 @@ pub enum VerifyError {
 
 pub fn verify_record(record: &ProofRecord) -> Result<(), VerifyError> {
     verify_proof(&record.circuit_proof, &record.preprocessed)?;
-    bind_counter(record)?;
+    bind_outputs(record)?;
     Ok(())
 }
 
@@ -125,18 +135,27 @@ fn verify_proof(
     Ok(())
 }
 
-fn bind_counter(record: &ProofRecord) -> Result<(), VerifyError> {
-    let claim_value = record.circuit_proof.claim.output_values[0];
-    let expected: stwo::core::fields::qm31::QM31 = record.counter.into();
-    if claim_value != expected {
-        return Err(VerifyError::CounterMismatch {
-            record: m31_word(record.counter),
-            claim: format!("{claim_value:?}"),
+fn bind_outputs(record: &ProofRecord) -> Result<(), VerifyError> {
+    let outputs = &record.circuit_proof.claim.output_values;
+    if outputs.len() < 3 {
+        return Err(VerifyError::OutputCardinalityMismatch {
+            actual: outputs.len(),
         });
     }
+    bind_one("lo", record.lo, outputs[0])?;
+    bind_one("hi", record.hi, outputs[1])?;
+    bind_one("count", record.count, outputs[2])?;
     Ok(())
 }
 
-fn m31_word(value: stwo::core::fields::m31::M31) -> u32 {
-    value.0
+fn bind_one(slot: &'static str, host: M31, claim: QM31) -> Result<(), VerifyError> {
+    let expected: QM31 = host.into();
+    if claim != expected {
+        return Err(VerifyError::OutputMismatch {
+            slot,
+            record: host.0,
+            claim: format!("{claim:?}"),
+        });
+    }
+    Ok(())
 }

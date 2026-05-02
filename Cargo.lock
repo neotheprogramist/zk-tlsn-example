@@ -1191,7 +1191,7 @@ version = "0.1.0"
 source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
 dependencies = [
  "blake2",
- "hashbrown 0.15.5",
+ "hashbrown 0.17.0",
  "indexmap",
  "itertools 0.12.1",
  "num-traits",
@@ -1204,7 +1204,7 @@ version = "0.1.0"
 source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
 dependencies = [
  "circuits",
- "hashbrown 0.15.5",
+ "hashbrown 0.17.0",
  "indexmap",
  "itertools 0.12.1",
  "num-traits",

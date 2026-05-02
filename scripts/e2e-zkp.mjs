@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 // E2E: drive /zkp in headed Chromium and assert against the structured event
-// stream emitted by both the WASM prover (via web_sys::console) and the JS
-// page (via demo/assets/log.mjs). All assertions are structural — no magic
-// prefixes; the harness parses the shared `{ts} LEVEL event_name k=v`
-// grammar via parseEventLine.
+// stream emitted by the WASM prover (via web_sys::console), the JS scheduler
+// (`demo/assets/zkp.scheduler.mjs`), and the JS page (`demo/assets/log.mjs`).
+// All assertions are structural — no magic prefixes; the harness parses the
+// shared `{ts} LEVEL event_name k=v` grammar via parseEventLine.
+//
+// v1 architecture: single-worker pool (K=1). The test clicks Next N times
+// rapidly to verify queueing is non-blocking, then clicks Finish and asserts
+// the root proves a contiguous range with verified=true. N=4 is the minimum
+// that exercises the merge-of-merges recursion gate; override with
+// ZKP_E2E_LEAVES.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -20,25 +26,19 @@ import {
   waitForEvent,
 } from "./lib/harness.mjs";
 
-const STEPS = Number(process.env.ZKP_E2E_STEPS ?? "3");
-const STEP_TIMEOUT_MS = Number(process.env.ZKP_E2E_STEP_TIMEOUT_MS ?? "180000");
+const LEAVES = Number(process.env.ZKP_E2E_LEAVES ?? "4");
+const FINISH_TIMEOUT_MS = Number(process.env.ZKP_E2E_FINISH_TIMEOUT_MS ?? "300000");
+const STEP_TIMEOUT_MS = Number(process.env.ZKP_E2E_STEP_TIMEOUT_MS ?? "60000");
 const PROOF_SIZE_MIN_BYTES = 5_000;
-const PROOF_SIZE_MAX_BYTES = 1_000_000;
-const STEP_TIME_MAX_MS = 600_000;
-// `demo.ledger.connection.error error=tls handshake eof` is Chrome's TCP probe.
+const PROOF_SIZE_MAX_BYTES = 1_500_000;
+const PROVE_MS_MAX = 600_000;
 const ALLOWED_BACKEND_ERROR_PATTERN = /demo\.ledger\.connection\.error.*tls handshake eof/;
 
-const proofDone = (page, predicate, label) =>
-  waitForEvent({
-    page,
-    event: "zkp.proof.done",
-    errorEvents: ["zkp.proof.failed", "runtime.page.error"],
-    predicate,
-    label,
-    timeoutMs: STEP_TIMEOUT_MS,
-  });
-
 try {
+  if (!Number.isInteger(LEAVES) || LEAVES < 2) {
+    throw new Error(`ZKP_E2E_LEAVES must be an integer ≥ 2 (got ${LEAVES})`);
+  }
+
   for (const name of ["zktls_bg.wasm", "zkp_bg.wasm"]) {
     const p = path.join(process.cwd(), "demo/assets/wasm", name);
     if (!fs.existsSync(p)) throw new Error(`missing ${p}. Build the wasm first — see README.md`);
@@ -57,126 +57,94 @@ try {
   await page.goto(`https://${SERVICE_ADDR}/zkp`, { waitUntil: "load" });
   await waitForEvent({
     page,
-    event: "zkp.worker.ready",
+    event: "zkp.scheduler.booted",
     timeoutMs: 30_000,
-    label: "zkp.worker.ready",
+    label: "zkp.scheduler.booted",
   });
-  console.log("[harness] worker ready, starting recursion...");
+  console.log(`[harness] scheduler booted, queueing ${LEAVES} leaves...`);
 
-  // ─── Base proof ────────────────────────────────────────────────────────
-  console.log('[harness] clicking "Generate base proof"...');
-  const baseDone = proofDone(page, (f) => f.kind === "base", "zkp.proof.done kind=base");
-  await page.locator('[data-role="base"]').click();
-  const base = await baseDone;
-  assertEquals("base.counter", 0, base.counter);
-  assertEquals("base.steps_proven", 1, base.steps_proven);
-  assertEquals("base.verified", true, base.verified);
-  assertInRange(
-    "base.proof_size_bytes",
-    base.proof_size_bytes,
-    PROOF_SIZE_MIN_BYTES,
-    PROOF_SIZE_MAX_BYTES,
-  );
-  assertInRange("base.prove_ms", base.prove_ms, 0, STEP_TIME_MAX_MS);
-  assertInRange("base.verify_ms", base.verify_ms, 0, STEP_TIME_MAX_MS);
-  console.log(
-    `[harness] ✓ base counter=0 prove_ms=${base.prove_ms} verify_ms=${base.verify_ms} size=${base.proof_size_bytes}`,
-  );
-
-  // ─── Inductive steps ──────────────────────────────────────────────────
-  const stepResults = [];
-  for (let i = 1; i <= STEPS; i++) {
-    const stepDone = proofDone(
-      page,
-      (f) => f.kind === "step" && f.counter === i,
-      `zkp.proof.done kind=step counter=${i}`,
+  // ─── Click Next N times rapidly (non-blocking) ─────────────────────────
+  // Set up the leaf-proved waiter BEFORE any click so we don't miss events
+  // for fast leaves (Promise.all over per-index waiters).
+  const leafProvedWaits = [];
+  for (let i = 0; i < LEAVES; i++) {
+    leafProvedWaits.push(
+      waitForEvent({
+        page,
+        event: "zkp.scheduler.leaf.proved",
+        predicate: (f) => f.index === i,
+        errorEvents: ["zkp.scheduler.job.failed", "runtime.page.error", "zkp.finish.failed"],
+        timeoutMs: STEP_TIMEOUT_MS * LEAVES,
+        label: `zkp.scheduler.leaf.proved index=${i}`,
+      }),
     );
-    console.log(`[harness] clicking "Increment" then "Prove" for step ${i - 1}→${i}...`);
-    await page.locator('[data-role="increment"]').click();
-    await page.locator('[data-role="prove"]').click();
-    const step = await stepDone;
-    assertEquals(`step${i}.counter`, i, step.counter);
-    assertEquals(`step${i}.prev_counter`, i - 1, step.prev_counter);
-    assertEquals(`step${i}.steps_proven`, i + 1, step.steps_proven);
-    assertEquals(`step${i}.verified`, true, step.verified);
+  }
+  for (let i = 0; i < LEAVES; i++) {
+    await page.locator('[data-role="next"]').click();
+  }
+  console.log("[harness] all Next clicks submitted; awaiting leaf proofs...");
+
+  // Wait for ALL leaves to prove (in any order; FIFO + K=1 means they finish
+  // in submission order, but the assertion is shape-only).
+  const leafResults = await Promise.all(leafProvedWaits);
+  for (const f of leafResults) {
+    assertEquals(`leaf.proved[${f.index}].node_id present`, true, Number.isInteger(f.node_id));
+    assertInRange(`leaf.proved[${f.index}].prove_ms`, f.prove_ms, 0, PROVE_MS_MAX);
     assertInRange(
-      `step${i}.proof_size_bytes`,
-      step.proof_size_bytes,
+      `leaf.proved[${f.index}].size_bytes`,
+      f.size_bytes,
       PROOF_SIZE_MIN_BYTES,
       PROOF_SIZE_MAX_BYTES,
     );
-    assertInRange(`step${i}.prove_ms`, step.prove_ms, 0, STEP_TIME_MAX_MS);
-    assertInRange(`step${i}.verify_ms`, step.verify_ms, 0, STEP_TIME_MAX_MS);
-    stepResults.push(step);
-    console.log(
-      `[harness] ✓ step ${i - 1}→${i} prove_ms=${step.prove_ms} verify_ms=${step.verify_ms} size=${step.proof_size_bytes}`,
-    );
   }
 
-  // ─── Page state grid agrees with the result chain ─────────────────────
-  const stateText = await page.locator('[data-role="state"]').textContent();
-  if (!stateText.includes(String(STEPS))) {
-    throw new Error(`page state did not reach ${STEPS}: ${stateText}`);
-  }
+  // ─── Click Finish, await the root ──────────────────────────────────────
+  console.log("[harness] clicking Finish, awaiting root verification...");
+  const finishedWait = waitForEvent({
+    page,
+    event: "zkp.scheduler.finished",
+    errorEvents: ["zkp.scheduler.job.failed", "runtime.page.error", "zkp.finish.failed"],
+    timeoutMs: FINISH_TIMEOUT_MS,
+    label: "zkp.scheduler.finished",
+  });
+  await page.locator('[data-role="finish"]').click();
+  const finished = await finishedWait;
+  assertEquals("finished.verified", true, finished.verified);
+  assertEquals("finished.lo", 0, finished.lo);
+  assertEquals("finished.hi", LEAVES - 1, finished.hi);
+  assertEquals("finished.count", LEAVES, finished.count);
+  console.log(
+    `[harness] ✓ root verified: lo=${finished.lo} hi=${finished.hi} count=${finished.count}`,
+  );
 
-  // ─── Uniform recursion check (informational) ──────────────────────────
-  if (stepResults.length >= 3) {
-    const tail = stepResults.slice(1).map((r) => r.prove_ms);
-    const mean = tail.reduce((a, b) => a + b, 0) / tail.length;
-    const max = Math.max(...tail);
-    const min = Math.min(...tail);
-    if (max > mean * 1.5 || min < mean * 0.5) {
-      console.warn(
-        `[harness] ⚠️ steps 2+ prove time variance is unexpectedly wide: min=${min} mean=${mean.toFixed(0)} max=${max}`,
-      );
-    } else {
-      console.log(
-        `[harness] uniform-recursion check ok (steps 2+: min=${min} mean=${mean.toFixed(0)} max=${max})`,
-      );
-    }
-  }
-
-  // ─── Backend tracing assertions ─────────────────────────────────────────
-  // zkp runs entirely in the browser; the backend just serves static assets
-  // and the page itself, so we only assert the service is up and clean.
+  // ─── Backend tracing assertions ────────────────────────────────────────
+  // zkp runs entirely in the browser; backend just serves files.
   backend.expectEventInOrder([{ event: "demo.service.listening" }]);
-  // No MPC-TLS path on this flow.
   backend.expectEventAbsent({ event: "zktls.notarize.transcript.received" });
-  // Backend errors: only the harmless Chrome TCP-probe handshake EOF.
   for (const item of backend.items) {
     if (!/ ERROR /.test(item.text)) continue;
     if (ALLOWED_BACKEND_ERROR_PATTERN.test(item.text)) continue;
     throw new Error(`unexpected backend ERROR line: ${item.text}`);
   }
 
-  // ─── Browser console assertions ─────────────────────────────────────────
-  // Page boot + base proof — structural events emitted by both the WASM
-  // prover (zkp.prove.*) and the JS layer (zkp.action.*, zkp.proof.done).
+  // ─── Browser console assertions ────────────────────────────────────────
+  // Page boot + scheduler booted + N leaf clicks + N leaf.proved + N-1
+  // merge.proved + 1 finished. Failures count must be zero.
   browserCapture.console.expectEventInOrder([
     { event: "zkp.page.loading" },
-    { event: "zkp.worker.ready" },
-    { event: "zkp.action.prove_base.click" },
-    { event: "zkp.prove.base.start" },
-    { event: "zkp.prove.base.done" },
-    { event: "zkp.verify.done" },
-    { event: "zkp.proof.done", fields: { kind: "base" } },
+    { event: "zkp.scheduler.ready" },
+    { event: "zkp.scheduler.booted" },
+    { event: "zkp.action.next.click" },
+    { event: "zkp.scheduler.leaf.queued", fields: { index: 0 } },
+    { event: "zkp.scheduler.leaf.proved", fields: { index: 0 } },
   ]);
-  for (let i = 1; i <= STEPS; i++) {
-    browserCapture.console.expectEventInOrder([
-      { event: "zkp.action.increment.click", fields: { pending: i } },
-      { event: "zkp.action.prove_step.click", fields: { prev_counter: i - 1, counter: i } },
-      { event: "zkp.prove.step.start", fields: { prev_counter: i - 1 } },
-      { event: "zkp.prove.step.done", fields: { prev_counter: i - 1, counter: i } },
-      { event: "zkp.verify.done" },
-      { event: "zkp.proof.done", fields: { kind: "step", counter: i } },
-    ]);
-  }
-  browserCapture.console.expectEventCount({ event: "zkp.proof.done", fields: { kind: "base" } }, 1);
-  browserCapture.console.expectEventCount(
-    { event: "zkp.proof.done", fields: { kind: "step" } },
-    STEPS,
-  );
-  browserCapture.console.expectEventCount({ event: "zkp.proof.failed" }, 0);
+  browserCapture.console.expectEventCount({ event: "zkp.action.next.click" }, LEAVES);
+  browserCapture.console.expectEventCount({ event: "zkp.scheduler.leaf.queued" }, LEAVES);
+  browserCapture.console.expectEventCount({ event: "zkp.scheduler.leaf.proved" }, LEAVES);
+  browserCapture.console.expectEventCount({ event: "zkp.scheduler.merge.proved" }, LEAVES - 1);
+  browserCapture.console.expectEventCount({ event: "zkp.scheduler.finished" }, 1);
+  browserCapture.console.expectEventCount({ event: "zkp.scheduler.job.failed" }, 0);
+  browserCapture.console.expectEventCount({ event: "zkp.finish.failed" }, 0);
   browserCapture.console.expectEventCount({ event: "runtime.page.error" }, 0);
   for (const item of browserCapture.console.items) {
     if (item.type === "pageerror") {
@@ -185,24 +153,54 @@ try {
   }
   browserCapture.expectNoRequestFailures();
 
+  // ─── Per-merge ordering: each merge.proved arrives after both child
+  // *.proved events. Using event order in the browser console as ground truth.
+  const mergeEvents = browserCapture.console.findEvents({
+    event: "zkp.scheduler.merge.proved",
+  });
+  const provedTimestamps = new Map(); // node_id -> position
+  let pos = 0;
+  for (const item of browserCapture.console.items) {
+    const e = item._parsed;
+    if (!e) continue;
+    if (e.event === "zkp.scheduler.leaf.proved" || e.event === "zkp.scheduler.merge.proved") {
+      provedTimestamps.set(e.fields.node_id, pos);
+    }
+    pos++;
+  }
+  for (const m of mergeEvents) {
+    const here = provedTimestamps.get(m.node_id);
+    const left = provedTimestamps.get(m.left_id);
+    const right = provedTimestamps.get(m.right_id);
+    if (left == null || right == null || here == null) {
+      throw new Error(
+        `merge ${m.node_id} missing position(s): left=${left} right=${right} here=${here}`,
+      );
+    }
+    if (left >= here || right >= here) {
+      throw new Error(
+        `merge ${m.node_id} reported done before its children left=${m.left_id}@${left} right=${m.right_id}@${right} here=${here}`,
+      );
+    }
+  }
+
   // ─── Final summary ─────────────────────────────────────────────────────
   const summary = {
-    flow: "zkp-recursive-counter",
-    final_counter: STEPS,
-    base_prove_ms: base.prove_ms,
-    base_verify_ms: base.verify_ms,
-    base_size_bytes: base.proof_size_bytes,
-    step_count: STEPS,
-    step_prove_ms: stepResults.map((r) => r.prove_ms),
-    step_verify_ms: stepResults.map((r) => r.verify_ms),
-    step_size_bytes: stepResults.map((r) => r.proof_size_bytes),
+    flow: "zkp-mmr-streaming-pcd",
+    leaves: LEAVES,
+    pool_size: 1,
+    leaf_prove_ms: leafResults.map((f) => f.prove_ms),
+    leaf_size_bytes: leafResults.map((f) => f.size_bytes),
+    merge_count: mergeEvents.length,
+    merge_prove_ms: mergeEvents.map((m) => m.prove_ms),
+    root: { lo: finished.lo, hi: finished.hi, count: finished.count, verified: finished.verified },
   };
-  console.log("\nzkp recursive flow: PASS");
+  console.log("\nzkp MMR streaming-PCD flow: PASS");
   console.log(JSON.stringify(summary, null, 2));
   await runCleanup();
   process.exit(0);
 } catch (error) {
-  console.error(`\nzkp recursive flow: FAIL — ${error.message}`);
+  console.error(`\nzkp MMR streaming-PCD flow: FAIL — ${error.message}`);
   await runCleanup();
   process.exit(1);
 }

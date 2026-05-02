@@ -1,72 +1,78 @@
-import init, { Prover } from "/assets/wasm/zkp.js";
+// Single-threaded prover instance. The wasm module owns a thread-local
+// proof store keyed by node id; the scheduler (main thread) dispatches
+// jobs by sending {kind, jobId, ...} messages and gets {kind: "done" |
+// "error", jobId, result?, message?} back.
+//
+// v1 design uses ONE worker. The architecture is K-worker-ready, but
+// cross-worker proof transfer is blocked by the upstream
+// `Vec<Box<dyn Component>>` field on CircuitProof — see
+// /Users/neo/.claude/plans/deeply-analyze-zkp-crate-effervescent-rocket.md
+// for the full reasoning.
+
+import init, {
+  forget_op,
+  prove_leaf_op,
+  prove_merge_op,
+  reset_op,
+  verify_op,
+} from "/assets/wasm/zkp.js";
 import { eventErr } from "./log.mjs";
 import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
 
-const post = (msg) => self.postMessage(msg);
+let ready = false;
 
-let prover = null;
-
-async function ensureProver() {
-  if (prover) return prover;
+async function ensureReady() {
+  if (ready) return;
   const t0 = performance.now();
   await init();
   const initMs = performance.now() - t0;
-  prover = new Prover();
-  post({ kind: "ready", initMs });
-  return prover;
+  ready = true;
+  self.postMessage({ kind: "ready", initMs });
 }
 
-self.addEventListener("message", async (ev) => {
-  const msg = ev.data;
+self.addEventListener("message", async ({ data }) => {
+  await ensureReady();
+  const jobId = data.jobId;
   try {
-    switch (msg.kind) {
+    let result;
+    switch (data.kind) {
       case "init":
-        await ensureProver();
+        // ensureReady already posted "ready"; nothing more to do.
+        return;
+      case "leaf":
+        result = prove_leaf_op(data.nodeId, data.index);
         break;
-      case "prove_base": {
-        const p = await ensureProver();
-        const summary = p.prove_base();
-        const verifyT0 = performance.now();
-        const verified = p.verify_current();
-        const verifyMs = performance.now() - verifyT0;
-        post({
-          kind: "base_done",
-          counter: summary.counter,
-          proveMs: summary.prove_ms,
-          sizeBytes: summary.proof_size_bytes,
-          verified,
-          verifyMs,
-        });
+      case "merge":
+        result = prove_merge_op(data.nodeId, data.leftId, data.rightId);
         break;
-      }
-      case "prove_step": {
-        const p = await ensureProver();
-        const summary = p.prove_step();
-        const verifyT0 = performance.now();
-        const verified = p.verify_current();
-        const verifyMs = performance.now() - verifyT0;
-        post({
-          kind: "step_done",
-          counter: summary.counter,
-          proveMs: summary.prove_ms,
-          sizeBytes: summary.proof_size_bytes,
-          verified,
-          verifyMs,
-        });
+      case "verify":
+        result = verify_op(data.nodeId);
         break;
-      }
-      case "reset": {
-        const p = await ensureProver();
-        p.reset();
-        post({ kind: "reset_done" });
+      case "forget":
+        forget_op(data.nodeId);
+        result = { nodeId: data.nodeId };
         break;
-      }
+      case "reset":
+        reset_op();
+        result = {};
+        break;
       default:
-        eventErr("zkp.worker.message.unknown", { kind: msg.kind });
+        eventErr("zkp.worker.message.unknown", { kind: data.kind });
+        self.postMessage({
+          kind: "error",
+          jobId,
+          message: `unknown message kind=${data.kind}`,
+        });
+        return;
     }
+    self.postMessage({ kind: "done", jobId, op: data.kind, result });
   } catch (err) {
-    post({ kind: "error", message: err && err.message ? err.message : String(err) });
+    self.postMessage({
+      kind: "error",
+      jobId,
+      message: err && err.message ? err.message : String(err),
+    });
   }
 });

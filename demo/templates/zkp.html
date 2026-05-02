@@ -1,35 +1,55 @@
-{% extends "_base.html" %} {% block title %}zkp — recursive STWO counter{% endblock %} {% block
-content %}
+{% extends "_base.html" %} {% block title %}zkp — binary streaming PCD over Stwo{% endblock %} {%
+block content %}
 <p><a href="/">← back to demos</a></p>
-<h1>zkp — recursive STWO counter</h1>
+<h1>zkp — binary streaming PCD over Stwo</h1>
 <p>
-  Each step's proof verifies the previous proof in-circuit and binds the new counter via
-  <code>n_new = prev_n + 1</code>. Proof generation takes several seconds per step on this machine;
-  verification (auto-run after every prove) is much faster. Open DevTools console for the structured
-  event stream.
+  Click <strong>Next</strong> to enqueue a new leaf at the next index. Each leaf is proved
+  independently; pairs of equal-count peaks fold into a parent merge whose AIR embeds
+  <em>two</em> in-circuit <code>circuits-stark-verifier::verify(...)</code> calls (see
+  <code>zkp::recursion::prove_merge</code>) and binds the parent <code>(lo, hi, count)</code> by
+  contiguity. <strong>Next</strong> is non-blocking — clicks queue up while the worker is busy.
+</p>
+<p>
+  Click <strong>Finish</strong> to drain in-flight, cascade the remaining peaks into a single root,
+  host-verify it, and display the root's public input. <strong>Reset</strong> clears all state.
 </p>
 
 <section class="kv-grid">
   <dl>
-    <dt>State</dt>
-    <dd data-role="state">— (uninitialized)</dd>
+    <dt>Pool</dt>
+    <dd data-role="pool">— (booting)</dd>
 
-    <dt>Steps proven</dt>
-    <dd data-role="steps">—</dd>
+    <dt>Leaves submitted / proved</dt>
+    <dd data-role="leaves">— / —</dd>
 
-    <dt>Last prove</dt>
-    <dd data-role="last-prove">—</dd>
+    <dt>Merges proved</dt>
+    <dd data-role="merges">—</dd>
 
-    <dt>Last proof size</dt>
-    <dd data-role="last-size">—</dd>
+    <dt>Peaks live</dt>
+    <dd data-role="peaks">—</dd>
+
+    <dt>Last leaf prove_ms</dt>
+    <dd data-role="last-leaf">—</dd>
+
+    <dt>Last merge prove_ms</dt>
+    <dd data-role="last-merge">—</dd>
+
+    <dt>Root</dt>
+    <dd data-role="root">—</dd>
   </dl>
 </section>
 
 <p>
-  <button data-role="base">Generate base proof</button>
-  <button data-role="increment" disabled>Increment</button>
-  <button data-role="prove" disabled>Prove</button>
-  <button data-role="reset">Reset</button>
+  <button data-role="next" disabled>Next</button>
+  <button data-role="finish" disabled>Finish</button>
+  <button data-role="reset" disabled>Reset</button>
+</p>
+
+<div class="zkp-viz-container" data-role="viz"></div>
+
+<p class="zkp-viz-hint">
+  Drag horizontally to pan. Hold <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + scroll to zoom. Hover a node for
+  full details.
 </p>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zkp.main.mjs"></script>

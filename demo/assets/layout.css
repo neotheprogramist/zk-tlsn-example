@@ -70,3 +70,79 @@ pre {
 .kv-grid dd {
   margin: 0;
 }
+
+/* zkp MMR visualization */
+.zkp-viz-container {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 1rem;
+  margin-top: 1rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 6px;
+  padding: 0.5rem;
+  min-height: 360px;
+}
+
+.zkp-viz-tree {
+  position: relative;
+  overflow: hidden;
+  min-height: 300px;
+}
+
+.zkp-viz-tree-scroll {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  overflow: auto;
+  display: flex;
+  align-items: flex-end;
+  padding: 0.5rem;
+}
+
+.zkp-viz-svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.zkp-viz-workers {
+  border-left: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding-left: 1rem;
+  font-size: 0.85rem;
+}
+
+.zkp-viz-workers h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+  margin: 0 0 0.5rem;
+}
+
+.zkp-viz-worker-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.zkp-viz-worker {
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  margin: 2px 0;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.zkp-viz-worker-busy {
+  background: color-mix(in srgb, #ffe97a 35%, transparent);
+}
+
+.zkp-viz-summary {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  white-space: pre-wrap;
+}
+
+.zkp-viz-hint {
+  font-size: 0.8rem;
+  opacity: 0.6;
+  margin-top: 0.5rem;
+}

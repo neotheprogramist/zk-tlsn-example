@@ -1,132 +1,142 @@
+// Page entry. Wires the scheduler + visualization to the Next/Reset/Finish
+// buttons + readouts. Single-worker design (v1) — see
+// /Users/neo/.claude/plans/deeply-analyze-zkp-crate-effervescent-rocket.md
+// for why K=1 in this iteration.
+
 import { event, eventErr } from "./log.mjs";
-import { installPageErrorForwarders, startWorker } from "./flow.mjs";
+import { installPageErrorForwarders } from "./flow.mjs";
+import { NODE_KIND, NODE_STATE, createScheduler } from "./zkp.scheduler.mjs";
+import { attachVisualization } from "./zkp.viz.mjs";
+
+const POOL_SIZE = 1; // v1: single worker (cross-worker proof transfer not yet wired)
 
 const els = {
-  state: document.querySelector('[data-role="state"]'),
-  steps: document.querySelector('[data-role="steps"]'),
-  lastProve: document.querySelector('[data-role="last-prove"]'),
-  lastSize: document.querySelector('[data-role="last-size"]'),
-  btnBase: document.querySelector('[data-role="base"]'),
-  btnIncrement: document.querySelector('[data-role="increment"]'),
-  btnProve: document.querySelector('[data-role="prove"]'),
+  pool: document.querySelector('[data-role="pool"]'),
+  leaves: document.querySelector('[data-role="leaves"]'),
+  merges: document.querySelector('[data-role="merges"]'),
+  peaks: document.querySelector('[data-role="peaks"]'),
+  lastLeaf: document.querySelector('[data-role="last-leaf"]'),
+  lastMerge: document.querySelector('[data-role="last-merge"]'),
+  root: document.querySelector('[data-role="root"]'),
+  btnNext: document.querySelector('[data-role="next"]'),
+  btnFinish: document.querySelector('[data-role="finish"]'),
   btnReset: document.querySelector('[data-role="reset"]'),
+  viz: document.querySelector('[data-role="viz"]'),
 };
-
-const state = { counter: null, pendingIncrement: false, busy: false, stepsProven: 0 };
 
 installPageErrorForwarders();
 
-function render() {
-  if (state.counter === null) {
-    els.state.textContent = "— (uninitialized)";
-  } else if (state.pendingIncrement) {
-    els.state.textContent = `${state.counter + 1} (pending — click Prove)`;
-  } else {
-    els.state.textContent = `${state.counter}  ✓ verified`;
-  }
+const scheduler = createScheduler({
+  workerScriptUrl: "/assets/zkp.worker.mjs",
+  poolSize: POOL_SIZE,
+});
 
-  if (state.stepsProven === 0) {
-    els.steps.textContent = "—";
-  } else if (state.stepsProven === 1) {
-    els.steps.textContent = "1 (base)";
-  } else {
-    els.steps.textContent = `${state.stepsProven} (base + ${state.stepsProven - 1})`;
-  }
+const viz = attachVisualization(els.viz, scheduler);
+void viz;
 
-  els.btnBase.disabled = state.busy || state.counter !== null;
-  els.btnIncrement.disabled = state.busy || state.counter === null || state.pendingIncrement;
-  els.btnProve.disabled = state.busy || !state.pendingIncrement;
-  els.btnReset.disabled = state.busy;
+let lastFinishResult = null;
+let booted = false;
+
+function lastByKind(state, kind, key) {
+  let last = null;
+  for (const node of state.nodes) {
+    if (node.kind !== kind) continue;
+    if (node[key] == null) continue;
+    if (!last || node.nodeId > last.nodeId) last = node;
+  }
+  return last;
 }
 
-function emitProofResult(isBase, msg) {
-  const fields = {
-    kind: isBase ? "base" : "step",
-    counter: msg.counter,
-    prove_ms: Math.round(msg.proveMs),
-    proof_size_bytes: msg.sizeBytes,
-    verified: msg.verified === true,
-    verify_ms: Math.round(msg.verifyMs ?? 0),
-    steps_proven: state.stepsProven,
-  };
-  if (!isBase) fields.prev_counter = msg.counter - 1;
-  event("zkp.proof.done", fields);
+function countByKind(state, kind, predicate = () => true) {
+  let n = 0;
+  for (const node of state.nodes) {
+    if (node.kind === kind && predicate(node)) n++;
+  }
+  return n;
 }
 
-const worker = startWorker("/assets/zkp.worker.mjs", (msg) => {
-  switch (msg.kind) {
-    case "ready":
-      event("zkp.worker.ready", { init_ms: Math.round(msg.initMs) });
-      state.busy = false;
-      render();
-      break;
-    case "base_done":
-    case "step_done": {
-      const isBase = msg.kind === "base_done";
-      state.counter = msg.counter;
-      state.pendingIncrement = false;
-      state.stepsProven = isBase ? 1 : state.stepsProven + 1;
-      state.busy = false;
-      els.lastProve.textContent = `${Math.round(msg.proveMs)} ms`;
-      els.lastSize.textContent = `${(msg.sizeBytes / 1024).toFixed(1)} KB`;
-      emitProofResult(isBase, msg);
-      render();
-      break;
-    }
-    case "error":
-      state.busy = false;
-      eventErr("zkp.proof.failed", { message: msg.message });
-      render();
-      break;
-    case "reset_done":
-      state.counter = null;
-      state.pendingIncrement = false;
-      state.stepsProven = 0;
-      state.busy = false;
-      els.lastProve.textContent = "—";
-      els.lastSize.textContent = "—";
-      event("zkp.action.reset");
-      render();
-      break;
-    default:
-      eventErr("zkp.worker.message.unknown", { kind: msg.kind });
+function renderReadouts(state) {
+  els.pool.textContent = booted ? `${state.workersBusy} / ${state.poolSize} busy` : "— (booting)";
+
+  const leavesSubmitted = state.nextLeafIndex;
+  const leavesProved = countByKind(
+    state,
+    NODE_KIND.LEAF,
+    (n) => n.state === NODE_STATE.PROVED || n.state === NODE_STATE.VERIFIED,
+  );
+  els.leaves.textContent = `${leavesSubmitted} / ${leavesProved}`;
+
+  const mergesProved = countByKind(
+    state,
+    NODE_KIND.MERGE,
+    (n) => n.state === NODE_STATE.PROVED || n.state === NODE_STATE.VERIFIED,
+  );
+  els.merges.textContent = String(mergesProved);
+
+  els.peaks.textContent = String(state.peaks.length);
+
+  const lastLeaf = lastByKind(state, NODE_KIND.LEAF, "proveMs");
+  els.lastLeaf.textContent = lastLeaf ? `${lastLeaf.proveMs} ms` : "—";
+
+  const lastMerge = lastByKind(state, NODE_KIND.MERGE, "proveMs");
+  els.lastMerge.textContent = lastMerge ? `${lastMerge.proveMs} ms` : "—";
+
+  if (lastFinishResult) {
+    const r = lastFinishResult;
+    els.root.textContent = `node=${r.rootNodeId}  lo=${r.lo}  hi=${r.hi}  count=${r.count}  verified=${r.verified}`;
+  } else {
+    els.root.textContent = "—";
   }
-});
 
-els.btnBase.addEventListener("click", () => {
-  if (state.busy || state.counter !== null) return;
-  state.busy = true;
-  event("zkp.action.prove_base.click");
-  render();
-  worker.postMessage({ kind: "prove_base" });
-});
+  // Button states.
+  els.btnNext.disabled = !booted || state.finishing;
+  els.btnFinish.disabled =
+    !booted || state.finishing || (state.nextLeafIndex === 0 && state.peaks.length === 0);
+  els.btnReset.disabled = !booted;
+}
 
-els.btnIncrement.addEventListener("click", () => {
-  if (state.busy || state.counter === null || state.pendingIncrement) return;
-  state.pendingIncrement = true;
-  event("zkp.action.increment.click", { pending: state.counter + 1 });
-  render();
-});
+scheduler.subscribe(renderReadouts);
 
-els.btnProve.addEventListener("click", () => {
-  if (state.busy || !state.pendingIncrement) return;
-  state.busy = true;
-  event("zkp.action.prove_step.click", {
-    prev_counter: state.counter,
-    counter: state.counter + 1,
-  });
-  render();
-  worker.postMessage({ kind: "prove_step" });
+els.btnNext.addEventListener("click", () => {
+  if (els.btnNext.disabled) return;
+  const nodeId = scheduler.submitLeaf();
+  event("zkp.action.next.click", { node_id: nodeId });
 });
 
 els.btnReset.addEventListener("click", () => {
-  if (state.busy) return;
-  state.busy = true;
+  if (els.btnReset.disabled) return;
   event("zkp.action.reset.click");
-  render();
-  worker.postMessage({ kind: "reset" });
+  lastFinishResult = null;
+  scheduler.reset();
 });
 
-event("zkp.page.loading");
-worker.postMessage({ kind: "init" });
-render();
+els.btnFinish.addEventListener("click", async () => {
+  if (els.btnFinish.disabled) return;
+  event("zkp.action.finish.click");
+  try {
+    const result = await scheduler.finish();
+    lastFinishResult = result;
+    event("zkp.finish.done", {
+      root_node_id: result.rootNodeId,
+      verified: result.verified,
+      lo: result.lo,
+      hi: result.hi,
+      count: result.count,
+    });
+    renderReadouts(scheduler.snapshot());
+  } catch (err) {
+    eventErr("zkp.finish.failed", { message: err?.message ?? String(err) });
+  }
+});
+
+event("zkp.page.loading", { pool_size: POOL_SIZE });
+scheduler
+  .init()
+  .then(() => {
+    booted = true;
+    event("zkp.scheduler.booted", { pool_size: POOL_SIZE });
+    renderReadouts(scheduler.snapshot());
+  })
+  .catch((err) => {
+    eventErr("zkp.scheduler.boot.failed", { message: err?.message ?? String(err) });
+  });
