@@ -4,6 +4,10 @@ import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
 
+const ATTESTATION_LEN = 32;
+const MAX_SENT_DATA = 1 << 12;
+const MAX_RECV_DATA = 1 << 14;
+
 const post = (kind, payload = {}) => self.postMessage({ kind, ...payload });
 
 function hexToBytes(hex) {
@@ -18,6 +22,40 @@ async function writePreamble(stream, line) {
   const writer = stream.writable.getWriter();
   await writer.write(new TextEncoder().encode(line));
   writer.releaseLock();
+}
+
+function buildProverInputs(config) {
+  return {
+    server_name: config.serverName,
+    server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
+    max_sent_data: MAX_SENT_DATA,
+    max_recv_data: MAX_RECV_DATA,
+    request_method: "GET",
+    request_uri: `/api/attestations/${config.txId}`,
+    request_headers: [
+      ["content-type", "application/json"],
+      ["Connection", "close"],
+    ],
+    request_reveal_config: {
+      reveal_headers: ["content-type"],
+      commit_headers: ["connection"],
+      reveal_body_fields: [],
+      commit_body_fields: [],
+      reveal_keys_commit_values: [],
+    },
+    response_reveal_config: {
+      reveal_headers: [],
+      commit_headers: [],
+      reveal_body_fields: [
+        { Quoted: ".toUsername" },
+        { Unquoted: ".eligibleForMint" },
+      ],
+      commit_body_fields: [],
+      reveal_keys_commit_values: [
+        { keypath: ".attestation", commitment_length: ATTESTATION_LEN },
+      ],
+    },
+  };
 }
 
 async function runProve(config) {
@@ -44,16 +82,11 @@ async function runProve(config) {
     event("zktls.transport.streams.preambles_written");
 
     event("zktls.prover.constructing");
-    const prover = new Prover(
-      JSON.stringify({
-        server_name: config.serverName,
-        server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
-        tx_id: Number(config.txId),
-      }),
-    );
+    const prover = new Prover();
+    const inputsJson = JSON.stringify(buildProverInputs(config));
 
     event("zktls.prover.prove_streams.start");
-    const output = await prover.prove_streams(verifierStream, proxyStream);
+    const output = await prover.prove_streams(inputsJson, verifierStream, proxyStream);
     event("zktls.prover.prove_streams.done");
 
     const decoder = new TextDecoder("utf-8", { fatal: false });

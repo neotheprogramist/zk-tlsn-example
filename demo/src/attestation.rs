@@ -1,4 +1,4 @@
-use crate::Error;
+use thiserror::Error;
 
 pub const TX_ID_WIDTH: usize = 10;
 pub const USER_ID_WIDTH: usize = 10;
@@ -22,7 +22,32 @@ impl FiatTransferAttestation {
     }
 }
 
-pub fn encode_transfer_attestation(attestation: FiatTransferAttestation) -> Result<String, Error> {
+#[derive(Debug, Error)]
+pub enum AttestationError {
+    #[error("invalid attestation length: expected {expected} bytes, got {actual}")]
+    Length { expected: usize, actual: usize },
+
+    #[error("missing attestation segment: {0}")]
+    SegmentMissing(&'static str),
+
+    #[error("invalid attestation segment {label}")]
+    SegmentInvalid {
+        label: &'static str,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+
+    #[error("attestation segment {label} value {value} exceeds {width}-digit limit")]
+    SegmentTooWide {
+        label: &'static str,
+        value: u64,
+        width: u32,
+    },
+}
+
+pub fn encode_transfer_attestation(
+    attestation: FiatTransferAttestation,
+) -> Result<String, AttestationError> {
     ensure_fits(attestation.tx_id, TX_ID_WIDTH, "tx_id")?;
     ensure_fits(attestation.to_user_id, USER_ID_WIDTH, "to_user_id")?;
     ensure_fits(attestation.amount, AMOUNT_WIDTH, "amount")?;
@@ -35,9 +60,11 @@ pub fn encode_transfer_attestation(attestation: FiatTransferAttestation) -> Resu
     ))
 }
 
-pub fn parse_transfer_attestation(value: &str) -> Result<FiatTransferAttestation, Error> {
+pub fn parse_transfer_attestation(
+    value: &str,
+) -> Result<FiatTransferAttestation, AttestationError> {
     if value.len() != ATTESTATION_LEN {
-        return Err(Error::AttestationLength {
+        return Err(AttestationError::Length {
             expected: ATTESTATION_LEN,
             actual: value.len(),
         });
@@ -56,15 +83,13 @@ pub fn parse_transfer_attestation(value: &str) -> Result<FiatTransferAttestation
     Ok(FiatTransferAttestation::new(tx_id, to_user_id, amount))
 }
 
-fn parse_segment(segment: Option<&str>, label: &'static str) -> Result<u64, Error> {
-    let text = segment.ok_or(Error::AttestationSegmentMissing(label))?;
-    match text.parse::<u64>() {
-        Ok(value) => Ok(value),
-        Err(source) => Err(Error::AttestationSegmentInvalid { label, source }),
-    }
+fn parse_segment(segment: Option<&str>, label: &'static str) -> Result<u64, AttestationError> {
+    let text = segment.ok_or(AttestationError::SegmentMissing(label))?;
+    text.parse::<u64>()
+        .map_err(|source| AttestationError::SegmentInvalid { label, source })
 }
 
-fn ensure_fits(value: u64, width: usize, label: &'static str) -> Result<(), Error> {
+fn ensure_fits(value: u64, width: usize, label: &'static str) -> Result<(), AttestationError> {
     // PROOF: attestation widths are small compile-time constants in this module,
     // so u32::try_from(width) cannot fail.
     let width = u32::try_from(width).expect("attestation width fits in u32");
@@ -73,7 +98,7 @@ fn ensure_fits(value: u64, width: usize, label: &'static str) -> Result<(), Erro
         .expect("attestation width decimal limit fits in u64");
 
     if value >= limit {
-        return Err(Error::AttestationSegmentTooWide {
+        return Err(AttestationError::SegmentTooWide {
             label,
             value,
             width,

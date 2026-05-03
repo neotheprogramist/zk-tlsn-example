@@ -18,11 +18,13 @@ use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::info;
 use zktls::{
-    CertificateDer, Direction, RootCertStore, TranscriptCommitment, Verifier, VerifierConfig,
-    VerifierOutput,
+    CertificateDer, Direction, RootCertStore, TranscriptCommitment, VerifierConfig, VerifierOutput,
 };
 
-use crate::tls::{TestTlsConfig, TlsFixtureError, get_or_create_test_tls_config};
+use crate::{
+    tls::{TestTlsConfig, TlsFixtureError, get_or_create_test_tls_config},
+    transfer_verifier::{TransferVerifyError, verify_transfer},
+};
 
 const MAX_PREAMBLE_BYTES: usize = 256;
 const MAX_FRAME_BYTES: usize = 1 << 20;
@@ -63,6 +65,8 @@ pub enum ConnectError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     TlsNotary(#[from] zktls::Error),
+    #[error(transparent)]
+    TransferVerify(#[from] TransferVerifyError),
     #[error(transparent)]
     TlsConfig(#[from] TlsFixtureError),
 }
@@ -331,13 +335,13 @@ where
 {
     use futures::AsyncWriteExt as _;
 
-    let (mut io, output) = Verifier::new(create_verifier_config()?)
-        .verify_transfer(
-            Compat::new(stream),
-            &proxy_config.server_name,
-            &proxy_config.to_username,
-        )
-        .await?;
+    let (mut io, output) = verify_transfer(
+        create_verifier_config()?,
+        Compat::new(stream),
+        &proxy_config.server_name,
+        &proxy_config.to_username,
+    )
+    .await?;
 
     log_verifier_output(&output);
     let outcome = VerificationOutcome::Success {

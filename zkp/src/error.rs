@@ -46,12 +46,6 @@ pub enum Error {
     #[error("verify-after-prove failed: {0}")]
     VerifyAfterProveFailed(Box<Error>),
 
-    #[error("duplicate node_id={0} in worker store")]
-    DuplicateNodeId(u32),
-
-    #[error("missing proof for node_id={0}")]
-    MissingNode(u32),
-
     #[error("interaction-phase PoW nonce invalid")]
     InteractionPow,
 

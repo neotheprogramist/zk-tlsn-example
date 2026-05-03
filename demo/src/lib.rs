@@ -1,7 +1,9 @@
+pub mod attestation;
 pub mod connect;
 pub mod ledger;
 pub mod service;
 pub mod tls;
+pub mod transfer_verifier;
 
 use std::sync::OnceLock;
 

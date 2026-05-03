@@ -1,12 +1,14 @@
-//! Browser-side bindings: wasm-bindgen Prover + WebTransport I/O adapters.
+//! Browser-side bindings: wasm-bindgen Prover + Verifier + WebTransport I/O.
 //!
 //! All items here are gated on `target_arch = "wasm32"` by the parent
 //! `lib.rs`. The native build of this crate does not see this module.
 
 mod io;
 mod prover;
+mod verifier;
 
 pub use prover::Prover;
+pub use verifier::Verifier;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 

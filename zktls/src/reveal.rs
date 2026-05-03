@@ -336,7 +336,7 @@ where
     )
 }
 
-pub(super) fn reveal_request<'transcript>(
+pub(crate) fn reveal_request<'transcript>(
     request: &[u8],
     prove_config: &mut ProveConfigBuilder<'transcript>,
     transcript_commit_config: &mut TranscriptCommitConfigBuilder<'transcript>,
@@ -380,7 +380,7 @@ pub(super) fn reveal_request<'transcript>(
     )
 }
 
-pub(super) fn reveal_response<'transcript>(
+pub(crate) fn reveal_response<'transcript>(
     response: &[u8],
     prove_config: &mut ProveConfigBuilder<'transcript>,
     transcript_commit_config: &mut TranscriptCommitConfigBuilder<'transcript>,

@@ -1,5 +1,4 @@
 use thiserror::Error;
-use tlsn::{hash::HashAlgId, transcript::Direction};
 
 use crate::parser::ParseError;
 
@@ -7,28 +6,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    // ---- Attestation encoding ----
-    #[error("invalid attestation length: expected {expected} bytes, got {actual}")]
-    AttestationLength { expected: usize, actual: usize },
-
-    #[error("missing attestation segment: {0}")]
-    AttestationSegmentMissing(&'static str),
-
-    #[error("invalid attestation segment {label}")]
-    AttestationSegmentInvalid {
-        label: &'static str,
-        #[source]
-        source: std::num::ParseIntError,
-    },
-
-    #[error("attestation segment {label} value {value} exceeds {width}-digit limit")]
-    AttestationSegmentTooWide {
-        label: &'static str,
-        value: u64,
-        width: u32,
-    },
-
-    // ---- HTTP parsing / transcript ----
     #[error("HTTP request failed with status {0}")]
     HttpRequestFailed(u16),
 
@@ -38,11 +15,8 @@ pub enum Error {
     #[error("missing required field: {0}")]
     MissingField(&'static str),
 
-    #[error(transparent)]
-    InvalidTranscript(#[from] TranscriptError),
-
-    #[error("invalid DNS server name '{server_name}': {reason}")]
-    DnsInvalid { server_name: String, reason: String },
+    #[error("invalid DNS server name: {0}")]
+    InvalidDnsName(String),
 
     #[error(transparent)]
     RequestBuild(#[from] hyper::http::Error),
@@ -61,7 +35,6 @@ pub enum Error {
         actual: &'static str,
     },
 
-    // ---- TLSN session driver ----
     #[error("tlsn session driver was cancelled before it could return the socket")]
     SessionDriverCancelled,
 
@@ -71,7 +44,6 @@ pub enum Error {
         reason: String,
     },
 
-    // ---- tlsn upstream errors ----
     #[error(transparent)]
     Tlsn(#[from] tlsn::Error),
 
@@ -99,7 +71,6 @@ pub enum Error {
     #[error(transparent)]
     Hyper(#[from] hyper::Error),
 
-    // ---- stdlib boundary ----
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -109,53 +80,11 @@ pub enum Error {
     #[error(transparent)]
     Utf8Str(#[from] std::str::Utf8Error),
 
-    // ---- browser-only ----
     #[cfg(target_arch = "wasm32")]
-    #[error("invalid JsProverInputs JSON: {0}")]
+    #[error("invalid wasm input JSON: {0}")]
     Json(#[from] serde_json::Error),
 
     #[cfg(target_arch = "wasm32")]
     #[error("verifier outcome frame too large: {0} bytes")]
     FrameTooLarge(usize),
-}
-
-#[derive(Error, Debug)]
-pub enum TranscriptError {
-    #[error("expected server name '{expected}', got '{actual}'")]
-    ServerName { expected: String, actual: String },
-
-    #[error("expected {expected:?} hash algorithm in {direction:?} direction, got {actual:?}")]
-    HashAlgorithm {
-        expected: HashAlgId,
-        actual: HashAlgId,
-        direction: Direction,
-    },
-
-    #[error("missing {ctx} header '{key}'")]
-    MissingHeader { ctx: &'static str, key: String },
-
-    #[error("{ctx} header '{key}' has no value")]
-    HeaderWithoutValue { ctx: &'static str, key: String },
-
-    #[error("missing {ctx} body field '{key}'")]
-    MissingBodyField { ctx: &'static str, key: String },
-
-    #[error("missing value for {ctx} field '{key}'")]
-    MissingFieldValue { ctx: &'static str, key: String },
-
-    #[error("{ctx} header '{key}': expected '{expected}', got '{actual}'")]
-    HeaderMismatch {
-        ctx: &'static str,
-        key: String,
-        expected: String,
-        actual: String,
-    },
-
-    #[error("{ctx} field '{key}': expected {expected}, got {actual}")]
-    FieldMismatch {
-        ctx: &'static str,
-        key: String,
-        expected: String,
-        actual: String,
-    },
 }

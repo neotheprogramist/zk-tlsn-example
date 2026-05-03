@@ -18,9 +18,11 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
-use zktls::{FiatTransferAttestation, encode_transfer_attestation};
 
-use crate::tls::get_or_create_test_tls_config;
+use crate::{
+    attestation::{AttestationError, FiatTransferAttestation, encode_transfer_attestation},
+    tls::get_or_create_test_tls_config,
+};
 
 // ─── Listener ──────────────────────────────────────────────────────────────
 
@@ -108,7 +110,7 @@ pub enum ApiError {
     #[error("missing path param '{0}'")]
     MissingPathParam(&'static str),
     #[error(transparent)]
-    Attestation(#[from] zktls::Error),
+    Attestation(#[from] AttestationError),
 }
 
 impl ApiError {
