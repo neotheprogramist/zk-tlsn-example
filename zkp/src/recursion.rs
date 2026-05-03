@@ -12,8 +12,11 @@
 //! AIR's in-circuit verifier handles both child kinds uniformly. Recursion is
 //! uniform from depth 1 upward.
 //!
-//! See `verify::verify_record` for the host-side STARK verifier that closes
-//! the trust loop on every produced proof.
+//! `ProofRecord` carries `metadata: CircuitProofMetadata` rather than the
+//! full `PreprocessedCircuit` because the heavy `Arc<PreProcessedTrace>` has
+//! private fields that can't be reconstructed across a serialization boundary.
+//! Metadata is the small, serialisable subset that `prove_merge` and
+//! `verifier::verify_record` actually read.
 
 use circuit_common::preprocessed::PreprocessedCircuit;
 use circuit_prover::prover::{
@@ -22,46 +25,32 @@ use circuit_prover::prover::{
 };
 use circuit_verifier::statement::{CircuitStatement, INTERACTION_POW_BITS};
 use circuits::{
+    blake::HashValue,
     context::{Context, TraceContext, Var},
     ivalue::NoValue,
     ops::{Guess, add, eq, guess, output},
 };
-use circuits_stark_verifier::{proof::ProofConfig, statement::Statement, verify::verify};
-use stwo::{
-    core::{
-        fields::{
-            m31::{M31, P},
-            qm31::QM31,
-        },
-        fri::FriConfig,
-        pcs::PcsConfig,
-        vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher,
-    },
-    prover::ProvingError,
+use circuits_stark_verifier::{
+    proof::{Proof as CircuitVerifierProof, ProofConfig},
+    statement::Statement,
+    verify::verify,
 };
-use thiserror::Error;
+use stwo::core::{
+    fields::{
+        m31::{M31, P},
+        qm31::QM31,
+    },
+    fri::FriConfig,
+    pcs::PcsConfig,
+    proof::ExtendedStarkProof,
+    vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher,
+};
+use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
 
-#[derive(Debug, Error)]
-pub enum ProverError {
-    #[error("circuit prover failed: {0}")]
-    StarkProofFailed(#[from] ProvingError),
-
-    #[error("leaf index {index} ≥ M31::P; cannot fit in field")]
-    LeafIndexOutOfRange { index: u32 },
-
-    #[error(
-        "contiguity violated: left.hi = {left_hi}, right.lo = {right_lo} (expected right.lo == left.hi + 1)"
-    )]
-    ContiguityViolated { left_hi: u32, right_lo: u32 },
-
-    #[error("merge would overflow leaf-index space: left.hi = {left_hi} (== M31::P − 1)")]
-    IndexOverflow { left_hi: u32 },
-
-    #[error(
-        "merge count would overflow M31: left.count = {left_count}, right.count = {right_count}"
-    )]
-    CountOverflow { left_count: u32, right_count: u32 },
-}
+use crate::{
+    error::{Error, Result},
+    verifier::verify_record,
+};
 
 /// PcsConfig tuned to the highest `n_queries` the merge AIR's TWO embedded
 /// in-circuit verifiers tolerate inside browser WASM:
@@ -97,87 +86,97 @@ pub fn tuned_pcs_config() -> PcsConfig {
     }
 }
 
+/// The subset of `PreprocessedCircuit` that `prove_merge` and `verify_record`
+/// actually read. Lives on every `ProofRecord`, including imported ones —
+/// `PreprocessedCircuit` itself can't cross a serialisation boundary because
+/// `Arc<PreProcessedTrace>` has private fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CircuitProofMetadata {
+    pub output_addresses: Vec<usize>,
+    pub n_blake_gates: usize,
+    pub pp_trace_ids: Vec<PreProcessedColumnId>,
+    pub pp_trace_log_sizes: Vec<u32>,
+}
+
+impl CircuitProofMetadata {
+    pub fn from_preprocessed(pp: &PreprocessedCircuit) -> Self {
+        Self {
+            output_addresses: pp.params.output_addresses.clone(),
+            n_blake_gates: pp.params.n_blake_gates,
+            pp_trace_ids: pp.preprocessed_trace.ids(),
+            pp_trace_log_sizes: pp.preprocessed_trace.log_sizes(),
+        }
+    }
+
+    pub fn n_preprocessed_columns(&self) -> usize {
+        self.pp_trace_ids.len()
+    }
+}
+
 /// Per-proof state held by the worker's local store, indexed by node id
 /// assigned by the JS scheduler. Owned values; consumed by `prove_merge`.
 pub struct ProofRecord {
     pub circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
-    pub preprocessed: PreprocessedCircuit,
+    pub metadata: CircuitProofMetadata,
     pub lo: M31,
     pub hi: M31,
     pub count: M31,
 }
 
-/// Builds + proves a leaf at the given index. Public output is the 3-tuple
-/// `(lo, hi, count) = (index, index, 1)`.
-///
-/// Two separate witnesses for `lo` and `hi`, bound equal by an `eq`
-/// constraint — sounder than aliasing a single Var into two output slots
-/// (the Var-sharing variant would also work but couples leaf and merge AIR
-/// shapes more tightly than necessary).
-pub fn prove_leaf(index: u32) -> Result<ProofRecord, ProverError> {
+impl ProofRecord {
+    /// PROOF: every `ProofRecord` is constructed via `prove_leaf`, `prove_merge`,
+    /// or `serialize::deserialize_record` — all three produce or wrap an `Ok`
+    /// `stark_proof`. The `Result` wrapper on `CircuitProof.stark_proof` is a
+    /// relic of the upstream type; at this boundary it is never `Err`.
+    pub fn extended_stark_proof(&self) -> &ExtendedStarkProof<Blake2sM31MerkleHasher> {
+        self.circuit_proof
+            .stark_proof
+            .as_ref()
+            .expect("ProofRecord stark_proof must be Ok by construction")
+    }
+}
+
+pub fn prove_leaf(index: u32) -> Result<ProofRecord> {
     if index >= P {
-        return Err(ProverError::LeafIndexOutOfRange { index });
+        return Err(Error::LeafIndexOutOfRange { index });
     }
     let lo = M31::from(index);
     let hi = lo;
     let count = M31::from(1u32);
 
     let mut context = TraceContext::default();
-
     let lo_var = guess(&mut context, QM31::from(lo));
     let hi_var = guess(&mut context, QM31::from(hi));
     eq(&mut context, lo_var, hi_var);
-
     let one_var = context.one();
-
     output(&mut context, lo_var);
     output(&mut context, hi_var);
     output(&mut context, one_var);
 
-    context.finalize_guessed_vars();
-    context.validate_circuit();
-
-    let preprocessed = PreprocessedCircuit::preprocess_circuit(&mut context);
-    let circuit_proof = prove_circuit_assignment(
-        context.values(),
-        &preprocessed,
-        &BaseColumnPool::<SimdBackend>::new(),
-        tuned_pcs_config(),
-    );
-    if let Err(err) = &circuit_proof.stark_proof {
-        return Err(ProverError::StarkProofFailed(*err));
-    }
-
-    Ok(ProofRecord {
-        circuit_proof,
-        preprocessed,
-        lo,
-        hi,
-        count,
-    })
+    finalize_and_prove(&mut context, lo, hi, count)
 }
 
-/// Inductive merge. Verifies BOTH children in-circuit and binds the parent
-/// `(lo, hi, count)` per the contiguity + count constraints documented at
-/// the module level. Consumes both children; on failure they're gone.
-pub fn prove_merge(left: ProofRecord, right: ProofRecord) -> Result<ProofRecord, ProverError> {
-    // ─── Host-side fail-fast bound checks ─────────────────────────────────
+pub fn prove_merge(left: ProofRecord, right: ProofRecord) -> Result<ProofRecord> {
+    let canonical = tuned_pcs_config();
+    check_canonical_pcs_config("left", &left.circuit_proof.pcs_config, &canonical)?;
+    check_canonical_pcs_config("right", &right.circuit_proof.pcs_config, &canonical)?;
+
     // PROOF: M31 elements canonicalise into [0, P − 1]. The field add
     // `(P − 1) + 1 ≡ 0 (mod P)`, so `left.hi == P − 1` is the only value
     // that silently wraps. Rejecting it here keeps the leaf-index range
     // strictly monotonic across the chain.
     if left.hi.0 == P - 1 {
-        return Err(ProverError::IndexOverflow { left_hi: left.hi.0 });
+        return Err(Error::IndexOverflow { left_hi: left.hi.0 });
     }
     if left.hi.0 + 1 != right.lo.0 {
-        return Err(ProverError::ContiguityViolated {
+        return Err(Error::ContiguityViolated {
             left_hi: left.hi.0,
             right_lo: right.lo.0,
         });
     }
     let new_count_u64 = u64::from(left.count.0) + u64::from(right.count.0);
     if new_count_u64 >= u64::from(P) {
-        return Err(ProverError::CountOverflow {
+        return Err(Error::CountOverflow {
             left_count: left.count.0,
             right_count: right.count.0,
         });
@@ -186,176 +185,46 @@ pub fn prove_merge(left: ProofRecord, right: ProofRecord) -> Result<ProofRecord,
     let new_lo = left.lo;
     let new_hi = right.hi;
 
-    let ProofRecord {
-        circuit_proof: left_proof,
-        preprocessed: left_pp,
-        ..
-    } = left;
-    let ProofRecord {
-        circuit_proof: right_proof,
-        preprocessed: right_pp,
-        ..
-    } = right;
+    let left_lifted = lift_child(left);
+    let right_lifted = lift_child(right);
 
-    // ─── Per-child metadata ───────────────────────────────────────────────
-    let left_pcs_config = left_proof.pcs_config;
-    let left_root = left_proof
-        .stark_proof
-        .as_ref()
-        .map_err(|err| ProverError::StarkProofFailed(*err))?
-        .proof
-        .commitments[0]
-        .into();
-    let left_output_addresses = left_pp.params.output_addresses.clone();
-    let left_n_blake_gates = left_pp.params.n_blake_gates;
-    let left_pp_ids = left_pp.preprocessed_trace.ids();
-    let left_pp_log_sizes = left_pp.preprocessed_trace.log_sizes();
-    let left_output_values = left_proof.claim.output_values.clone();
-
-    let right_pcs_config = right_proof.pcs_config;
-    let right_root = right_proof
-        .stark_proof
-        .as_ref()
-        .map_err(|err| ProverError::StarkProofFailed(*err))?
-        .proof
-        .commitments[0]
-        .into();
-    let right_output_addresses = right_pp.params.output_addresses.clone();
-    let right_n_blake_gates = right_pp.params.n_blake_gates;
-    let right_pp_ids = right_pp.preprocessed_trace.ids();
-    let right_pp_log_sizes = right_pp.preprocessed_trace.log_sizes();
-    let right_output_values = right_proof.claim.output_values.clone();
-
-    // ─── Reconstruct ProofConfig that each child was sealed with ──────────
-    // Required to re-derive channel-mixing constants when lifting. Mirrors
-    // the `proof_config_for_prev` block from the previous single-child step.
-    let proof_config_for_left = {
-        let mut shape_ctx = Context::<NoValue>::default();
-        let stmt = CircuitStatement::<NoValue>::new(
-            &mut shape_ctx,
-            &left_output_addresses,
-            &left_output_values,
-            left_n_blake_gates,
-            left_pp_ids.clone(),
-            left_pp_log_sizes.clone(),
-            left_root,
-        );
-        ProofConfig::from_statement(
-            &stmt,
-            vec![true; stmt.get_components().len()],
-            &left_pcs_config,
-            INTERACTION_POW_BITS,
-        )
-    };
-    let proof_config_for_right = {
-        let mut shape_ctx = Context::<NoValue>::default();
-        let stmt = CircuitStatement::<NoValue>::new(
-            &mut shape_ctx,
-            &right_output_addresses,
-            &right_output_values,
-            right_n_blake_gates,
-            right_pp_ids.clone(),
-            right_pp_log_sizes.clone(),
-            right_root,
-        );
-        ProofConfig::from_statement(
-            &stmt,
-            vec![true; stmt.get_components().len()],
-            &right_pcs_config,
-            INTERACTION_POW_BITS,
-        )
-    };
-
-    // ─── Lift each child's proof into in-circuit form ─────────────────────
-    let (left_proof_qm31, _left_public_data) =
-        prepare_circuit_proof_for_circuit_verifier(left_proof, &proof_config_for_left);
-    let (right_proof_qm31, _right_public_data) =
-        prepare_circuit_proof_for_circuit_verifier(right_proof, &proof_config_for_right);
-
-    // ─── Build the merge circuit context ──────────────────────────────────
     let mut context = TraceContext::default();
+    let (left_lo_var, left_hi_var, left_count_var) =
+        add_in_context_verifier(&mut context, left_lifted);
+    let (right_lo_var, right_hi_var, right_count_var) =
+        add_in_context_verifier(&mut context, right_lifted);
 
-    // Left child statement + in-circuit verifier.
-    let left_statement = CircuitStatement::new(
-        &mut context,
-        &left_output_addresses,
-        &left_output_values,
-        left_n_blake_gates,
-        left_pp_ids,
-        left_pp_log_sizes,
-        left_root,
-    );
-    let left_lo_var: Var = left_statement.output_values[0];
-    let left_hi_var: Var = left_statement.output_values[1];
-    let left_count_var: Var = left_statement.output_values[2];
-    let proof_config_for_verify_left = ProofConfig::from_statement(
-        &left_statement,
-        vec![true; left_statement.get_components().len()],
-        &left_pcs_config,
-        INTERACTION_POW_BITS,
-    );
-    let left_proof_vars = left_proof_qm31.guess(&mut context);
-    verify(
-        &mut context,
-        &left_proof_vars,
-        &proof_config_for_verify_left,
-        &left_statement,
-    );
-
-    // Right child statement + in-circuit verifier.
-    let right_statement = CircuitStatement::new(
-        &mut context,
-        &right_output_addresses,
-        &right_output_values,
-        right_n_blake_gates,
-        right_pp_ids,
-        right_pp_log_sizes,
-        right_root,
-    );
-    let right_lo_var: Var = right_statement.output_values[0];
-    let right_hi_var: Var = right_statement.output_values[1];
-    let right_count_var: Var = right_statement.output_values[2];
-    let proof_config_for_verify_right = ProofConfig::from_statement(
-        &right_statement,
-        vec![true; right_statement.get_components().len()],
-        &right_pcs_config,
-        INTERACTION_POW_BITS,
-    );
-    let right_proof_vars = right_proof_qm31.guess(&mut context);
-    verify(
-        &mut context,
-        &right_proof_vars,
-        &proof_config_for_verify_right,
-        &right_statement,
-    );
-
-    // ─── PCD constraints binding the two children ─────────────────────────
     let one_var = context.one();
-
-    // Contiguity: right.lo == left.hi + 1.
     let left_hi_plus_one = add(&mut context, left_hi_var, one_var);
     eq(&mut context, right_lo_var, left_hi_plus_one);
 
-    // Count consistency: count == left.count + right.count.
     let computed_count = add(&mut context, left_count_var, right_count_var);
     let count_var = guess(&mut context, QM31::from(new_count));
     eq(&mut context, count_var, computed_count);
 
-    // Range/count consistency: count + lo == hi + 1.
-    // (Uses only `add` + `eq`; the circuits crate has no subtract op.)
+    // count + lo == hi + 1  (≡ count == hi - lo + 1; the circuits crate has no subtract op)
     let count_plus_lo = add(&mut context, count_var, left_lo_var);
     let hi_plus_one = add(&mut context, right_hi_var, one_var);
     eq(&mut context, count_plus_lo, hi_plus_one);
 
-    // ─── Public outputs: (lo, hi, count) ──────────────────────────────────
     output(&mut context, left_lo_var);
     output(&mut context, right_hi_var);
     output(&mut context, count_var);
 
+    let record = finalize_and_prove(&mut context, new_lo, new_hi, new_count)?;
+    verify_record(&record).map_err(|e| Error::VerifyAfterProveFailed(Box::new(e)))?;
+    Ok(record)
+}
+
+fn finalize_and_prove(
+    context: &mut TraceContext,
+    lo: M31,
+    hi: M31,
+    count: M31,
+) -> Result<ProofRecord> {
     context.finalize_guessed_vars();
     context.validate_circuit();
-
-    let preprocessed = PreprocessedCircuit::preprocess_circuit(&mut context);
+    let preprocessed = PreprocessedCircuit::preprocess_circuit(context);
     let circuit_proof = prove_circuit_assignment(
         context.values(),
         &preprocessed,
@@ -363,24 +232,164 @@ pub fn prove_merge(left: ProofRecord, right: ProofRecord) -> Result<ProofRecord,
         tuned_pcs_config(),
     );
     if let Err(err) = &circuit_proof.stark_proof {
-        return Err(ProverError::StarkProofFailed(*err));
+        return Err(Error::StarkProofFailed(*err));
     }
-
     Ok(ProofRecord {
         circuit_proof,
-        preprocessed,
-        lo: new_lo,
-        hi: new_hi,
-        count: new_count,
+        metadata: CircuitProofMetadata::from_preprocessed(&preprocessed),
+        lo,
+        hi,
+        count,
     })
 }
 
-/// Returns the byte-size estimate of the underlying StarkProof.
-pub fn proof_size(record: &ProofRecord) -> usize {
-    record
-        .circuit_proof
+/// Owns everything needed to re-verify one child inside the merge AIR's
+/// trace context. Built outside the merge context so the proof's `Result`
+/// can be unwrapped once and the metadata moved into the helper.
+///
+/// PROOF: `proof_config` is computed via `ProofConfig::from_statement` from
+/// a `NoValue` statement, but `from_statement` reads only metadata-derived
+/// shapes (component log sizes, preprocessed log sizes). It is invariant
+/// under the `IValue` parameter, so the same config is reused when the
+/// merge context calls `verify(...)` with a `Var`-valued statement.
+struct LiftedChild {
+    root: HashValue<QM31>,
+    output_values: Vec<QM31>,
+    output_addresses: Vec<usize>,
+    n_blake_gates: usize,
+    pp_trace_ids: Vec<PreProcessedColumnId>,
+    pp_trace_log_sizes: Vec<u32>,
+    proof_qm31: CircuitVerifierProof<QM31>,
+    proof_config: ProofConfig,
+}
+
+fn lift_child(child: ProofRecord) -> LiftedChild {
+    let ProofRecord {
+        circuit_proof,
+        metadata,
+        ..
+    } = child;
+    let CircuitProofMetadata {
+        output_addresses,
+        n_blake_gates,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+    } = metadata;
+    let pcs_config = circuit_proof.pcs_config;
+    let stark_proof = circuit_proof
         .stark_proof
         .as_ref()
-        .map(|p| p.proof.size_estimate())
-        .unwrap_or(0)
+        .expect("ProofRecord stark_proof must be Ok by construction");
+    let root = stark_proof.proof.commitments[0].into();
+    let output_values = circuit_proof.claim.output_values.clone();
+    let proof_config = build_child_proof_config(
+        &output_addresses,
+        &output_values,
+        n_blake_gates,
+        pp_trace_ids.clone(),
+        pp_trace_log_sizes.clone(),
+        root,
+        &pcs_config,
+    );
+    let (proof_qm31, _public_data) =
+        prepare_circuit_proof_for_circuit_verifier(circuit_proof, &proof_config);
+    LiftedChild {
+        root,
+        output_values,
+        output_addresses,
+        n_blake_gates,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+        proof_qm31,
+        proof_config,
+    }
+}
+
+fn add_in_context_verifier(context: &mut TraceContext, child: LiftedChild) -> (Var, Var, Var) {
+    let LiftedChild {
+        root,
+        output_values,
+        output_addresses,
+        n_blake_gates,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+        proof_qm31,
+        proof_config,
+    } = child;
+    let statement = CircuitStatement::new(
+        context,
+        &output_addresses,
+        &output_values,
+        n_blake_gates,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+        root,
+    );
+    let lo = statement.output_values[0];
+    let hi = statement.output_values[1];
+    let count = statement.output_values[2];
+    let proof_vars = proof_qm31.guess(context);
+    verify(context, &proof_vars, &proof_config, &statement);
+    (lo, hi, count)
+}
+
+fn build_child_proof_config(
+    output_addresses: &[usize],
+    output_values: &[QM31],
+    n_blake_gates: usize,
+    pp_trace_ids: Vec<PreProcessedColumnId>,
+    pp_trace_log_sizes: Vec<u32>,
+    root: HashValue<QM31>,
+    pcs_config: &PcsConfig,
+) -> ProofConfig {
+    let mut shape_ctx = Context::<NoValue>::default();
+    let stmt = CircuitStatement::<NoValue>::new(
+        &mut shape_ctx,
+        output_addresses,
+        output_values,
+        n_blake_gates,
+        pp_trace_ids,
+        pp_trace_log_sizes,
+        root,
+    );
+    let n_components = stmt.get_components().len();
+    ProofConfig::from_statement(
+        &stmt,
+        vec![true; n_components],
+        pcs_config,
+        INTERACTION_POW_BITS,
+    )
+}
+
+/// Refuses a child whose `pcs_config` differs from canonical on any
+/// security-relevant field. `lifting_log_size` is intentionally ignored —
+/// the prover sets it from `trace_log_size + log_blowup_factor` at proof
+/// time, so it always differs from the `tuned_pcs_config()` template even
+/// on an honest child.
+fn check_canonical_pcs_config(
+    side: &'static str,
+    child: &PcsConfig,
+    canonical: &PcsConfig,
+) -> Result<()> {
+    let matches = child.pow_bits == canonical.pow_bits
+        && child.fri_config.log_blowup_factor == canonical.fri_config.log_blowup_factor
+        && child.fri_config.log_last_layer_degree_bound
+            == canonical.fri_config.log_last_layer_degree_bound
+        && child.fri_config.n_queries == canonical.fri_config.n_queries
+        && child.fri_config.fold_step == canonical.fri_config.fold_step;
+    if matches {
+        Ok(())
+    } else {
+        Err(Error::ChildPcsConfigMismatch {
+            side,
+            canonical_n_queries: canonical.fri_config.n_queries,
+            child_n_queries: child.fri_config.n_queries,
+        })
+    }
+}
+
+/// Public predicate so `serialize::into_record` can refuse a deserialized
+/// record whose `pcs_config` doesn't match what this crate proves under.
+pub(crate) fn assert_canonical_pcs_config(side: &'static str, child: &PcsConfig) -> Result<()> {
+    check_canonical_pcs_config(side, child, &tuned_pcs_config())
 }

@@ -1,20 +1,26 @@
 {% extends "_base.html" %} {% block title %}zkp — binary streaming PCD over Stwo{% endblock %} {%
 block content %}
-<p><a href="/">← back to demos</a></p>
-<h1>zkp — binary streaming PCD over Stwo</h1>
-<p>
-  Click <strong>Next</strong> to enqueue a new leaf at the next index. Each leaf is proved
-  independently; pairs of equal-count peaks fold into a parent merge whose AIR embeds
-  <em>two</em> in-circuit <code>circuits-stark-verifier::verify(...)</code> calls (see
-  <code>zkp::recursion::prove_merge</code>) and binds the parent <code>(lo, hi, count)</code> by
-  contiguity. <strong>Next</strong> is non-blocking — clicks queue up while the worker is busy.
-</p>
-<p>
-  Click <strong>Finish</strong> to drain in-flight, cascade the remaining peaks into a single root,
-  host-verify it, and display the root's public input. <strong>Reset</strong> clears all state.
-</p>
+<script>
+  // Fullbleed (no-scroll) layout for /zkp. Set the body attribute as early as
+  // possible so the no-scroll grid in layout.css applies before paint. Done
+  // here rather than in _base.html because Askama block syntax inside a
+  // <body> tag's attribute list breaks oxfmt's HTML parser.
+  document.body.setAttribute("data-fullbleed", "");
+</script>
+<header class="zkp-page-header">
+  <p><a href="/">← back to demos</a></p>
+  <h1>zkp — binary streaming PCD over Stwo</h1>
+  <p class="zkp-page-blurb">
+    N equivalent worker threads share one MMR-of-proofs. Any worker can prove a leaf or a merge;
+    independent merges run in parallel on different workers via on-demand cross-worker proof
+    transfer. <strong>Next</strong> is non-blocking — every click schedules a leaf on the next idle
+    worker. The MMR streaming rule folds equal-count peaks automatically as they settle.
+    <strong>Verify</strong> cascades any remaining peaks into a single root and reports the result
+    inline. <strong>Reset</strong> clears all state.
+  </p>
+</header>
 
-<section class="kv-grid">
+<section class="kv-grid zkp-readouts">
   <dl>
     <dt>Pool</dt>
     <dd data-role="pool">— (booting)</dd>
@@ -39,18 +45,14 @@ block content %}
   </dl>
 </section>
 
-<p>
+<div class="zkp-actions">
   <button data-role="next" disabled>Next</button>
-  <button data-role="finish" disabled>Finish</button>
+  <button data-role="verify" disabled>Verify</button>
   <button data-role="reset" disabled>Reset</button>
-</p>
+  <span data-role="verify-result" class="zkp-verify-result">(not yet verified)</span>
+</div>
 
 <div class="zkp-viz-container" data-role="viz"></div>
-
-<p class="zkp-viz-hint">
-  Drag horizontally to pan. Hold <kbd>Ctrl</kbd> / <kbd>⌘</kbd> + scroll to zoom. Hover a node for
-  full details.
-</p>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zkp.main.mjs"></script>
 {% endblock %}

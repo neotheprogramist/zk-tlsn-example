@@ -12,6 +12,7 @@ use crate::{
     error::{Error, TranscriptError},
     flow::{MAX_RECV_DATA, MAX_SENT_DATA},
     parser::redacted::{Body, Header, Request, Response},
+    transport::{Runtime, SmolRuntime},
 };
 
 #[derive(Debug)]
@@ -47,11 +48,17 @@ impl Verifier {
         let (driver, handle) = session.split();
 
         let (socket_tx, socket_rx) = oneshot::channel();
-        smol::spawn(async move {
+        SmolRuntime.spawn_detached(Box::pin(async move {
             let outcome = driver.await.map_err(Error::from);
-            let _ = socket_tx.send(outcome);
-        })
-        .detach();
+            // PROOF: the receiver is awaited below; if it has been dropped,
+            // the verifier has already returned an error upstream and the
+            // consumer side maps the closed channel to
+            // `Error::SessionDriverCancelled`. We log the drop rather than
+            // discard it silently so the event is observable in tracing.
+            if socket_tx.send(outcome).is_err() {
+                tracing::warn!("verifier socket oneshot receiver dropped before driver finished");
+            }
+        }));
 
         let verifier = verifier.commit().await?;
         if let Err(reason) = protocol_policy(verifier.request().protocol()) {

@@ -1,16 +1,26 @@
-// Binary streaming PCD scheduler. Maintains MMR peaks (right-spine), a
-// worker pool (v1: K=1), a FIFO job queue, and a Finish cascade that
-// merges remaining peaks into a single root and host-verifies it.
+// Binary streaming PCD scheduler — bytes-based, stateless workers.
 //
-// Promotion rule (standard MMR streaming): after every node is proved,
-// if the top two peaks have equal `count`, pop them and enqueue a merge.
-// Repeats until the top two have unequal counts.
+// The wasm module exposes Prover/Verifier classes. Workers instantiate
+// them per request and discard them; ALL proof state lives on the main
+// thread, in `proofBytes: Map<nodeId, Uint8Array>`. Merging a pair of
+// peaks just sends both child bytes to whichever worker is idle — there
+// is no notion of a proof being "owned" by a particular worker, and no
+// cross-worker transfer step.
 //
-// Finish rule: after `finish()` is called, drain in-flight, then
-// repeatedly merge peaks[0] and peaks[1] (left-to-right; the merge AIR
-// permits unequal-count children as long as ranges are contiguous, which
-// they always are by construction). When peaks.length === 1, host-verify
-// and resolve the finish promise with the root's public outputs.
+// Click Next ⇒ leaf job to thread pool ⇒ on prove, MMR promote() may
+// enqueue a merge ⇒ on merge prove, promote() may enqueue more. The
+// scheduler does no proving work itself; it only routes tasks.
+//
+// Tree-construction audit (invariants this scheduler preserves):
+//   - Binarity: every internal node has exactly 2 children.
+//   - Leaves enter `peaks` strictly in submission order (leaf indices
+//     0,1,2,...). Without this, promote()'s "equal count" rule would fold
+//     the wrong pair when leaves prove out of order across workers.
+//   - MMR streaming rule: top two peaks fold iff equal `count`.
+//   - Verify cascade: when the user clicks Verify, any remaining peaks fold
+//     left-to-right (the merge AIR allows unequal counts as long as ranges
+//     are contiguous, which holds by construction) until peaks.length === 1,
+//     then host-verify the root.
 
 import { event, eventErr } from "./log.mjs";
 
@@ -39,37 +49,47 @@ class Worker_ {
 }
 
 export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
-  // ─── state ──────────────────────────────────────────────────────────────
   const pool = [];
   const queue = [];
   const nodes = new Map(); // nodeId -> node record
-  const peaks = []; // array of nodeIds, ordered left-to-right by lo
+  const peaks = []; // nodeIds, sorted by lo ascending
   const inflight = new Map(); // jobId -> { workerSlot, nodeId, op, startedAt }
+  const proofBytes = new Map(); // nodeId -> Uint8Array (the serialized proof)
+  const leafNodeByIndex = new Map(); // leafIndex -> nodeId
+  const provedLeaves = new Set(); // proved-but-not-yet-promoted (out-of-order)
   const listeners = new Set();
   let nextNodeId = 0;
   let nextLeafIndex = 0;
+  let nextLeafToPromote = 0;
   let nextJobId = 0;
-  let finishing = false;
-  let finishResolve = null;
-  let finishReject = null;
+  let verifying = false;
+  let verifyResolve = null;
+  let verifyReject = null;
   let initPromise = null;
 
-  // ─── pub/sub ────────────────────────────────────────────────────────────
   function notify() {
     const snapshot = serializeState();
-    for (const listener of listeners) {
-      try {
-        listener(snapshot);
-      } catch (err) {
-        eventErr("zkp.scheduler.listener.failed", { message: err?.message ?? String(err) });
-      }
-    }
+    for (const listener of listeners) listener(snapshot);
   }
+
+  function requireNode(nodeId, where) {
+    const node = nodes.get(nodeId);
+    if (!node) throw new Error(`${where}: unknown node_id=${nodeId}`);
+    return node;
+  }
+
+  function requireBytes(nodeId, where) {
+    const bytes = proofBytes.get(nodeId);
+    if (!bytes) throw new Error(`${where}: missing proof bytes for node_id=${nodeId}`);
+    return bytes;
+  }
+
   function subscribe(listener) {
     listeners.add(listener);
     listener(serializeState());
     return () => listeners.delete(listener);
   }
+
   function serializeState() {
     return {
       poolSize: pool.length,
@@ -86,11 +106,10 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
       nodes: Array.from(nodes.values()).map((n) => ({ ...n })),
       peaks: peaks.slice(),
       nextLeafIndex,
-      finishing,
+      verifying,
     };
   }
 
-  // ─── worker management ──────────────────────────────────────────────────
   function init() {
     if (initPromise) return initPromise;
     if (poolSize < 1) {
@@ -99,25 +118,7 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
     initPromise = (async () => {
       const ready = [];
       for (let slot = 0; slot < poolSize; slot++) {
-        const w = new Worker_(slot, workerScriptUrl);
-        w.worker.addEventListener("message", (ev) => onWorkerMessage(slot, ev));
-        w.worker.addEventListener("error", (ev) => onWorkerError(slot, ev));
-        pool.push(w);
-        ready.push(
-          new Promise((resolve) => {
-            const onMsg = (ev) => {
-              if (ev.data?.kind === "ready") {
-                w.worker.removeEventListener("message", onMsg);
-                resolve();
-              }
-            };
-            w.worker.addEventListener("message", onMsg);
-            // Boot: send any message; the worker calls ensureReady on first
-            // event. We use a benign "init" so the worker can no-op after.
-            w.worker.postMessage({ kind: "init", jobId: -1 });
-            // No timeout — the harness's own page-load watchdog catches stalls.
-          }),
-        );
+        ready.push(spawnWorker(slot));
       }
       await Promise.all(ready);
       event("zkp.scheduler.ready", { pool_size: pool.length });
@@ -126,71 +127,112 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
     return initPromise;
   }
 
-  // ─── core dispatch ──────────────────────────────────────────────────────
+  function spawnWorker(slot) {
+    const w = new Worker_(slot, workerScriptUrl);
+    w.worker.addEventListener("message", (ev) => onWorkerMessage(slot, ev));
+    w.worker.addEventListener("error", (ev) => onWorkerError(slot, ev));
+    pool.push(w);
+    return new Promise((resolve) => {
+      const onMsg = (ev) => {
+        if (ev.data?.kind === "ready") {
+          w.worker.removeEventListener("message", onMsg);
+          resolve();
+        }
+      };
+      w.worker.addEventListener("message", onMsg);
+      w.worker.postMessage({ kind: "init", jobId: -1 });
+    });
+  }
+
+  // FIFO dispatch over the queue: each job picks any idle worker. There are
+  // no per-job affinity constraints because every worker can run any op.
   function dispatch() {
     while (queue.length > 0) {
       const slot = pool.findIndex((w) => !w.busy);
       if (slot < 0) return;
       const job = queue.shift();
-      const w = pool[slot];
-      w.busy = true;
-      w.currentJobId = job.jobId;
-      w.currentNodeId = job.nodeId;
-      w.currentOp = job.kind;
-      w.startedAt = performance.now();
-      const node = nodes.get(job.nodeId);
-      if (node) {
-        node.state = NODE_STATE.PROVING;
-        node.workerSlot = slot;
-      }
-      inflight.set(job.jobId, {
-        workerSlot: slot,
-        nodeId: job.nodeId,
-        op: job.kind,
-        startedAt: w.startedAt,
-      });
-      const message = { ...job };
-      w.worker.postMessage(message);
-      event("zkp.scheduler.dispatched", {
-        node_id: job.nodeId,
-        job_id: job.jobId,
-        op: job.kind,
-        worker_slot: slot,
-      });
+      assignJob(slot, job);
     }
+  }
+
+  function assignJob(slot, job) {
+    const w = pool[slot];
+    w.busy = true;
+    w.currentJobId = job.jobId;
+    w.currentNodeId = job.nodeId;
+    w.currentOp = job.kind;
+    w.startedAt = performance.now();
+    if (job.kind === "leaf" || job.kind === "merge") {
+      const node = requireNode(job.nodeId, "assignJob");
+      node.state = NODE_STATE.PROVING;
+      node.workerSlot = slot;
+    }
+    inflight.set(job.jobId, {
+      workerSlot: slot,
+      nodeId: job.nodeId,
+      op: job.kind,
+      startedAt: w.startedAt,
+    });
+
+    let message;
+    let transfer = [];
+    if (job.kind === "leaf") {
+      message = { kind: "leaf", jobId: job.jobId, index: job.index };
+    } else if (job.kind === "merge") {
+      // Consume children's bytes: merge will produce a fresh proof for the
+      // parent and the children are no longer reachable (they're not in
+      // peaks anymore). Transfer is zero-copy; the main-thread reference
+      // becomes neutered post-postMessage, which is exactly what we want.
+      const left = requireBytes(job.leftId, "assignJob.merge.left");
+      const right = requireBytes(job.rightId, "assignJob.merge.right");
+      proofBytes.delete(job.leftId);
+      proofBytes.delete(job.rightId);
+      message = { kind: "merge", jobId: job.jobId, left, right };
+      transfer = [left.buffer, right.buffer];
+    } else if (job.kind === "verify") {
+      // Verify is read-only: clone the bytes so a follow-up attempt (or a
+      // viz redraw) can still inspect the root proof. The clone is only
+      // ~50KB–1MB and runs once per session.
+      const original = requireBytes(job.nodeId, "assignJob.verify");
+      const bytes = new Uint8Array(original);
+      message = { kind: "verify", jobId: job.jobId, bytes };
+      transfer = [bytes.buffer];
+    } else {
+      throw new Error(`assignJob: unknown job kind=${job.kind}`);
+    }
+
+    w.worker.postMessage(message, transfer);
+    event("zkp.scheduler.dispatched", {
+      node_id: job.nodeId,
+      job_id: job.jobId,
+      op: job.kind,
+      worker_slot: slot,
+    });
   }
 
   function onWorkerMessage(slot, ev) {
     const data = ev.data;
     if (!data) return;
-    if (data.kind === "ready") {
-      // Ready handshake handled inside init(); ignore here.
-      return;
-    }
+    if (data.kind === "ready") return;
     if (data.kind === "error") {
-      const job = inflight.get(data.jobId);
       inflight.delete(data.jobId);
-      const w = pool[slot];
-      const nodeId = w.currentNodeId;
+      const nodeId = pool[slot].currentNodeId;
       releaseWorker(slot);
-      const node = nodeId != null ? nodes.get(nodeId) : null;
-      if (node) {
-        node.state = NODE_STATE.FAILED;
-        node.errorMessage = data.message;
-      }
+      const node = requireNode(nodeId, "onWorkerMessage.error");
+      node.state = NODE_STATE.FAILED;
+      node.errorMessage = data.message;
       eventErr("zkp.scheduler.job.failed", {
         worker_slot: slot,
         job_id: data.jobId,
         node_id: nodeId,
-        op: job?.op,
+        op: data.op,
         message: data.message,
       });
-      // If we're finishing, propagate the failure.
-      if (finishing && finishReject) {
-        const reject = finishReject;
-        finishResolve = null;
-        finishReject = null;
-        finishing = false;
+      if (verifying && verifyReject) {
+        const reject = verifyReject;
+        verifyResolve = null;
+        verifyReject = null;
+        verifying = false;
         notify();
         reject(new Error(`worker job failed: ${data.message}`));
         return;
@@ -202,8 +244,9 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
       handleJobDone(slot, data);
       return;
     }
-    eventErr("zkp.scheduler.message.unknown", { kind: data.kind });
+    throw new Error(`onWorkerMessage: unknown message kind=${data.kind}`);
   }
+
   function onWorkerError(slot, ev) {
     eventErr("zkp.scheduler.worker.error", {
       worker_slot: slot,
@@ -220,110 +263,170 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
     w.startedAt = null;
   }
 
-  // ─── job-completion handlers ────────────────────────────────────────────
   function handleJobDone(slot, data) {
+    const flight = inflight.get(data.jobId);
     inflight.delete(data.jobId);
     releaseWorker(slot);
-    if (data.op === "leaf" || data.op === "merge") {
-      handleProveDone(data.op, data.result);
-    } else if (data.op === "verify") {
-      handleVerifyDone(data.result);
-    } else if (data.op === "forget" || data.op === "reset") {
-      // No state change beyond worker release.
+    const elapsedMs = flight ? Math.round(performance.now() - flight.startedAt) : null;
+    switch (data.op) {
+      case "leaf":
+        handleLeafDone(slot, flight, elapsedMs, data.result);
+        break;
+      case "merge":
+        handleMergeDone(slot, flight, elapsedMs, data.result);
+        break;
+      case "verify":
+        handleVerifyDone(flight, elapsedMs, data.result);
+        break;
+      default:
+        throw new Error(`handleJobDone: unknown op=${data.op}`);
     }
     dispatch();
-    maybeAdvanceFinish();
+    maybeAdvanceVerify();
     if (queue.length === 0 && inflight.size === 0) {
       event("zkp.scheduler.idle", {});
     }
     notify();
   }
 
-  function handleProveDone(opKind, result) {
-    const node = nodes.get(result.node_id);
-    if (!node) {
-      eventErr("zkp.scheduler.node.unknown", { node_id: result.node_id, op: opKind });
-      return;
+  function handleLeafDone(slot, flight, elapsedMs, result) {
+    const nodeId = flight.nodeId;
+    const node = requireNode(nodeId, "handleLeafDone");
+    node.lo = result.lo;
+    node.hi = result.hi;
+    node.count = result.count;
+    node.proveMs = elapsedMs;
+    node.proofSizeBytes = result.proofSizeBytes;
+    node.workerSlot = null;
+    node.state = NODE_STATE.PROVED;
+    proofBytes.set(nodeId, result.bytes);
+    event("zkp.scheduler.leaf.proved", {
+      node_id: nodeId,
+      index: node.index,
+      prove_ms: elapsedMs,
+      size_bytes: node.proofSizeBytes,
+      worker_slot: slot,
+    });
+    // Promote leaves to peaks STRICTLY in submission order. Without this,
+    // out-of-order parallel leaf completion would corrupt the MMR shape
+    // (promote() folds the two top peaks; if they're not contiguous-by-
+    // construction, the merge AIR rejects via ContiguityViolated).
+    provedLeaves.add(nodeId);
+    promoteReadyLeaves();
+  }
+
+  function promoteReadyLeaves() {
+    while (true) {
+      const nodeId = leafNodeByIndex.get(nextLeafToPromote);
+      if (nodeId == null) break;
+      if (!provedLeaves.has(nodeId)) break;
+      provedLeaves.delete(nodeId);
+      nextLeafToPromote++;
+      insertPeak(nodeId);
     }
+    promote();
+  }
+
+  // Insert a finished node into `peaks` so that peaks remains strictly
+  // sorted by `lo`. With parallel merges across workers, merges can finish
+  // in any order — but `promote()`'s "top two adjacent peaks" rule and the
+  // merge AIR's contiguity constraint both require peaks to be ordered.
+  function insertPeak(nodeId) {
+    const node = requireNode(nodeId, "insertPeak");
+    let i = 0;
+    while (i < peaks.length && requireNode(peaks[i], "insertPeak.peer").lo < node.lo) i++;
+    peaks.splice(i, 0, nodeId);
+  }
+
+  function handleMergeDone(slot, flight, elapsedMs, result) {
+    const nodeId = flight.nodeId;
+    const node = requireNode(nodeId, "handleMergeDone");
     node.state = NODE_STATE.PROVED;
     node.lo = result.lo;
     node.hi = result.hi;
     node.count = result.count;
-    node.proveMs = result.prove_ms;
-    node.proofSizeBytes = result.proof_size_bytes;
+    node.proveMs = elapsedMs;
+    node.proofSizeBytes = result.proofSizeBytes;
     node.workerSlot = null;
-    if (opKind === "leaf") {
-      event("zkp.scheduler.leaf.proved", {
-        node_id: node.nodeId,
-        index: node.index,
-        prove_ms: node.proveMs,
-        size_bytes: node.proofSizeBytes,
-      });
-    } else {
-      event("zkp.scheduler.merge.proved", {
-        node_id: node.nodeId,
-        left_id: node.leftId,
-        right_id: node.rightId,
-        lo: node.lo,
-        hi: node.hi,
-        count: node.count,
-        prove_ms: node.proveMs,
-        size_bytes: node.proofSizeBytes,
-      });
-    }
-    // Push the new peak (replacing its children if any), then promote.
-    peaks.push(node.nodeId);
+    proofBytes.set(nodeId, result.bytes);
+    event("zkp.scheduler.merge.proved", {
+      node_id: nodeId,
+      left_id: node.leftId,
+      right_id: node.rightId,
+      lo: node.lo,
+      hi: node.hi,
+      count: node.count,
+      prove_ms: elapsedMs,
+      size_bytes: node.proofSizeBytes,
+      worker_slot: slot,
+    });
+    insertPeak(nodeId);
     promote();
   }
 
-  function handleVerifyDone(result) {
-    const node = nodes.get(result.node_id);
-    if (!node) return;
+  function handleVerifyDone(flight, elapsedMs, result) {
+    const nodeId = flight.nodeId;
+    const node = requireNode(nodeId, "handleVerifyDone");
     node.state = NODE_STATE.VERIFIED;
-    node.verifyMs = result.verify_ms;
+    node.verifyMs = elapsedMs;
     event("zkp.scheduler.verify.done", {
-      node_id: node.nodeId,
-      verify_ms: node.verifyMs,
+      node_id: nodeId,
+      verify_ms: elapsedMs,
     });
-    if (finishing && finishResolve && peaks.length === 1 && peaks[0] === node.nodeId) {
-      const resolve = finishResolve;
-      finishResolve = null;
-      finishReject = null;
-      finishing = false;
-      event("zkp.scheduler.finished", {
-        root_node_id: node.nodeId,
-        verified: true,
-        lo: node.lo,
-        hi: node.hi,
-        count: node.count,
+    if (verifying && verifyResolve && peaks.length === 1 && peaks[0] === nodeId) {
+      const resolve = verifyResolve;
+      verifyResolve = null;
+      verifyReject = null;
+      verifying = false;
+      event("zkp.scheduler.verified", {
+        root_node_id: nodeId,
+        verified: result.verified,
+        lo: result.lo,
+        hi: result.hi,
+        count: result.count,
       });
       resolve({
-        rootNodeId: node.nodeId,
-        verified: true,
-        lo: node.lo,
-        hi: node.hi,
-        count: node.count,
+        rootNodeId: nodeId,
+        verified: result.verified,
+        lo: result.lo,
+        hi: result.hi,
+        count: result.count,
       });
     }
   }
 
-  // ─── MMR promotion (streaming rule) ─────────────────────────────────────
+  // MMR promotion (streaming rule, parallel-safe).
+  // Standard serial MMR streaming pops the top two peaks when their counts
+  // match. With parallel completion, multiple leaves/merges may land in
+  // `peaks` between two promote() calls — the foldable pair may not be the
+  // top two, and there may be more than one foldable pair simultaneously.
+  //
+  // Scan all adjacent pairs LEFT-to-right; fold the first that is BOTH
+  // equal-count AND range-contiguous (left.hi + 1 === right.lo). Restart
+  // after each fold.
+  //
+  // Direction matters: left-to-right matches the canonical MMR shape that
+  // serial insertion would produce. With three equal-count peaks [a, b, c]
+  // in a row, serial MMR would have folded (a,b) first (leaving [a-b, c]),
+  // because b entered peaks while c didn't yet exist. Right-to-left would
+  // pick (b, c) and strand `a`, producing a non-canonical (deeper) tree.
   function promote() {
-    while (peaks.length >= 2) {
-      const rightId = peaks[peaks.length - 1];
-      const leftId = peaks[peaks.length - 2];
-      const right = nodes.get(rightId);
-      const left = nodes.get(leftId);
-      if (!right || !left) break;
-      if (right.count !== left.count) break;
-      // Pop both; create the merge node; queue the merge job.
-      peaks.pop();
-      peaks.pop();
-      enqueueMerge(leftId, rightId);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < peaks.length - 1; i++) {
+        const left = requireNode(peaks[i], "promote.left");
+        const right = requireNode(peaks[i + 1], "promote.right");
+        if (right.count !== left.count) continue;
+        if (left.hi + 1 !== right.lo) continue;
+        const [leftId, rightId] = peaks.splice(i, 2);
+        enqueueMerge(leftId, rightId);
+        changed = true;
+        break;
+      }
     }
   }
 
-  // ─── public API ─────────────────────────────────────────────────────────
   function submitLeaf() {
     const nodeId = nextNodeId++;
     const index = nextLeafIndex++;
@@ -345,6 +448,7 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
       workerSlot: null,
       errorMessage: null,
     });
+    leafNodeByIndex.set(index, nodeId);
     queue.push({ kind: "leaf", jobId, nodeId, index });
     event("zkp.scheduler.leaf.queued", { node_id: nodeId, index });
     dispatch();
@@ -372,25 +476,32 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
       workerSlot: null,
       errorMessage: null,
     });
-    // Mark children as having a parent (for visualization).
-    const left = nodes.get(leftId);
-    const right = nodes.get(rightId);
-    if (left) left.parentId = nodeId;
-    if (right) right.parentId = nodeId;
-    queue.push({ kind: "merge", jobId, nodeId, leftId, rightId });
+    requireNode(leftId, "enqueueMerge.left").parentId = nodeId;
+    requireNode(rightId, "enqueueMerge.right").parentId = nodeId;
     event("zkp.scheduler.merge.queued", {
       node_id: nodeId,
       left_id: leftId,
       right_id: rightId,
     });
+    queue.push({ kind: "merge", jobId, nodeId, leftId, rightId });
     dispatch();
+    // Notify so the viz can render the new merge node (and any
+    // worker-state transition triggered by `dispatch`) immediately.
+    // Without this, a merge enqueued from the verify-cascade path stays
+    // invisible until the merge worker completes and `handleJobDone`
+    // fires the next notify.
+    notify();
     return nodeId;
   }
 
-  function maybeAdvanceFinish() {
-    if (!finishing) return;
+  function maybeAdvanceVerify() {
+    if (!verifying) return;
     if (inflight.size > 0 || queue.length > 0) return;
     if (peaks.length > 1) {
+      // Cascade: fold leftmost two peaks regardless of count match. The
+      // merge AIR allows unequal counts as long as ranges are contiguous,
+      // which is invariant by construction (peaks are ordered left-to-right
+      // and contiguous because every leaf entered in submission order).
       const leftId = peaks.shift();
       const rightId = peaks.shift();
       enqueueMerge(leftId, rightId);
@@ -398,30 +509,35 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
     }
     if (peaks.length === 1) {
       const rootId = peaks[0];
-      const root = nodes.get(rootId);
-      if (root && root.state === NODE_STATE.PROVED) {
-        const jobId = nextJobId++;
-        queue.push({ kind: "verify", jobId, nodeId: rootId });
-        dispatch();
+      const root = requireNode(rootId, "maybeAdvanceVerify");
+      if (root.state !== NODE_STATE.PROVED) {
+        throw new Error(
+          `maybeAdvanceVerify: root node_id=${rootId} state=${root.state}, expected PROVED`,
+        );
       }
+      queue.push({ kind: "verify", jobId: nextJobId++, nodeId: rootId });
+      dispatch();
     }
   }
 
-  function finish() {
-    if (finishing) {
-      throw new Error("scheduler is already finishing");
+  function verify() {
+    if (verifying) {
+      throw new Error("scheduler is already verifying");
     }
     if (peaks.length === 0 && queue.length === 0 && inflight.size === 0) {
-      throw new Error("nothing to finish: no leaves submitted");
+      throw new Error("nothing to verify: no leaves submitted");
     }
-    finishing = true;
-    event("zkp.scheduler.finish.start", { peaks: peaks.length });
+    verifying = true;
+    event("zkp.scheduler.verify.start", { peaks: peaks.length });
     const promise = new Promise((resolve, reject) => {
-      finishResolve = resolve;
-      finishReject = reject;
+      verifyResolve = resolve;
+      verifyReject = reject;
     });
+    // Advance first (may enqueue a cascade merge or the verify job),
+    // then notify — so the snapshot the viz sees already includes the
+    // new node and worker-busy state.
+    maybeAdvanceVerify();
     notify();
-    maybeAdvanceFinish();
     return promise;
   }
 
@@ -430,23 +546,26 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
     nodes.clear();
     peaks.length = 0;
     inflight.clear();
+    proofBytes.clear();
+    leafNodeByIndex.clear();
+    provedLeaves.clear();
     nextNodeId = 0;
     nextLeafIndex = 0;
+    nextLeafToPromote = 0;
     nextJobId = 0;
-    if (finishReject) {
-      const reject = finishReject;
-      finishResolve = null;
-      finishReject = null;
-      reject(new Error("scheduler reset before finish completed"));
+    if (verifyReject) {
+      const reject = verifyReject;
+      verifyResolve = null;
+      verifyReject = null;
+      reject(new Error("scheduler reset before verify completed"));
     }
-    finishing = false;
+    verifying = false;
     for (const w of pool) {
       w.busy = false;
       w.currentJobId = null;
       w.currentNodeId = null;
       w.currentOp = null;
       w.startedAt = null;
-      w.worker.postMessage({ kind: "reset", jobId: nextJobId++ });
     }
     event("zkp.scheduler.reset", {});
     notify();
@@ -459,7 +578,7 @@ export function createScheduler({ workerScriptUrl, poolSize = 1 } = {}) {
   return {
     init,
     submitLeaf,
-    finish,
+    verify,
     reset,
     subscribe,
     snapshot,

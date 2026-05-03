@@ -1,7 +1,8 @@
 use stwo::core::fields::m31::M31;
 use zkp::{
+    Prover, Verifier,
     recursion::{prove_leaf, prove_merge},
-    verify::verify_record,
+    verifier::verify_record,
 };
 
 #[test]
@@ -46,4 +47,40 @@ fn tree_of_four_leaves() {
         M31::from(4u32).into(),
         "claim output[2] (count) must equal 4 for a 4-leaf tree",
     );
+}
+
+/// Same flow driven through the stateless `Prover` + `Verifier` (bytes
+/// API). Confirms the high-level wasm-facing surface matches the
+/// free-function path's semantics.
+#[test]
+fn tree_of_four_leaves_via_prover_struct() {
+    let prover = Prover::new();
+    let verifier = Verifier::new();
+
+    let leaves: Vec<_> = (0..4u32)
+        .map(|index| {
+            let payload = prover.prove_leaf(index).expect("leaf");
+            assert_eq!((payload.lo, payload.hi, payload.count), (index, index, 1));
+            payload
+        })
+        .collect();
+
+    let m01 = prover
+        .prove_merge(&leaves[0].bytes, &leaves[1].bytes)
+        .expect("merge 0-1");
+    assert_eq!((m01.lo, m01.hi, m01.count), (0, 1, 2));
+    let m23 = prover
+        .prove_merge(&leaves[2].bytes, &leaves[3].bytes)
+        .expect("merge 2-3");
+    assert_eq!((m23.lo, m23.hi, m23.count), (2, 3, 2));
+    let root = prover
+        .prove_merge(&m01.bytes, &m23.bytes)
+        .expect("merge root");
+    assert_eq!((root.lo, root.hi, root.count), (0, 3, 4));
+
+    let out = verifier
+        .verify(&root.bytes)
+        .expect("verify root via Verifier");
+    assert!(out.verified);
+    assert_eq!((out.lo, out.hi, out.count), (0, 3, 4));
 }

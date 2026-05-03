@@ -142,7 +142,14 @@ impl Prover {
         let (verifier_io_tx, verifier_io_rx) = oneshot::channel();
         runtime.spawn_detached(Box::pin(async move {
             let outcome = driver.await.map_err(Error::from);
-            let _ = verifier_io_tx.send(outcome);
+            // PROOF: the receiver is awaited later in `prove`; if it has been
+            // dropped, the prover has already returned an error upstream and
+            // the consumer side maps the closed channel to
+            // `Error::SessionDriverCancelled`. We log the drop rather than
+            // discard it silently so the event is observable in tracing.
+            if verifier_io_tx.send(outcome).is_err() {
+                tracing::warn!("verifier_io oneshot receiver dropped before driver finished");
+            }
         }));
 
         let prover = prover.commit(tls_commit_config).await?;

@@ -1,22 +1,25 @@
-// Single-threaded prover instance. The wasm module owns a thread-local
-// proof store keyed by node id; the scheduler (main thread) dispatches
-// jobs by sending {kind, jobId, ...} messages and gets {kind: "done" |
-// "error", jobId, result?, message?} back.
+// Stateless wasm worker. The wasm module exposes Prover/Verifier classes;
+// each job instantiates a fresh class instance, runs the operation, returns
+// the result, and discards the instance. Workers stay alive across jobs
+// only to avoid re-initialising the wasm module — they hold no proof state.
 //
-// v1 design uses ONE worker. The architecture is K-worker-ready, but
-// cross-worker proof transfer is blocked by the upstream
-// `Vec<Box<dyn Component>>` field on CircuitProof — see
-// /Users/neo/.claude/plans/deeply-analyze-zkp-crate-effervescent-rocket.md
-// for the full reasoning.
+// Job protocol (request → response):
+//   { kind: "leaf",   jobId, index }
+//     → { kind: "done", op: "leaf",   jobId, result: { bytes, lo, hi, count, proofSizeBytes } }
+//   { kind: "merge",  jobId, left, right }
+//     → { kind: "done", op: "merge",  jobId, result: { bytes, lo, hi, count, proofSizeBytes } }
+//   { kind: "verify", jobId, bytes }
+//     → { kind: "done", op: "verify", jobId, result: { lo, hi, count, verified } }
+//   { kind: "init",   jobId }
+//     → { kind: "ready", initMs }   (one-time on the first message)
+//   any failure → { kind: "error", op, jobId, message }
+//
+// All Uint8Array buffers are sent with `transfer` for zero-copy when possible.
+//
+// The proof bytes are owned by the main thread; this worker never holds
+// proof state across jobs.
 
-import init, {
-  forget_op,
-  prove_leaf_op,
-  prove_merge_op,
-  reset_op,
-  verify_op,
-} from "/assets/wasm/zkp.js";
-import { eventErr } from "./log.mjs";
+import init, { Prover, Verifier } from "/assets/wasm/zkp.js";
 import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
@@ -32,47 +35,68 @@ async function ensureReady() {
   self.postMessage({ kind: "ready", initMs });
 }
 
+const HANDLERS = {
+  leaf: (data) => {
+    const prover = new Prover();
+    const payload = prover.proveLeaf(data.index);
+    return payloadResponse(payload);
+  },
+  merge: (data) => {
+    const prover = new Prover();
+    const payload = prover.proveMerge(data.left, data.right);
+    return payloadResponse(payload);
+  },
+  verify: (data) => {
+    const verifier = new Verifier();
+    const out = verifier.verify(data.bytes);
+    return {
+      result: {
+        lo: out.lo,
+        hi: out.hi,
+        count: out.count,
+        verified: out.verified,
+      },
+    };
+  },
+};
+
+function payloadResponse(payload) {
+  // Snapshot scalar getters before calling .bytes() so we never read from a
+  // freed wasm handle. The Uint8Array returned by .bytes() is owned by the
+  // worker and is shipped to the main thread via a transferable buffer.
+  const lo = payload.lo;
+  const hi = payload.hi;
+  const count = payload.count;
+  const proofSizeBytes = payload.proofSizeBytes;
+  const bytes = payload.bytes();
+  return {
+    result: { bytes, lo, hi, count, proofSizeBytes },
+    transfer: [bytes.buffer],
+  };
+}
+
 self.addEventListener("message", async ({ data }) => {
   await ensureReady();
-  const jobId = data.jobId;
+  if (data.kind === "init") return;
+  const handler = HANDLERS[data.kind];
+  if (!handler) {
+    self.postMessage({
+      kind: "error",
+      jobId: data.jobId,
+      op: data.kind,
+      message: `worker received unknown message kind=${data.kind}`,
+    });
+    return;
+  }
   try {
-    let result;
-    switch (data.kind) {
-      case "init":
-        // ensureReady already posted "ready"; nothing more to do.
-        return;
-      case "leaf":
-        result = prove_leaf_op(data.nodeId, data.index);
-        break;
-      case "merge":
-        result = prove_merge_op(data.nodeId, data.leftId, data.rightId);
-        break;
-      case "verify":
-        result = verify_op(data.nodeId);
-        break;
-      case "forget":
-        forget_op(data.nodeId);
-        result = { nodeId: data.nodeId };
-        break;
-      case "reset":
-        reset_op();
-        result = {};
-        break;
-      default:
-        eventErr("zkp.worker.message.unknown", { kind: data.kind });
-        self.postMessage({
-          kind: "error",
-          jobId,
-          message: `unknown message kind=${data.kind}`,
-        });
-        return;
-    }
-    self.postMessage({ kind: "done", jobId, op: data.kind, result });
+    const { result, transfer } = handler(data);
+    self.postMessage({ kind: "done", jobId: data.jobId, op: data.kind, result }, transfer ?? []);
   } catch (err) {
     self.postMessage({
       kind: "error",
-      jobId,
-      message: err && err.message ? err.message : String(err),
+      jobId: data.jobId,
+      op: data.kind,
+      message: err?.message ?? String(err),
     });
   }
 });
