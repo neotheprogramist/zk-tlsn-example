@@ -250,7 +250,7 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function waitForTcp(host, port, timeoutMs = 15_000, intervalMs = 200) {
+export async function waitForTcp(host, port, timeoutMs = 30_000, intervalMs = 200) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {

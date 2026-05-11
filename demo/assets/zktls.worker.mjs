@@ -4,11 +4,19 @@ import { installWorkerErrorForwarder } from "./flow.mjs";
 
 installWorkerErrorForwarder();
 
+let initPromise = null;
+let initDone = false;
+
 const ATTESTATION_LEN = 32;
 const MAX_SENT_DATA = 1 << 12;
 const MAX_RECV_DATA = 1 << 14;
+const POSEIDON_CIRCUITS = {
+  poseidon2_permute: "/assets/circuits/poseidon2_permute.bin",
+  poseidon2_absorb: "/assets/circuits/poseidon2_absorb.bin",
+};
 
 const post = (kind, payload = {}) => self.postMessage({ kind, ...payload });
+const elapsedMs = (t0) => Math.round(performance.now() - t0);
 
 function hexToBytes(hex) {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -22,6 +30,29 @@ async function writePreamble(stream, line) {
   const writer = stream.writable.getWriter();
   await writer.write(new TextEncoder().encode(line));
   writer.releaseLock();
+}
+
+function ensureInitialized() {
+  if (initDone) return Promise.resolve();
+  if (!initPromise) {
+    initPromise = (async () => {
+      const startedAt = performance.now();
+      event("zktls.worker.wasm.init.start");
+      await init();
+      event("zktls.worker.wasm.init.done", { ms: elapsedMs(startedAt) });
+
+      const poolStartedAt = performance.now();
+      event("zktls.worker.pool.start");
+      await initialize();
+      event("zktls.worker.pool.ready", { ms: elapsedMs(poolStartedAt) });
+      initDone = true;
+    })().catch((err) => {
+      initPromise = null;
+      throw err;
+    });
+  }
+
+  return initPromise;
 }
 
 function buildProverInputs(config) {
@@ -58,36 +89,54 @@ function buildProverInputs(config) {
   };
 }
 
-async function runProve(config) {
-  event("zktls.worker.wasm.init.start");
-  await init();
-  event("zktls.worker.wasm.init.done");
-  event("zktls.worker.pool.start");
-  await initialize();
-  event("zktls.worker.pool.ready");
+async function preloadPoseidonCircuits() {
+  if (globalThis.__zktlsCircuitBytes?.poseidon2_permute) return;
 
+  const startedAt = performance.now();
+  event("zktls.poseidon.circuits.load.start");
+  const entries = await Promise.all(
+    Object.entries(POSEIDON_CIRCUITS).map(async ([name, url]) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`failed to load ${url}: HTTP ${response.status}`);
+      return [name, new Uint8Array(await response.arrayBuffer())];
+    }),
+  );
+  globalThis.__zktlsCircuitBytes = Object.fromEntries(entries);
+  event("zktls.poseidon.circuits.load.done", {
+    bytes: entries.reduce((sum, [, bytes]) => sum + bytes.byteLength, 0),
+    ms: elapsedMs(startedAt),
+  });
+}
+
+async function runProve(config) {
+  await ensureInitialized();
+  await preloadPoseidonCircuits();
+
+  const sessionStartedAt = performance.now();
   event("zktls.transport.session.opening");
   const session = new WebTransport(config.connectUrl, {
     serverCertificateHashes: [{ algorithm: "sha-256", value: hexToBytes(config.certHashHex) }],
   });
   try {
     await session.ready;
-    event("zktls.transport.session.ready");
+    event("zktls.transport.session.ready", { ms: elapsedMs(sessionStartedAt) });
 
+    const streamsStartedAt = performance.now();
     event("zktls.transport.streams.creating");
     const verifierStream = await session.createBidirectionalStream();
     const proxyStream = await session.createBidirectionalStream();
     await writePreamble(verifierStream, "VERIFY\n");
     await writePreamble(proxyStream, `CONNECT ${config.serverHost}:${config.serverPort}\n`);
-    event("zktls.transport.streams.preambles_written");
+    event("zktls.transport.streams.preambles_written", { ms: elapsedMs(streamsStartedAt) });
 
     event("zktls.prover.constructing");
     const prover = new Prover();
     const inputsJson = JSON.stringify(buildProverInputs(config));
 
+    const proveStartedAt = performance.now();
     event("zktls.prover.prove_streams.start");
     const output = await prover.prove_streams(inputsJson, verifierStream, proxyStream);
-    event("zktls.prover.prove_streams.done");
+    event("zktls.prover.prove_streams.done", { ms: elapsedMs(proveStartedAt) });
 
     const decoder = new TextDecoder("utf-8", { fatal: false });
     event("zktls.prover.view", {
@@ -123,10 +172,17 @@ async function runProve(config) {
 }
 
 self.addEventListener("message", async (ev) => {
-  if (ev.data?.kind !== "start") return;
   try {
-    const result = await runProve(ev.data.config);
-    post("result", { result });
+    if (ev.data?.kind === "initialize") {
+      await ensureInitialized();
+      post("init-ready");
+      return;
+    }
+
+    if (ev.data?.kind === "start") {
+      const result = await runProve(ev.data.config);
+      post("result", { result });
+    }
   } catch (err) {
     post("error", { message: err?.stack || err?.message || String(err) });
   }

@@ -46,6 +46,9 @@ node_modules/
 # wasm-bindgen output
 demo/assets/wasm/
 
+# Generated circuit binaries
+demo/assets/circuits/*.bin
+
 # Playwright
 /test-results/
 /playwright-report/
