@@ -96,7 +96,7 @@ self.addEventListener("message", async ({ data }) => {
       kind: "error",
       jobId: data.jobId,
       op: data.kind,
-      message: err?.message ?? String(err),
+      message: err.message,
     });
   }
 });

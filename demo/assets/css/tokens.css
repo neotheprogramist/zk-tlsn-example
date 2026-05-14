@@ -1,0 +1,57 @@
+:root {
+  color-scheme: light dark;
+
+  --bg: Canvas;
+  --fg: CanvasText;
+  --fg-dim: color-mix(in srgb, currentColor 60%, transparent);
+  --fg-faint: color-mix(in srgb, currentColor 30%, transparent);
+  --hairline: color-mix(in srgb, currentColor 12%, transparent);
+  --hairline-strong: color-mix(in srgb, currentColor 22%, transparent);
+  --surface-1: color-mix(in srgb, currentColor 4%, transparent);
+  --surface-2: color-mix(in srgb, currentColor 8%, transparent);
+
+  --accent: hsl(192 80% 55%);
+  --accent-soft: color-mix(in srgb, hsl(192 80% 55%) 22%, transparent);
+
+  --state-queued: color-mix(in srgb, currentColor 35%, transparent);
+  --state-running: hsl(40 70% 55%);
+  --state-ok: hsl(140 50% 55%);
+  --state-failed: hsl(0 65% 60%);
+
+  --state-running-soft: color-mix(in srgb, hsl(40 70% 55%) 28%, transparent);
+  --state-ok-soft: color-mix(in srgb, hsl(140 50% 55%) 30%, transparent);
+  --state-ok-strong: color-mix(in srgb, hsl(140 50% 55%) 45%, transparent);
+  --state-failed-soft: color-mix(in srgb, hsl(0 65% 60%) 32%, transparent);
+
+  --air-compliance: hsl(210 70% 65%);
+  --air-conserv: hsl(35 75% 60%);
+  --air-offer-create: hsl(280 55% 65%);
+  --air-offer-solve: hsl(260 55% 65%);
+  --air-offer-cancel: hsl(350 65% 67%);
+  --air-userkey: hsl(160 50% 60%);
+  --air-action-root: hsl(48 80% 60%);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", Consolas, monospace;
+  --fs-11: 0.6875rem;
+  --fs-12: 0.75rem;
+  --fs-13: 0.8125rem;
+  --fs-14: 0.875rem;
+  --fs-16: 1rem;
+  --fs-20: 1.25rem;
+  --lh-tight: 1.35;
+  --lh-body: 1.5;
+
+  --radius-1: 3px;
+  --radius-2: 4px;
+  --radius-3: 6px;
+
+  --motion-fast: 0.12s ease-out;
+}

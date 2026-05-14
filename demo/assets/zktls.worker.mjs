@@ -26,34 +26,29 @@ async function writePreamble(stream, line) {
 
 function buildProverInputs(config) {
   return {
-    server_name: config.serverName,
-    server_cert_der: Array.from(hexToBytes(config.serverCertDerHex)),
-    max_sent_data: MAX_SENT_DATA,
-    max_recv_data: MAX_RECV_DATA,
-    request_method: "GET",
-    request_uri: `/api/attestations/${config.txId}`,
-    request_headers: [
+    serverName: config.serverName,
+    serverCertDer: Array.from(hexToBytes(config.serverCertDerHex)),
+    maxSentData: MAX_SENT_DATA,
+    maxRecvData: MAX_RECV_DATA,
+    requestMethod: "GET",
+    requestUri: `/api/attestations/${config.txId}`,
+    requestHeaders: [
       ["content-type", "application/json"],
       ["Connection", "close"],
     ],
-    request_reveal_config: {
-      reveal_headers: ["content-type"],
-      commit_headers: ["connection"],
-      reveal_body_fields: [],
-      commit_body_fields: [],
-      reveal_keys_commit_values: [],
+    requestRevealConfig: {
+      revealHeaders: ["content-type"],
+      commitHeaders: ["connection"],
+      revealBodyFields: [],
+      commitBodyFields: [],
+      revealKeysCommitValues: [],
     },
-    response_reveal_config: {
-      reveal_headers: [],
-      commit_headers: [],
-      reveal_body_fields: [
-        { Quoted: ".toUsername" },
-        { Unquoted: ".eligibleForMint" },
-      ],
-      commit_body_fields: [],
-      reveal_keys_commit_values: [
-        { keypath: ".attestation", commitment_length: ATTESTATION_LEN },
-      ],
+    responseRevealConfig: {
+      revealHeaders: [],
+      commitHeaders: [],
+      revealBodyFields: [{ quoted: ".toUsername" }, { unquoted: ".eligibleForMint" }],
+      commitBodyFields: [],
+      revealKeysCommitValues: [{ keypath: ".attestation", commitmentLength: ATTESTATION_LEN }],
     },
   };
 }
@@ -100,15 +95,15 @@ async function runProve(config) {
       bytes: output.received.length,
       body: decoder.decode(new Uint8Array(output.received)),
     });
-    const body = JSON.parse(new TextDecoder().decode(new Uint8Array(output.response_body)).trim());
+    const body = JSON.parse(new TextDecoder().decode(new Uint8Array(output.responseBody)).trim());
 
     return {
       flow: "notarize-wasm",
-      server_name: config.serverName,
-      to_username: body.toUsername,
+      serverName: config.serverName,
+      toUsername: body.toUsername,
       amount: Number(body.amount),
-      eligible_for_mint: body.eligibleForMint === true,
-      commitment_count: Number(output.commitment_count ?? 0),
+      eligibleForMint: body.eligibleForMint === true,
+      commitmentCount: Number(output.commitmentCount ?? 0),
     };
   } finally {
     try {

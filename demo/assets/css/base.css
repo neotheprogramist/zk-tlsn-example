@@ -1,0 +1,106 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-size: var(--fs-14);
+  padding: var(--space-8) var(--space-6);
+  max-width: 64rem;
+  margin-inline: auto;
+}
+
+body[data-fullbleed] {
+  padding: 0;
+  max-width: none;
+  margin-inline: 0;
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: var(--fs-16);
+}
+
+h2 {
+  font-size: var(--fs-13);
+}
+
+h3 {
+  font-size: var(--fs-12);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: border-color var(--motion-fast);
+}
+
+a:hover {
+  border-bottom-color: var(--accent);
+}
+
+a:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-bottom-color: transparent;
+}
+
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

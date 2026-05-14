@@ -1,0 +1,266 @@
+{% extends "_base.html" %} {% block title %}zktls · vault{% endblock %} {% block head %}<link
+  rel="stylesheet"
+  href="/assets/css/vault.css"
+/>{% endblock %} {% block content %}
+<script>
+  // Fullbleed (no-scroll) layout. Set early so the body grid applies before paint.
+  document.body.setAttribute("data-fullbleed", "");
+</script>
+<main class="vault-page">
+  <header class="vault-page__header">
+    <div class="page-header__row">
+      <h1 class="page-header__title">
+        <a href="/" aria-label="back to demos">·</a>
+        zktls · vault
+      </h1>
+      <div class="page-header__meta">
+        <span class="pill"
+          ><span class="pill__key">pool</span><span data-role="pool">— (booting)</span></span
+        >
+        <span class="pill"
+          ><span class="pill__key">live</span><span data-role="live-count">0</span></span
+        >
+        <span class="pill"
+          ><span class="pill__key">pending</span><span data-role="actions-pending">0</span></span
+        >
+        <span class="pill"
+          ><span class="pill__key">done</span><span data-role="actions-done">0</span></span
+        >
+        <span class="pill"
+          ><span class="pill__key">failed</span><span data-role="actions-failed">0</span></span
+        >
+        <span class="pill"
+          ><span class="pill__key">nf</span><span data-role="nf-count">0</span></span
+        >
+      </div>
+    </div>
+    <div class="vault-page__identity">
+      <label for="vault-identity">identity</label>
+      <select id="vault-identity" data-role="identity" class="input"></select>
+      <span class="vault-page__identity-stat">nk <code data-role="identity-nk">—</code></span>
+      <span class="vault-page__identity-stat">salt <code data-role="identity-salt">—</code></span>
+    </div>
+  </header>
+
+  <div class="vault-workbench">
+    <div class="vault-inputs">
+      <section class="section">
+        <h2 class="section__title">
+          <span class="section__title-name">mint</span>
+          <span class="section__title-sub">UserKey-owned, no proof</span>
+        </h2>
+        <div class="section__body">
+          <div class="field">
+            <label class="field__label" for="vault-mint-kind">kind</label>
+            <div class="vault-mint-kind-row">
+              <select id="vault-mint-kind" data-role="mint-kind"></select>
+              <input data-role="mint-kind-new" placeholder="new ERC-20 label…" />
+              <button class="btn btn--bare" data-role="mint-kind-register" type="button">
+                register
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field__label" for="vault-mint-amount">amount</label>
+            <input
+              id="vault-mint-amount"
+              type="number"
+              min="1"
+              value="100"
+              data-role="mint-amount"
+            />
+          </div>
+          <div class="field">
+            <label class="field__label" for="vault-mint-owner">owner</label>
+            <select id="vault-mint-owner" data-role="mint-owner"></select>
+          </div>
+          <div class="field-row">
+            <button class="btn btn--primary" data-role="mint" disabled>mint</button>
+            <button class="btn" data-role="reset" disabled>reset vault</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section__title">
+          <span class="section__title-name">resources</span>
+          <span class="section__title-meta" data-role="resources-summary">0 visible</span>
+        </h2>
+        <div class="section__body">
+          <div class="vault-resources__controls">
+            <label for="vault-filter-kind">filter</label>
+            <select id="vault-filter-kind" data-role="filter-kind">
+              <option value="">all kinds</option>
+            </select>
+            <label class="field-row"
+              ><input type="checkbox" data-role="filter-mine" /> mine only</label
+            >
+          </div>
+          <div class="vault-resources__list" data-role="resources"></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2 class="section__title">
+          <span class="section__title-name">action</span>
+          <span class="section__title-sub" data-role="active-tab-label">transfer</span>
+        </h2>
+        <div class="section__body">
+          <div class="tablist" role="tablist" data-role="action-tabs">
+            <button class="tab" role="tab" data-action-tab="transfer" aria-selected="true">
+              transfer
+            </button>
+            <button class="tab" role="tab" data-action-tab="create_offer" aria-selected="false">
+              create offer
+            </button>
+            <button class="tab" role="tab" data-action-tab="solve_offer" aria-selected="false">
+              solve offer
+            </button>
+            <button class="tab" role="tab" data-action-tab="cancel_offer" aria-selected="false">
+              cancel offer
+            </button>
+          </div>
+
+          <div class="vault-action-builder__panel" data-action-panel="transfer">
+            <p class="vault-help">
+              Consumes the resources checked above (must share one kind). Creates outputs for each
+              recipient + change to active identity + 1 USDC fee.
+            </p>
+            <div data-role="transfer-outputs"></div>
+            <div class="field-row">
+              <button class="btn btn--bare" type="button" data-role="transfer-add-output">
+                + add output
+              </button>
+            </div>
+            <hr class="vault-divider" />
+            <div class="field">
+              <label class="field__label" for="vault-transfer-fee">fee from</label>
+              <select id="vault-transfer-fee" data-role="transfer-fee-resource"></select>
+            </div>
+            <div class="field-row">
+              <button class="btn btn--primary" data-role="transfer-submit" disabled>
+                submit transfer
+              </button>
+              <span class="form-error" data-role="transfer-error"></span>
+            </div>
+          </div>
+
+          <div class="vault-action-builder__panel" data-action-panel="create_offer" hidden>
+            <p class="vault-help">
+              Locks resources checked above (one kind). Remaining tokens refunded to active
+              identity. Creates an Offer resource owned by its instance_salt.
+            </p>
+            <div class="field">
+              <label class="field__label" for="vault-offer-locked">locked</label>
+              <input
+                id="vault-offer-locked"
+                type="number"
+                min="1"
+                value="100"
+                data-role="offer-locked-amount"
+              />
+            </div>
+            <div class="field">
+              <label class="field__label" for="vault-offer-refund">refund</label>
+              <input
+                id="vault-offer-refund"
+                type="number"
+                min="0"
+                value="0"
+                data-role="offer-refund-amount"
+              />
+            </div>
+            <div class="field">
+              <label class="field__label" for="vault-offer-challenge">challenge</label>
+              <select id="vault-offer-challenge" data-role="offer-challenge"></select>
+            </div>
+            <div data-role="offer-challenge-params"></div>
+            <div class="field">
+              <label class="field__label" for="vault-offer-fee">fee from</label>
+              <select id="vault-offer-fee" data-role="offer-fee-resource"></select>
+            </div>
+            <div class="field-row">
+              <button class="btn btn--primary" data-role="offer-create-submit" disabled>
+                submit create-offer
+              </button>
+              <span class="form-error" data-role="offer-create-error"></span>
+            </div>
+          </div>
+
+          <div class="vault-action-builder__panel" data-action-panel="solve_offer" hidden>
+            <p class="vault-help">
+              Pick one Offer. Provide solver witness; active identity receives the locked tokens.
+            </p>
+            <div class="field">
+              <label class="field__label" for="vault-solve-offer">offer</label>
+              <select id="vault-solve-offer" data-role="solve-offer-select"></select>
+            </div>
+            <div data-role="solve-witness-fields"></div>
+            <div class="field">
+              <label class="field__label" for="vault-solve-fee">fee from</label>
+              <select id="vault-solve-fee" data-role="solve-fee-resource"></select>
+            </div>
+            <div class="field-row">
+              <button class="btn btn--primary" data-role="solve-submit" disabled>
+                submit solve-offer
+              </button>
+              <span class="form-error" data-role="solve-error"></span>
+            </div>
+          </div>
+
+          <div class="vault-action-builder__panel" data-action-panel="cancel_offer" hidden>
+            <p class="vault-help">
+              Cancel a self-created Offer. Only the original creator can cancel.
+            </p>
+            <div class="field">
+              <label class="field__label" for="vault-cancel-offer">offer</label>
+              <select id="vault-cancel-offer" data-role="cancel-offer-select"></select>
+            </div>
+            <div class="field">
+              <label class="field__label" for="vault-cancel-fee">fee from</label>
+              <select id="vault-cancel-fee" data-role="cancel-fee-resource"></select>
+            </div>
+            <div class="field-row">
+              <button class="btn btn--primary" data-role="cancel-submit" disabled>
+                submit cancel-offer
+              </button>
+              <span class="form-error" data-role="cancel-error"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="vault-output">
+      <section class="section">
+        <h2 class="section__title">
+          <span class="section__title-name">proving</span>
+          <span class="section__title-sub">per-Action fold trees, newest on top</span>
+        </h2>
+        <div class="vault-viz-container" data-role="viz"></div>
+      </section>
+
+      <section class="section">
+        <h2 class="section__title">
+          <span class="section__title-name">log</span>
+          <span class="section__title-meta">filter <code>vault.*</code></span>
+        </h2>
+        <div class="log vault-log" data-role="log"></div>
+      </section>
+
+      <section class="section vault-challenges">
+        <details>
+          <summary>
+            <span class="section__title-name">challenges</span>
+            <span class="vault-challenges__sub">registry of pluggable offer challenges</span>
+            <span class="vault-challenges__meta" data-role="challenges-count">—</span>
+          </summary>
+          <ul class="vault-challenges__list" data-role="challenge-list"></ul>
+        </details>
+      </section>
+    </div>
+  </div>
+</main>
+{% endblock %} {% block scripts %}
+<script type="module" src="/assets/vault.main.mjs"></script>
+{% endblock %}

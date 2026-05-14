@@ -68,26 +68,19 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
     for required in [
         config.asset_dir.join("wasm").join("zktls_bg.wasm"),
         config.asset_dir.join("wasm").join("zkp_bg.wasm"),
+        config.asset_dir.join("wasm").join("vault_bg.wasm"),
     ] {
         if !required.exists() {
             return Err(ServeError::MissingWasm(required));
         }
     }
 
-    let certificate = ServiceCertificate::load_or_create(&config.cert_dir)?;
+    let ServiceCertificate {
+        cert_pem,
+        key_pem,
+        fingerprint_hex,
+    } = ServiceCertificate::load_or_create(&config.cert_dir)?;
     let listen_authority = format_authority(&config.listen_addr);
-
-    let page_state = Arc::new(PageState {
-        cert_hash_hex: certificate.fingerprint_hex.clone(),
-        server_host: config.server_host.clone(),
-        server_port: config.allowed_target.port(),
-        server_name: config.server_name.clone(),
-        from_user: config.from_user.clone(),
-        to_user: config.to_user.clone(),
-        transfer_amount: config.transfer_amount,
-        tx_id: config.tx_id,
-        server_cert_der_hex: config.server_cert_der_hex.clone(),
-    });
 
     let proxy_config = Arc::new(ProxyConfig {
         allowed_target: config.allowed_target,
@@ -96,14 +89,30 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         to_username: config.to_user.clone(),
     });
 
+    let page_state = Arc::new(PageState {
+        cert_hash_hex: fingerprint_hex,
+        server_host: config.server_host,
+        server_port: config.allowed_target.port(),
+        server_name: config.server_name,
+        from_user: config.from_user,
+        to_user: config.to_user,
+        transfer_amount: config.transfer_amount,
+        tx_id: config.tx_id,
+        server_cert_der_hex: config.server_cert_der_hex,
+    });
+
     tracing::info!(
         listen = %listen_authority,
-        cert_sha256 = %certificate.fingerprint_hex,
+        cert_sha256 = %page_state.cert_hash_hex,
         allowed_target = %config.allowed_target,
         "demo.service.listening"
     );
 
-    let rustls_config: RustlsConfig = certificate.rustls_config();
+    let rustls_config = RustlsConfig::new(
+        Keycert::new()
+            .cert(cert_pem.as_bytes())
+            .key(key_pem.as_bytes()),
+    );
     let acceptor = QuinnListener::new(rustls_config.clone(), config.listen_addr)
         .join(TcpListener::new(config.listen_addr).rustls(rustls_config))
         .bind()
@@ -116,6 +125,7 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         .get(render_landing)
         .push(Router::with_path("zktls").get(render_zktls))
         .push(Router::with_path("zkp").get(render_zkp))
+        .push(Router::with_path("vault").get(render_vault))
         .push(Router::with_path("cert-hash").get(render_cert_hash))
         .push(Router::with_path("favicon.ico").get(empty_no_content))
         .push(Router::with_path("connect").goal(crate::connect::handle))
@@ -208,14 +218,6 @@ impl ServiceCertificate {
             fingerprint_hex: sha256_hex(&cert_der),
         })
     }
-
-    fn rustls_config(&self) -> RustlsConfig {
-        RustlsConfig::new(
-            Keycert::new()
-                .cert(self.cert_pem.as_bytes())
-                .key(self.key_pem.as_bytes()),
-        )
-    }
 }
 
 fn certificate_expired(cert_path: &Path, key_path: &Path) -> bool {
@@ -271,6 +273,10 @@ struct LandingTemplate;
 #[template(path = "zkp.html")]
 struct ZkpTemplate;
 
+#[derive(Template)]
+#[template(path = "vault.html")]
+struct VaultTemplate;
+
 #[async_trait]
 impl Writer for ServeError {
     async fn write(self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
@@ -289,6 +295,13 @@ async fn render_landing(res: &mut Response) -> Result<(), ServeError> {
 #[handler]
 async fn render_zkp(res: &mut Response) -> Result<(), ServeError> {
     let html = ZkpTemplate.render()?;
+    res.render(Text::Html(html));
+    Ok(())
+}
+
+#[handler]
+async fn render_vault(res: &mut Response) -> Result<(), ServeError> {
+    let html = VaultTemplate.render()?;
     res.render(Text::Html(html));
     Ok(())
 }

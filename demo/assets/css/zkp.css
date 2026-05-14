@@ -1,0 +1,193 @@
+/* /zkp page: fullbleed with internal grid so the viz fills available height
+ * and the log stays pinned at the bottom with its own scroll region. */
+
+body[data-fullbleed]:has(.zkp-page) {
+  grid-template-rows: 1fr;
+}
+
+.zkp-page {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  height: 100dvh;
+  padding: var(--space-4) var(--space-6);
+  gap: var(--space-3);
+  box-sizing: border-box;
+  min-height: 0;
+  max-width: 100rem;
+  margin-inline: auto;
+  width: 100%;
+}
+
+.zkp-page .page-header {
+  padding-block-end: 0;
+}
+
+.zkp-page > .section {
+  margin-block: 0;
+  min-height: 0;
+}
+
+.zkp-page__viz-host {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2);
+  padding: var(--space-2);
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.zkp-page__viz-host .zkp-viz-container {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.zkp-page__log {
+  max-height: 14rem;
+}
+
+.zkp-verify-result {
+  font-size: var(--fs-12);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-1);
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+
+.zkp-verify-result.zkp-verify-ok {
+  background: var(--state-ok-soft);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.zkp-verify-result.zkp-verify-failed {
+  background: var(--state-failed-soft);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.zkp-readout-pill {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── zkp visualization (DOM-based panel rendered by zkp.viz.mjs) ────────── */
+
+.zkp-viz-container {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: var(--space-4);
+  min-height: 0;
+  height: 100%;
+}
+
+.zkp-viz-tree {
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.zkp-viz-tree-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-end;
+  padding: var(--space-2);
+}
+
+.zkp-viz-svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.zkp-viz-workers {
+  border-inline-start: 1px solid var(--hairline);
+  padding-inline-start: var(--space-4);
+  font-size: var(--fs-13);
+  overflow: auto;
+  min-height: 0;
+}
+
+.zkp-viz-workers h3 {
+  font-size: var(--fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+  margin: 0 0 var(--space-2);
+  font-weight: 600;
+}
+
+.zkp-viz-worker-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-2);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: var(--space-1);
+}
+
+.zkp-viz-worker {
+  border-radius: var(--radius-1);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-1);
+  border: 1px solid transparent;
+  font-size: var(--fs-12);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.zkp-viz-worker-idle {
+  opacity: 0.55;
+}
+
+.zkp-viz-worker-proving {
+  background: var(--state-running-soft);
+}
+
+.zkp-viz-worker-transferring {
+  background: var(--accent-soft);
+}
+
+.zkp-viz-worker-verifying {
+  background: var(--state-ok-soft);
+}
+
+.zkp-viz-worker-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.zkp-viz-worker-slot {
+  font-weight: 600;
+}
+
+.zkp-viz-worker-state {
+  font-size: var(--fs-11);
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.zkp-viz-worker-detail {
+  font-size: var(--fs-11);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-dim);
+}
+
+.zkp-viz-summary {
+  font-size: var(--fs-12);
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+}

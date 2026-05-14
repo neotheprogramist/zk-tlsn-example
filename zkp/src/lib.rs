@@ -24,7 +24,7 @@ pub mod recursion;
 pub mod serialize;
 pub mod verifier;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm_bindings"))]
 pub mod wasm;
 
 pub use error::{Error, Result};

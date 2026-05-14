@@ -216,7 +216,14 @@ pub fn prove_merge(left: ProofRecord, right: ProofRecord) -> Result<ProofRecord>
     Ok(record)
 }
 
-fn finalize_and_prove(
+/// Finalise the in-progress trace context and produce a proof record.
+///
+/// `pub` since vault reuses this exact path for its own per-kind leaf
+/// circuits. The function is canonical for the zkp+vault stack: any
+/// circuit whose context emits the `(lo, hi, count)` output triple in
+/// slots 0..3 can be sealed through this entry point and the resulting
+/// `ProofRecord` is byte-shape-identical to a zkp-native one.
+pub fn finalize_and_prove(
     context: &mut TraceContext,
     lo: M31,
     hi: M31,
@@ -276,6 +283,8 @@ fn lift_child(child: ProofRecord) -> LiftedChild {
         pp_trace_log_sizes,
     } = metadata;
     let pcs_config = circuit_proof.pcs_config;
+    // PROOF: see ProofRecord::extended_stark_proof — every CircuitProof reaching
+    // this path carries an `Ok` stark_proof by construction.
     let stark_proof = circuit_proof
         .stark_proof
         .as_ref()

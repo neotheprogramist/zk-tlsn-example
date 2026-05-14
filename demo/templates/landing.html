@@ -1,23 +1,66 @@
-{% extends "_base.html" %} {% block title %}zk-tlsn-example demos{% endblock %} {% block content %}
-<h1>zk-tlsn-example</h1>
-<p>Two browser-WASM demonstrations running against this single local server.</p>
+{% extends "_base.html" %} {% block title %}zktls · demos{% endblock %} {% block head %}<link
+  rel="stylesheet"
+  href="/assets/css/landing.css"
+/>{% endblock %} {% block content %}
+<main class="landing">
+  <header class="page-header">
+    <div class="page-header__row">
+      <h1 class="page-header__title">zktls · demos</h1>
+      <div class="page-header__meta">
+        <span class="pill"><span class="pill__key">stack</span>wasm + http3</span>
+      </div>
+    </div>
+    <p class="landing__intro">Three browser-WASM ZK demos sharing one local server.</p>
+  </header>
+  <hr class="hairline" />
 
-<section class="demo-card">
-  <h2>zktls — notarized HTTP attestation</h2>
-  <p>
-    WebTransport-based MPC-TLS attestation against a local notary. Click "Start attestation" to run
-    the prover end-to-end.
-  </p>
-  <p><a href="/zktls">Open zktls demo →</a></p>
-</section>
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">zktls</span>
+      <span class="section__title-sub">notarize HTTP over MPC-TLS</span>
+    </h2>
+    <div class="section__body">
+      <p class="landing__desc">
+        Browser-side MPC-TLS notarization over WebTransport against a local ledger. Verifier runs on
+        the host; the page emits a structured event stream as it works.
+      </p>
+      <div class="landing__actions">
+        <a class="btn" href="/zktls">open</a>
+      </div>
+    </div>
+  </section>
 
-<section class="demo-card">
-  <h2>zkp — counter via inductive recursive proofs</h2>
-  <p>
-    Click <em>Generate base proof</em>, then alternate <em>Increment</em> and <em>Prove</em>. Each
-    step's proof embeds a verifier of the previous proof and a circuit-level constraint
-    <code>n_new = prev_n + 1</code>. Proving runs entirely in your browser via stwo + stwo-circuits.
-  </p>
-  <p><a href="/zkp">Open zkp demo →</a></p>
-</section>
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">zkp</span>
+      <span class="section__title-sub">streaming PCD tree over Stwo</span>
+    </h2>
+    <div class="section__body">
+      <p class="landing__desc">
+        Stwo leaves folded pairwise in a binary PCD tree across a worker pool. Each step's proof
+        embeds the verifier of its children. Pool size via <code>?pool=N</code>.
+      </p>
+      <div class="landing__actions">
+        <a class="btn" href="/zkp">open</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">vault</span>
+      <span class="section__title-sub">unified-ownership vault toy</span>
+    </h2>
+    <div class="section__body">
+      <p class="landing__desc">
+        Mint ERC-20 resources, consume them through Actions (transfer, create-offer, solve-offer,
+        cancel-offer), and watch per-kind Logic-AIRs fold into an Action-AIR root. OFFER resources
+        carry a pluggable challenge.
+      </p>
+      <div class="landing__actions">
+        <a class="btn" href="/vault">open</a>
+      </div>
+    </div>
+  </section>
+</main>
 {% endblock %}

@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}zk-tlsn-example{% endblock %}</title>
-    <link rel="stylesheet" href="/assets/layout.css" />
+    <link rel="stylesheet" href="/assets/css/tokens.css" />
+    <link rel="stylesheet" href="/assets/css/base.css" />
+    <link rel="stylesheet" href="/assets/css/components.css" />
+    {% block head %}{% endblock %}
   </head>
   <body>
     {% block content %}{% endblock %} {% block scripts %}{% endblock %}

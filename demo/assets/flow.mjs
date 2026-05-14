@@ -3,7 +3,7 @@
 // - installWorkerErrorForwarder runs inside a worker.
 // - emit_* helpers live in log.mjs.
 
-import { eventErr } from "./log.mjs";
+import { eventErr, relayFromWorker } from "./log.mjs";
 
 function detail(ev) {
   return [
@@ -17,7 +17,14 @@ function detail(ev) {
 
 export function startWorker(url, onMessage) {
   const worker = new Worker(url, { type: "module" });
-  worker.addEventListener("message", (ev) => onMessage(ev.data));
+  worker.addEventListener("message", (ev) => {
+    const data = ev.data;
+    if (data?.kind === "log") {
+      relayFromWorker(data.entry, data.line);
+      return;
+    }
+    onMessage(data);
+  });
   worker.addEventListener("error", (ev) => {
     ev.preventDefault?.();
     onMessage({ kind: "error", message: "worker error: " + (detail(ev) || "(no detail)") });

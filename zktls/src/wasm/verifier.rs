@@ -16,6 +16,7 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsVerifierInputs {
     pub server_cert_der: Vec<u8>,
     pub max_sent_data: usize,
@@ -23,6 +24,7 @@ pub struct JsVerifierInputs {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsVerifierOutput {
     pub server_name: String,
     pub commitment_count: usize,

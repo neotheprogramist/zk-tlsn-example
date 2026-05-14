@@ -6,6 +6,16 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# `wasm_bindings` controls the browser-facing wasm-bindgen exports.
+# Default-on so the standalone `cargo build -p zkp --target wasm32-unknown-unknown`
+# still produces the /assets/wasm/zkp.js bindings. Downstream crates that
+# only want the in-process Prover/Verifier API (e.g. `vault`) depend with
+# `default-features = false` to avoid duplicate-symbol link errors when
+# they build their own wasm module that transitively pulls zkp in.
+default = ["wasm_bindings"]
+wasm_bindings = []
+
 [dependencies]
 bincode.workspace = true
 serde = { workspace = true }

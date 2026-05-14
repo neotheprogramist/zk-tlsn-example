@@ -24,6 +24,7 @@ use crate::{
 };
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsProverInputs {
     pub server_name: String,
     pub server_cert_der: Vec<u8>,
@@ -37,6 +38,7 @@ pub struct JsProverInputs {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JsProverOutput {
     pub sent: Vec<u8>,
     pub received: Vec<u8>,

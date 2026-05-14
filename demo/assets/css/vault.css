@@ -1,0 +1,419 @@
+/* /vault: workbench layout (inputs left, sticky output right). Collapses to
+ * one column under 960px. */
+
+body[data-fullbleed]:has(.vault-page) {
+  grid-template-rows: 1fr;
+}
+
+.vault-page {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+  padding: var(--space-3) var(--space-5);
+  gap: var(--space-3);
+  box-sizing: border-box;
+  min-height: 0;
+  max-width: 100rem;
+  margin-inline: auto;
+  width: 100%;
+}
+
+.vault-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vault-page__identity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: var(--fs-12);
+  color: var(--fg-dim);
+}
+
+.vault-page__identity-stat code {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: var(--space-5);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vault-inputs,
+.vault-output {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-block-end: var(--space-4);
+}
+
+.vault-inputs {
+  padding-inline-end: var(--space-2);
+  border-inline-end: 1px solid var(--hairline);
+}
+
+@media (max-width: 960px) {
+  .vault-workbench {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .vault-inputs {
+    border-inline-end: 0;
+    padding-inline-end: 0;
+  }
+  .vault-inputs,
+  .vault-output {
+    overflow-y: visible;
+  }
+}
+
+/* ─── Resources list ─────────────────────────────────────────────────────── */
+
+.vault-resources__controls {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--fs-12);
+  flex-wrap: wrap;
+}
+
+.vault-resources__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2);
+  padding: var(--space-1);
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.vault-resources__list:empty::before {
+  content: "no resources \2014 mint or run an action";
+  color: var(--fg-faint);
+  font-size: var(--fs-12);
+  padding: var(--space-3);
+  text-align: center;
+}
+
+.vault-resource-row {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-resource-row:hover {
+  background: var(--surface-1);
+}
+
+.vault-resource-row.selected {
+  background: var(--accent-soft);
+}
+
+.vault-resource-row__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vault-resource-row__summary {
+  color: var(--fg);
+}
+
+.vault-resource-row__meta {
+  color: var(--fg-faint);
+  font-size: var(--fs-11);
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+
+.vault-resource-row:hover .vault-resource-row__meta,
+.vault-resource-row:focus-within .vault-resource-row__meta,
+.vault-resource-row.selected .vault-resource-row__meta {
+  opacity: 1;
+}
+
+.vault-resource-row__chip {
+  font-size: var(--fs-11);
+  color: var(--fg-faint);
+  align-self: baseline;
+}
+
+/* ─── Action builder ─────────────────────────────────────────────────────── */
+
+.vault-action-builder__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vault-action-builder__panel[hidden] {
+  display: none;
+}
+
+.vault-help {
+  font-size: var(--fs-11);
+  color: var(--fg-dim);
+  line-height: var(--lh-tight);
+}
+
+.vault-output-row {
+  display: grid;
+  grid-template-columns: 1fr 5rem max-content;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.vault-param-row,
+.vault-witness-row {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.vault-param-row__label,
+.vault-witness-row__label {
+  color: var(--fg-dim);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-mint-kind-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr max-content;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.vault-divider {
+  border: 0;
+  border-block-start: 1px solid var(--hairline);
+  margin-block: var(--space-2);
+}
+
+/* ─── Proving viz (per-action card) ──────────────────────────────────────── */
+
+.vault-viz-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vault-viz-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.vault-viz-actions:empty::before {
+  content: "no actions yet \2014 build one from the left";
+  color: var(--fg-faint);
+  font-size: var(--fs-12);
+  padding: var(--space-3);
+  text-align: center;
+  display: block;
+}
+
+.vault-viz-action {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.vault-viz-action-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-block-end: var(--space-2);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-viz-action-flow {
+  font-weight: 600;
+}
+
+.vault-viz-action-state {
+  color: var(--fg-dim);
+  font-size: var(--fs-11);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+
+.vault-viz-action[data-state="proved"] .vault-viz-action-state,
+.vault-viz-action[data-state="verified"] .vault-viz-action-state {
+  color: var(--state-ok);
+}
+
+.vault-viz-action[data-state="failed"] .vault-viz-action-state {
+  color: var(--state-failed);
+}
+
+.vault-viz-tree {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.vault-viz-node-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  justify-content: center;
+}
+
+.vault-viz-node {
+  font-size: var(--fs-11);
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--hairline);
+  border-left-width: 3px;
+  border-left-color: var(--hairline-strong);
+  border-radius: var(--radius-2);
+  min-width: 12rem;
+  background: var(--surface-1);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+  text-align: center;
+  transition: background-color var(--motion-fast);
+}
+
+.vault-viz-node[data-state="queued"] {
+  opacity: 0.55;
+}
+.vault-viz-node[data-state="proving"] {
+  background: var(--state-running-soft);
+}
+.vault-viz-node[data-state="proved"] {
+  background: var(--state-ok-soft);
+}
+.vault-viz-node[data-state="verified"] {
+  background: var(--state-ok-strong);
+}
+.vault-viz-node[data-state="failed"] {
+  background: var(--state-failed-soft);
+}
+.vault-viz-node[data-state="witness"] {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.vault-viz-node[data-air="compliance"] {
+  border-left-color: var(--air-compliance);
+}
+.vault-viz-node[data-air="conservationFungible"] {
+  border-left-color: var(--air-conserv);
+}
+.vault-viz-node[data-air="offerCreate"] {
+  border-left-color: var(--air-offer-create);
+}
+.vault-viz-node[data-air="offerSolve"] {
+  border-left-color: var(--air-offer-solve);
+}
+.vault-viz-node[data-air="offerCancel"] {
+  border-left-color: var(--air-offer-cancel);
+}
+.vault-viz-node[data-air="userKey"] {
+  border-left-color: var(--air-userkey);
+}
+.vault-viz-node[data-air="actionRoot"] {
+  border-left-color: var(--air-action-root);
+  font-weight: 600;
+}
+
+.vault-viz-node-detail {
+  color: var(--fg-faint);
+  font-size: var(--fs-11);
+}
+
+/* ─── Log ────────────────────────────────────────────────────────────────── */
+
+.vault-log {
+  max-height: 22rem;
+}
+
+/* ─── Challenges (collapsed by default) ──────────────────────────────────── */
+
+.vault-challenges details {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2);
+  padding: var(--space-2);
+}
+
+.vault-challenges details summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  user-select: none;
+}
+
+.vault-challenges details summary::-webkit-details-marker {
+  display: none;
+}
+
+.vault-challenges details summary::before {
+  content: "\258C";
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.vault-challenges__sub {
+  color: var(--fg-dim);
+  font-weight: 400;
+  font-size: var(--fs-12);
+}
+
+.vault-challenges__meta {
+  margin-inline-start: auto;
+  color: var(--fg-faint);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-challenges__list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-2) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-12);
+}
+
+.vault-challenges__list li {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+}
+
+.vault-challenges__id {
+  font-weight: 600;
+}
+
+.vault-challenges__desc {
+  color: var(--fg-dim);
+  font-size: var(--fs-11);
+}

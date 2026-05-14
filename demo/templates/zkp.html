@@ -1,58 +1,82 @@
-{% extends "_base.html" %} {% block title %}zkp — binary streaming PCD over Stwo{% endblock %} {%
-block content %}
+{% extends "_base.html" %} {% block title %}zktls · zkp{% endblock %} {% block head %}<link
+  rel="stylesheet"
+  href="/assets/css/zkp.css"
+/>{% endblock %} {% block content %}
 <script>
-  // Fullbleed (no-scroll) layout for /zkp. Set the body attribute as early as
-  // possible so the no-scroll grid in layout.css applies before paint. Done
-  // here rather than in _base.html because Askama block syntax inside a
-  // <body> tag's attribute list breaks oxfmt's HTML parser.
+  // Fullbleed (no-scroll) layout for /zkp. Set as early as possible so the
+  // no-scroll body grid in base.css applies before paint. Done here rather
+  // than in _base.html because Askama block syntax inside <body> attributes
+  // confuses oxfmt's HTML parser.
   document.body.setAttribute("data-fullbleed", "");
 </script>
-<header class="zkp-page-header">
-  <p><a href="/">← back to demos</a></p>
-  <h1>zkp — binary streaming PCD over Stwo</h1>
-  <p class="zkp-page-blurb">
-    N equivalent worker threads share one MMR-of-proofs. Any worker can prove a leaf or a merge;
-    independent merges run in parallel on different workers via on-demand cross-worker proof
-    transfer. <strong>Next</strong> is non-blocking — every click schedules a leaf on the next idle
-    worker. The MMR streaming rule folds equal-count peaks automatically as they settle.
-    <strong>Verify</strong> cascades any remaining peaks into a single root and reports the result
-    inline. <strong>Reset</strong> clears all state.
-  </p>
-</header>
+<main class="zkp-page">
+  <header class="page-header">
+    <div class="page-header__row">
+      <h1 class="page-header__title">
+        <a href="/" aria-label="back to demos">·</a>
+        zktls · zkp
+      </h1>
+      <div class="page-header__meta">
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">pool</span><span data-role="pool">— (booting)</span></span
+        >
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">leaves</span><span data-role="leaves">— / —</span></span
+        >
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">merges</span><span data-role="merges">—</span></span
+        >
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">peaks</span><span data-role="peaks">—</span></span
+        >
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">last leaf</span><span data-role="last-leaf">—</span></span
+        >
+        <span class="pill zkp-readout-pill"
+          ><span class="pill__key">last merge</span><span data-role="last-merge">—</span></span
+        >
+      </div>
+    </div>
+    <p class="page-header__sub">
+      streaming PCD over Stwo: equal-count peaks fold pairwise across the worker pool until one root
+      remains.
+    </p>
+  </header>
+  <hr class="hairline" />
 
-<section class="kv-grid zkp-readouts">
-  <dl>
-    <dt>Pool</dt>
-    <dd data-role="pool">— (booting)</dd>
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">controls</span>
+      <span class="section__title-meta"><code>root</code> <span data-role="root">—</span></span>
+    </h2>
+    <div class="section__body">
+      <div class="field-row">
+        <button class="btn btn--primary" data-role="next" disabled>next</button>
+        <button class="btn" data-role="verify" disabled>verify</button>
+        <button class="btn" data-role="reset" disabled>reset</button>
+        <span class="zkp-verify-result" data-role="verify-result">not yet verified</span>
+      </div>
+    </div>
+  </section>
 
-    <dt>Leaves submitted / proved</dt>
-    <dd data-role="leaves">— / —</dd>
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">proof tree</span>
+      <span class="section__title-sub">leaves fold pairwise → merges → root</span>
+    </h2>
+    <div class="zkp-page__viz-host">
+      <div class="zkp-viz-container" data-role="viz"></div>
+    </div>
+  </section>
 
-    <dt>Merges proved</dt>
-    <dd data-role="merges">—</dd>
-
-    <dt>Peaks live</dt>
-    <dd data-role="peaks">—</dd>
-
-    <dt>Last leaf prove_ms</dt>
-    <dd data-role="last-leaf">—</dd>
-
-    <dt>Last merge prove_ms</dt>
-    <dd data-role="last-merge">—</dd>
-
-    <dt>Root</dt>
-    <dd data-role="root">—</dd>
-  </dl>
-</section>
-
-<div class="zkp-actions">
-  <button data-role="next" disabled>Next</button>
-  <button data-role="verify" disabled>Verify</button>
-  <button data-role="reset" disabled>Reset</button>
-  <span data-role="verify-result" class="zkp-verify-result">(not yet verified)</span>
-</div>
-
-<div class="zkp-viz-container" data-role="viz"></div>
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">log</span>
+      <span class="section__title-meta">filter <code>zkp.*</code></span>
+    </h2>
+    <div data-role="log" class="log zkp-page__log"></div>
+  </section>
+</main>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zkp.main.mjs"></script>
 {% endblock %}

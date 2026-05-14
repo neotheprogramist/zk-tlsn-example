@@ -1,7 +1,6 @@
-{% extends "_base.html" %} {% block title %}zktls — browser WASM prover{% endblock %} {% block
-content %}
-<p><a href="/">← back to demos</a></p>
+{% extends "_base.html" %} {% block title %}zktls · notarize{% endblock %} {% block content %}
 <main
+  class="zktls"
   data-role="prove-root"
   data-cert-hash="{{ cert_hash_hex }}"
   data-server-host="{{ server_host }}"
@@ -13,13 +12,51 @@ content %}
   data-transfer-amount="{{ transfer_amount }}"
   data-tx-id="{{ tx_id }}"
 >
-  <h1>zktls — browser WASM prover</h1>
-  <p>
-    Transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to
-    <em>{{ to_user }}</em> (tx_id = {{ tx_id }}). Open DevTools console for the structured event
-    stream.
-  </p>
-  <button data-role="start">Start attestation</button>
+  <header class="page-header">
+    <div class="page-header__row">
+      <h1 class="page-header__title">
+        <a href="/" class="zktls__back" aria-label="back to demos">·</a>
+        zktls · notarize
+      </h1>
+      <div class="page-header__meta">
+        <span class="pill"
+          ><span class="pill__key">cert</span
+          ><code data-role="cert-chip">{{ cert_hash_hex }}</code></span
+        >
+      </div>
+    </div>
+    <p class="page-header__sub">
+      transfer <strong>{{ transfer_amount }}</strong> from <em>{{ from_user }}</em> to
+      <em>{{ to_user }}</em> · tx_id <code>{{ tx_id }}</code>
+    </p>
+  </header>
+  <hr class="hairline" />
+
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">attestation</span>
+      <span class="section__title-meta" data-role="overall-status">idle</span>
+    </h2>
+    <div class="section__body">
+      <div data-role="steps"></div>
+      <div class="field-row">
+        <button class="btn btn--primary" data-role="start">start</button>
+        <button class="btn" data-role="reset" disabled>reset</button>
+        <span class="form-error" data-role="result-error"></span>
+      </div>
+      <output class="form-result" data-role="result-summary" hidden></output>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2 class="section__title">
+      <span class="section__title-name">log</span>
+      <span class="section__title-meta">filter <code>zktls.*</code> · <code>runtime.*</code></span>
+    </h2>
+    <div class="section__body">
+      <div data-role="log" class="log"></div>
+    </div>
+  </section>
 </main>
 {% endblock %} {% block scripts %}
 <script type="module" src="/assets/zktls.main.mjs"></script>

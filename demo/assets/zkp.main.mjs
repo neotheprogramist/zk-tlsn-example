@@ -10,6 +10,7 @@ import { event, eventErr } from "./log.mjs";
 import { installPageErrorForwarders } from "./flow.mjs";
 import { NODE_KIND, NODE_STATE, createScheduler } from "./zkp.scheduler.mjs";
 import { attachVisualization } from "./zkp.viz.mjs";
+import { createLog } from "./ui/ui.log.mjs";
 
 function decidePoolSize() {
   const params = new URLSearchParams(window.location.search);
@@ -37,6 +38,7 @@ const els = {
   btnVerify: document.querySelector('[data-role="verify"]'),
   btnReset: document.querySelector('[data-role="reset"]'),
   viz: document.querySelector('[data-role="viz"]'),
+  log: document.querySelector('[data-role="log"]'),
 };
 for (const [name, el] of Object.entries(els)) {
   if (!el) throw new Error(`zkp page missing required element els.${name}`);
@@ -50,6 +52,7 @@ const scheduler = createScheduler({
 });
 
 attachVisualization(els.viz, scheduler);
+createLog(els.log);
 
 let lastVerifyResult = null;
 let lastVerifyError = null;
@@ -147,7 +150,7 @@ els.btnVerify.addEventListener("click", async () => {
       count: result.count,
     });
   } catch (err) {
-    lastVerifyError = err?.message ?? String(err);
+    lastVerifyError = err.message;
     eventErr("zkp.verify.failed", { message: lastVerifyError });
   }
   renderReadouts(scheduler.snapshot());
@@ -162,5 +165,5 @@ scheduler
     renderReadouts(scheduler.snapshot());
   })
   .catch((err) => {
-    eventErr("zkp.scheduler.boot.failed", { message: err?.message ?? String(err) });
+    eventErr("zkp.scheduler.boot.failed", { message: err.message });
   });

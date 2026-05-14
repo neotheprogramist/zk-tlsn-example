@@ -61,11 +61,11 @@ try {
 
   // ─── Result-event assertions ────────────────────────────────────────────
   assertEquals("flow", "notarize-wasm", result.flow);
-  assertEquals("server_name", SERVER_NAME, result.server_name);
-  assertEquals("to_username", TO_USER, result.to_username);
+  assertEquals("serverName", SERVER_NAME, result.serverName);
+  assertEquals("toUsername", TO_USER, result.toUsername);
   assertEquals("amount", TRANSFER_AMOUNT, result.amount);
-  assertEquals("eligible_for_mint", true, result.eligible_for_mint);
-  assertEquals("commitment_count", EXPECTED_COMMITMENT_COUNT, result.commitment_count);
+  assertEquals("eligibleForMint", true, result.eligibleForMint);
+  assertEquals("commitmentCount", EXPECTED_COMMITMENT_COUNT, result.commitmentCount);
 
   // ─── Backend tracing assertions ─────────────────────────────────────────
   // Service + ledger boot.

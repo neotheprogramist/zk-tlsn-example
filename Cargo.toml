@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["zktls", "zkp", "demo"]
+members = ["zktls", "zkp", "vault", "demo"]
 
 # Force stwo-circuits' transitive stwo/stwo-constraint-framework deps to the
 # same git rev that `zkp` uses, so cargo doesn't compile two stwo versions

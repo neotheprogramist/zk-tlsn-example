@@ -12,6 +12,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BodyFieldConfig {
     Quoted(String),
     Unquoted(String),
@@ -38,6 +39,7 @@ impl BodyFieldConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KeyValueCommitConfig {
     pub keypath: String,
     pub commitment_length: Option<usize>,
@@ -67,6 +69,7 @@ impl KeyValueCommitConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RevealConfig {
     pub reveal_headers: Vec<String>,
     pub commit_headers: Vec<String>,
