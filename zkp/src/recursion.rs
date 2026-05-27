@@ -28,7 +28,7 @@ use circuits::{
     blake::HashValue,
     context::{Context, TraceContext, Var},
     ivalue::NoValue,
-    ops::{Guess, add, eq, guess, output},
+    ops::{Guess, add, eq, guess, output}, poseidon2_hasher::Poseidon2M31MerkleHasher,
 };
 use circuits_stark_verifier::{
     proof::{Proof as CircuitVerifierProof, ProofConfig},
@@ -43,7 +43,6 @@ use stwo::core::{
     fri::FriConfig,
     pcs::PcsConfig,
     proof::ExtendedStarkProof,
-    vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher,
 };
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
 
@@ -93,7 +92,6 @@ pub fn tuned_pcs_config() -> PcsConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CircuitProofMetadata {
     pub output_addresses: Vec<usize>,
-    pub n_blake_gates: usize,
     pub pp_trace_ids: Vec<PreProcessedColumnId>,
     pub pp_trace_log_sizes: Vec<u32>,
 }
@@ -102,7 +100,6 @@ impl CircuitProofMetadata {
     pub fn from_preprocessed(pp: &PreprocessedCircuit) -> Self {
         Self {
             output_addresses: pp.params.output_addresses.clone(),
-            n_blake_gates: pp.params.n_blake_gates,
             pp_trace_ids: pp.preprocessed_trace.ids(),
             pp_trace_log_sizes: pp.preprocessed_trace.log_sizes(),
         }
@@ -116,7 +113,7 @@ impl CircuitProofMetadata {
 /// Per-proof state held by the worker's local store, indexed by node id
 /// assigned by the JS scheduler. Owned values; consumed by `prove_merge`.
 pub struct ProofRecord {
-    pub circuit_proof: CircuitProof<Blake2sM31MerkleHasher>,
+    pub circuit_proof: CircuitProof<Poseidon2M31MerkleHasher>,
     pub metadata: CircuitProofMetadata,
     pub lo: M31,
     pub hi: M31,
@@ -128,7 +125,7 @@ impl ProofRecord {
     /// or `serialize::deserialize_record` — all three produce or wrap an `Ok`
     /// `stark_proof`. The `Result` wrapper on `CircuitProof.stark_proof` is a
     /// relic of the upstream type; at this boundary it is never `Err`.
-    pub fn extended_stark_proof(&self) -> &ExtendedStarkProof<Blake2sM31MerkleHasher> {
+    pub fn extended_stark_proof(&self) -> &ExtendedStarkProof<Poseidon2M31MerkleHasher> {
         self.circuit_proof
             .stark_proof
             .as_ref()
@@ -263,7 +260,6 @@ struct LiftedChild {
     root: HashValue<QM31>,
     output_values: Vec<QM31>,
     output_addresses: Vec<usize>,
-    n_blake_gates: usize,
     pp_trace_ids: Vec<PreProcessedColumnId>,
     pp_trace_log_sizes: Vec<u32>,
     proof_qm31: CircuitVerifierProof<QM31>,
@@ -278,7 +274,6 @@ fn lift_child(child: ProofRecord) -> LiftedChild {
     } = child;
     let CircuitProofMetadata {
         output_addresses,
-        n_blake_gates,
         pp_trace_ids,
         pp_trace_log_sizes,
     } = metadata;
@@ -294,7 +289,6 @@ fn lift_child(child: ProofRecord) -> LiftedChild {
     let proof_config = build_child_proof_config(
         &output_addresses,
         &output_values,
-        n_blake_gates,
         pp_trace_ids.clone(),
         pp_trace_log_sizes.clone(),
         root,
@@ -306,7 +300,6 @@ fn lift_child(child: ProofRecord) -> LiftedChild {
         root,
         output_values,
         output_addresses,
-        n_blake_gates,
         pp_trace_ids,
         pp_trace_log_sizes,
         proof_qm31,
@@ -319,7 +312,6 @@ fn add_in_context_verifier(context: &mut TraceContext, child: LiftedChild) -> (V
         root,
         output_values,
         output_addresses,
-        n_blake_gates,
         pp_trace_ids,
         pp_trace_log_sizes,
         proof_qm31,
@@ -329,7 +321,6 @@ fn add_in_context_verifier(context: &mut TraceContext, child: LiftedChild) -> (V
         context,
         &output_addresses,
         &output_values,
-        n_blake_gates,
         pp_trace_ids,
         pp_trace_log_sizes,
         root,
@@ -345,7 +336,6 @@ fn add_in_context_verifier(context: &mut TraceContext, child: LiftedChild) -> (V
 fn build_child_proof_config(
     output_addresses: &[usize],
     output_values: &[QM31],
-    n_blake_gates: usize,
     pp_trace_ids: Vec<PreProcessedColumnId>,
     pp_trace_log_sizes: Vec<u32>,
     root: HashValue<QM31>,
@@ -356,7 +346,6 @@ fn build_child_proof_config(
         &mut shape_ctx,
         output_addresses,
         output_values,
-        n_blake_gates,
         pp_trace_ids,
         pp_trace_log_sizes,
         root,

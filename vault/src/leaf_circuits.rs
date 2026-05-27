@@ -23,7 +23,7 @@ use stwo::core::fields::{m31::M31, qm31::QM31};
 
 use crate::{
     error::{Error, Result},
-    poseidon::{RATE, bind_hash_to_expected, hash_in_circuit, prime_blake_component},
+    poseidon::{RATE, bind_hash_to_expected, hash_in_circuit},
     preimage::{MAX_COMPLIANCE_CONSUMED, MAX_COMPLIANCE_CREATED, PREIMAGE_LIMB_COUNT},
     types::{
         CONSERVATION_MAX_INPUTS, CONSERVATION_MAX_OUTPUTS, ComplianceConsumedEntry,
@@ -221,8 +221,6 @@ pub fn build_userkey_auth(
         });
     }
 
-    prime_blake_component(ctx);
-
     let nk_vars: [circuits::context::Var; 8] =
         core::array::from_fn(|i| guess(ctx, QM31::from(M31::from(nk_limbs[i]))));
 
@@ -265,7 +263,6 @@ pub fn build_offer_cancel_auth(
     cm_offer_limbs: &[u32; 8],
     cancel_auth_tag_limbs: &[u32; 8],
 ) -> Result<()> {
-    prime_blake_component(ctx);
     let nk_vars: [circuits::context::Var; 8] =
         core::array::from_fn(|i| guess(ctx, QM31::from(M31::from(nk_creator_limbs[i]))));
 
@@ -325,9 +322,6 @@ pub fn build_compliance(
             max: MAX_COMPLIANCE_CREATED,
         });
     }
-
-    // Prover-quirk workaround: keep blake sub-components populated.
-    prime_blake_component(ctx);
 
     // ─── Consumed slots: cm + nf ─────────────────────────────────────────
     for slot in 0..MAX_COMPLIANCE_CONSUMED {

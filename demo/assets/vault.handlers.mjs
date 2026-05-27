@@ -102,6 +102,8 @@ function selectedRecords(ctx) {
 async function runAction(ctx, plan) {
   const knownStates = new WeakMap();
   ctx.store.setPendingDelta(1);
+  const timerLabel = `vault: prove [${plan.flow}]`;
+  console.time(timerLabel);
   // The scheduler invokes onUpdate synchronously inside submitAction (before
   // the outer `await` resolves), so the closure cannot read the destructured
   // `state` binding — it's still in TDZ. Use the actionState parameter that
@@ -121,6 +123,7 @@ async function runAction(ctx, plan) {
       }
     },
   });
+  console.timeEnd(timerLabel);
   ctx.store.setPendingDelta(-1);
   if (ok) {
     for (let i = 0; i < plan.consumedRecords.length; i++) {

@@ -88,9 +88,9 @@ num-traits = { version = "0.2", default-features = false }
 # stwo + stwo-circuits — pinned git revs so the repo is self-contained.
 stwo = { git = "https://github.com/starkware-libs/stwo", rev = "27686b8c4fa4a8d9ec36bf64e320016bc0e7e08b", default-features = false }
 stwo-constraint-framework = { git = "https://github.com/starkware-libs/stwo", rev = "27686b8c4fa4a8d9ec36bf64e320016bc0e7e08b", default-features = false }
-circuits = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
-circuit-common = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
-circuit-prover = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
-circuit-verifier = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
-circuits-stark-verifier = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
-circuits-stark-verifier-examples = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "019b966fb8d8958b97936f945e7509694b46185b" }
+circuits = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }
+circuit-common = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }
+circuit-prover = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }
+circuit-verifier = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }
+circuits-stark-verifier = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }
+circuits-stark-verifier-examples = { git = "https://github.com/starkware-libs/stwo-circuits", rev = "5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7" }

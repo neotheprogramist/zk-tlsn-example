@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "circuit-common"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "circuits",
  "itertools 0.12.1",
@@ -1154,7 +1154,7 @@ dependencies = [
 [[package]]
 name = "circuit-prover"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "circuit-common",
  "circuit-verifier",
@@ -1175,7 +1175,7 @@ dependencies = [
 [[package]]
 name = "circuit-verifier"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "circuits",
  "circuits-stark-verifier",
@@ -1189,23 +1189,24 @@ dependencies = [
 [[package]]
 name = "circuits"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "blake2",
- "hashbrown 0.17.0",
+ "hashbrown 0.15.5",
  "indexmap",
  "itertools 0.12.1",
  "num-traits",
+ "serde",
  "stwo",
 ]
 
 [[package]]
 name = "circuits-stark-verifier"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "circuits",
- "hashbrown 0.17.0",
+ "hashbrown 0.15.5",
  "indexmap",
  "itertools 0.12.1",
  "num-traits",
@@ -1216,7 +1217,7 @@ dependencies = [
 [[package]]
 name = "circuits-stark-verifier-examples"
 version = "0.1.0"
-source = "git+https://github.com/starkware-libs/stwo-circuits?rev=019b966fb8d8958b97936f945e7509694b46185b#019b966fb8d8958b97936f945e7509694b46185b"
+source = "git+https://github.com/starkware-libs/stwo-circuits?rev=5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7#5fcc0e7cb4bd755b98cae89280feb45f9f21d5f7"
 dependencies = [
  "circuits",
  "circuits-stark-verifier",

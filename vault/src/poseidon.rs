@@ -264,15 +264,6 @@ pub fn hash_in_circuit(ctx: &mut TraceContext, inputs: &[Var]) -> [Var; RATE] {
     out
 }
 
-/// Adds one dummy blake gate so the stwo prover's blake sub-components
-/// (`blake_output`, `triple_xor_32`, …) have ≥ 1 input — they assert
-/// non-empty during `write_trace`. Required because every vault leaf
-/// hashes via Poseidon and doesn't naturally emit any blake gate.
-pub fn prime_blake_component(ctx: &mut TraceContext) {
-    let zero = ctx.zero();
-    let _ = circuits::blake::blake(ctx, &[zero], 16);
-}
-
 /// Bind an in-circuit hash output to a host-known expected value.
 ///
 /// For each of the `RATE` output limbs, guess the expected value and

@@ -22,12 +22,12 @@ use circuit_verifier::{
     circuit_claim::{CircuitClaim, CircuitInteractionClaim},
     circuit_components::N_COMPONENTS,
 };
+use circuits::poseidon2_hasher::Poseidon2M31MerkleHasher;
 use serde::{Deserialize, Serialize};
 use stwo::core::{
     fields::{m31::M31, qm31::QM31},
     pcs::PcsConfig,
-    proof::ExtendedStarkProof,
-    vcs_lifted::blake2_merkle::Blake2sM31MerkleHasher,
+    proof::ExtendedStarkProof, 
 };
 use stwo_constraint_framework::preprocessed_columns::PreProcessedColumnId;
 
@@ -49,11 +49,10 @@ pub struct SerializedProofRecord {
     pub interaction_pow_nonce: u64,
     pub interaction_claim_sums: Vec<QM31>,
     pub channel_salt: u32,
-    pub stark_proof: ExtendedStarkProof<Blake2sM31MerkleHasher>,
+    pub stark_proof: ExtendedStarkProof<Poseidon2M31MerkleHasher>,
 
     // Metadata mirroring `CircuitProofMetadata`:
     pub output_addresses: Vec<usize>,
-    pub n_blake_gates: usize,
     pub pp_trace_id_strings: Vec<String>,
     pub pp_trace_log_sizes: Vec<u32>,
 
@@ -92,7 +91,6 @@ impl SerializedProofRecord {
             channel_salt: cp.channel_salt,
             stark_proof,
             output_addresses: record.metadata.output_addresses.clone(),
-            n_blake_gates: record.metadata.n_blake_gates,
             pp_trace_id_strings,
             pp_trace_log_sizes: record.metadata.pp_trace_log_sizes.clone(),
             lo: record.lo.0,
@@ -121,7 +119,7 @@ impl SerializedProofRecord {
         }
         // Length-equality is the soundness-critical bound; see
         // `verifier::EXPECTED_OUTPUT_VALUES` for the rationale.
-        if self.claim_output_values.len() != 5 {
+        if self.claim_output_values.len() != 4 {
             return Err(Error::OutputCardinalityMismatch {
                 actual: self.claim_output_values.len(),
             });
@@ -154,7 +152,7 @@ impl SerializedProofRecord {
             claimed_sums: claimed_sums_arr,
         };
 
-        let circuit_proof = CircuitProof::<Blake2sM31MerkleHasher> {
+        let circuit_proof = CircuitProof::<Poseidon2M31MerkleHasher> {
             pcs_config: self.pcs_config,
             claim,
             interaction_pow_nonce: self.interaction_pow_nonce,
@@ -167,7 +165,6 @@ impl SerializedProofRecord {
 
         let metadata = CircuitProofMetadata {
             output_addresses: self.output_addresses,
-            n_blake_gates: self.n_blake_gates,
             pp_trace_ids: self
                 .pp_trace_id_strings
                 .into_iter()

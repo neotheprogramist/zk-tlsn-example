@@ -196,6 +196,7 @@ export function createScheduler({ workerScriptUrl, poolSize }) {
       notify();
     }
 
+    const t0 = performance.now();
     try {
       // Prove all leaves concurrently.
       const leafPromises = actionState.nodes.map(async (node) => {
@@ -298,6 +299,7 @@ export function createScheduler({ workerScriptUrl, poolSize }) {
 
       const root = pending[0];
       actionState.rootNodeId = root.id;
+      console.log(`proving #${plan.actionId} (${plan.flow}): ${((performance.now() - t0) / 1000).toFixed(2)} s`);
       // Verify the root.
       const verify = await verifyBytes(root.proofBytes, null);
       if (!verify.verified) throw new Error("root verification returned verified=false");

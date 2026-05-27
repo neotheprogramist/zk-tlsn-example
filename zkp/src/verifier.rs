@@ -16,12 +16,12 @@ use circuit_verifier::{
     circuit_claim::CircuitInteractionElements, relations::CommonLookupElements,
     statement::INTERACTION_POW_BITS,
 };
+use circuits::poseidon2_hasher::Poseidon2M31MerkleChannel;
 use stwo::core::{
     air::{Component, Components},
     channel::{Channel, MerkleChannel},
     fields::{m31::M31, qm31::QM31},
     pcs::CommitmentSchemeVerifier,
-    vcs_lifted::blake2_merkle::Blake2sM31MerkleChannel,
 };
 
 use crate::{
@@ -110,12 +110,12 @@ pub fn verify_record(record: &ProofRecord) -> Result<()> {
     }
     .column_log_sizes();
 
-    let mut channel = <Blake2sM31MerkleChannel as MerkleChannel>::C::default();
+    let mut channel = <Poseidon2M31MerkleChannel as MerkleChannel>::C::default();
     channel.mix_felts(&[(*channel_salt).into()]);
     pcs_config.mix_into(&mut channel);
 
     let mut commitment_scheme =
-        CommitmentSchemeVerifier::<Blake2sM31MerkleChannel>::new(*pcs_config);
+        CommitmentSchemeVerifier::<Poseidon2M31MerkleChannel>::new(*pcs_config);
 
     commitment_scheme.commit(
         stark_proof.proof.commitments[0],
@@ -165,15 +165,15 @@ pub fn verify_record(record: &ProofRecord) -> Result<()> {
 /// Total `output_values.len()` for both the leaf AIR and the merge AIR.
 ///
 /// Slots `[0..3]` are the user-facing outputs (`lo`, `hi`, `count`) emitted
-/// by `recursion::prove_leaf` / `prove_merge`. Slots `[3..5]` are the two
-/// halves of the circuit-constants hash appended by
-/// `circuit_common::finalize::finalize_context` (called transitively by
-/// `PreprocessedCircuit::preprocess_circuit`). The hash slots are a function
-/// of the circuit's constants — not of the witness — so they're self-binding
-/// in the STARK proof: an attacker can't alter them without producing a
-/// different valid proof against constants they don't control. The host
-/// therefore binds `[0..3]` directly and trusts FRI consistency for the rest.
-const EXPECTED_OUTPUT_VALUES: usize = 5;
+/// by `recursion::prove_leaf` / `prove_merge`. Slot `[3]` is the circuit-
+/// constants hash appended by `circuit_common::finalize::finalize_context`
+/// (called transitively by `PreprocessedCircuit::preprocess_circuit`). The
+/// hash slot is a function of the circuit's constants — not of the witness —
+/// so it's self-binding in the STARK proof: an attacker can't alter it
+/// without producing a different valid proof against constants they don't
+/// control. The host therefore binds `[0..3]` directly and trusts FRI
+/// consistency for the rest.
+const EXPECTED_OUTPUT_VALUES: usize = 4;
 
 fn bind_outputs(record: &ProofRecord) -> Result<()> {
     let outputs = &record.circuit_proof.claim.output_values;
