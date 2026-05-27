@@ -73,10 +73,29 @@ const product_eq_n = {
   },
 };
 
+// TLSN-based challenge: solver proves (via an out-of-band TLSN session) that
+// they executed a bank transfer matching the offer's declaration. The
+// challenge itself stores no in-circuit constraint — verify() returns true
+// because the real check lives in the TLSN gate in vault.handlers.mjs
+// (Etap A: hardcoded JS stub, Etap B: real TLSN proving + verifier).
+const tlsn_transfer = {
+  id: "tlsn_transfer",
+  title: "TLSN bank transfer",
+  description:
+    "Solver must prove via TLSN that they executed a bank transfer to the offer creator for at least `price`. The recipient is implicit (the offer creator's username); the only thing the creator picks is the price.",
+  paramSchema: [{ name: "price", kind: "number" }],
+  witnessSchema: [],
+  declaration: (params) => ({ price: Number(params.price ?? 0) }),
+  // The real verification happens in the TLSN gate; the JS-side hook is a
+  // no-op so buildSolveOffer's challenge.verify() call always passes.
+  verify: () => true,
+};
+
 const REGISTRY = new Map([
   [x_plus_1_eq_2.id, x_plus_1_eq_2],
   [sum_eq_n.id, sum_eq_n],
   [product_eq_n.id, product_eq_n],
+  [tlsn_transfer.id, tlsn_transfer],
 ]);
 
 export function listChallenges() {

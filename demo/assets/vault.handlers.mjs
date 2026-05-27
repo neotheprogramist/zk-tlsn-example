@@ -225,6 +225,14 @@ async function onCreateOfferSubmit(ctx) {
   }
 }
 
+// Etap A stub: emulates a successful TLSN session against the bank ledger by
+// returning the values of the vault demo transfer (seeded at server startup,
+// tx_id=2, alice→bob, amount=25). Etap B will replace this with a real TLSN
+// proving worker that fetches the attestation through MPC-TLS.
+async function runTlsnTransferGateStub() {
+  return { txId: 2, toUsername: "bob", amount: 25 };
+}
+
 async function onSolveSubmit(ctx) {
   ctx.els.solveError.textContent = "";
   setFieldError(ctx.els.solveOfferSelect, null);
@@ -235,6 +243,7 @@ async function onSolveSubmit(ctx) {
       setFieldError(ctx.els.solveOfferSelect, "pick an offer");
       throw new Error("choose an offer");
     }
+    const offerRecord = ctx.store.getResource(uid);
     const witness = {};
     for (const inp of ctx.els.solveWitnessFields.querySelectorAll(
       '[data-role="solve-witness-input"]',
@@ -246,10 +255,39 @@ async function onSolveSubmit(ctx) {
       setFieldError(ctx.els.solveFeeResource, "choose a USDC resource");
       throw new Error("choose a USDC resource for the fee");
     }
+
+    // TLSN gate: for tlsn_transfer challenges, prove (via TLSN — Etap A stub)
+    // that the bank's attestation matches the offer's declaration before any
+    // proving work begins. The recipient (bank-side toUser) is the offer
+    // creator; the price is set by the creator in the declaration.
+    if (offerRecord.kindFamily === "offer" && offerRecord.offerState?.challengeId === "tlsn_transfer") {
+      const ofs = offerRecord.offerState;
+      const decl = ofs.challengeDeclaration;
+      const expectedToUser = ofs.creatorUsername;
+      const attestation = await runTlsnTransferGateStub();
+      event("vault.tlsn.gate.attested", {
+        tx_id: attestation.txId,
+        to: attestation.toUsername,
+        amount: attestation.amount,
+        expected_to: expectedToUser,
+        expected_price: decl.price,
+      });
+      if (attestation.toUsername !== expectedToUser) {
+        throw new Error(
+          `TLSN attestation toUsername=${attestation.toUsername} does not match offer creator=${expectedToUser}`,
+        );
+      }
+      if (attestation.amount < decl.price) {
+        throw new Error(
+          `TLSN attestation amount=${attestation.amount} below offer price=${decl.price}`,
+        );
+      }
+    }
+
     const plan = await buildSolveOffer({
       store: ctx.store,
       activeUsername: ctx.activeUsername,
-      offerRecord: ctx.store.getResource(uid),
+      offerRecord,
       witness,
       feeRecord: ctx.store.getResource(feeUid),
     });

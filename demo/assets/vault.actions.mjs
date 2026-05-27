@@ -912,14 +912,20 @@ export async function buildSolveOffer({ store, activeUsername, offerRecord, witn
       }),
     );
   }
-  leafSpecs.push(
-    offerSolveLeafSpec({
-      instanceSaltHex: ofs.instanceSaltHex,
-      challengeId: ofs.challengeId,
-      declaration: ofs.challengeDeclaration,
-      witness,
-    }),
-  );
+  // TLSN-based challenges do not have an in-circuit constraint — the real
+  // verification is done host-side (TLSN gate in vault.handlers.mjs) so the
+  // offerSolve leaf is skipped entirely. Algebraic challenges (x+1=2, sum_eq_n,
+  // …) still emit a leaf that proves the witness in-circuit.
+  if (ofs.challengeId !== "tlsn_transfer") {
+    leafSpecs.push(
+      offerSolveLeafSpec({
+        instanceSaltHex: ofs.instanceSaltHex,
+        challengeId: ofs.challengeId,
+        declaration: ofs.challengeDeclaration,
+        witness,
+      }),
+    );
+  }
   leafSpecs.push(
     await userkeyLeafSpec({
       actionDigestHex,

@@ -177,6 +177,13 @@ export function renderSolveWitnessFields(ctx) {
   if (!uid) return;
   const offer = ctx.store.getResource(uid);
   const c = getChallenge(offer.offerState.challengeId);
+  if (c.witnessSchema.length === 0) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = `${c.title}: no witness fields — proof is supplied by the TLSN gate.`;
+    ctx.els.solveWitnessFields.appendChild(note);
+    return;
+  }
   for (const f of c.witnessSchema) {
     ctx.els.solveWitnessFields.appendChild(buildDynamicField("witness", f, "solve-witness-input"));
   }
