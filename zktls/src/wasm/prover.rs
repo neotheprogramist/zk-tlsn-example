@@ -51,6 +51,11 @@ pub struct JsProverOutput {
 enum VerificationOutcome {
     #[serde(rename = "success")]
     Success {},
+    /// Verifier accepted the MPC-TLS session but rejected the policy check
+    /// applied to the resulting transcript. The reason string is surfaced
+    /// back to the JS caller via [`Error::VerifierPolicyRejected`].
+    #[serde(rename = "failure")]
+    Failure { reason: String },
 }
 
 #[wasm_bindgen]
@@ -135,6 +140,8 @@ async fn read_verification_outcome(io: &mut WebTransportIo) -> Result<(), Error>
 
     let mut payload = vec![0u8; len];
     io.read_exact(&mut payload).await?;
-    let VerificationOutcome::Success {} = serde_json::from_slice(&payload)?;
-    Ok(())
+    match serde_json::from_slice::<VerificationOutcome>(&payload)? {
+        VerificationOutcome::Success {} => Ok(()),
+        VerificationOutcome::Failure { reason } => Err(Error::VerifierPolicyRejected(reason)),
+    }
 }

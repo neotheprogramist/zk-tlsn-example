@@ -42,6 +42,7 @@ pub struct ServiceConfig {
     pub to_user: String,
     pub transfer_amount: u64,
     pub tx_id: u64,
+    pub vault_tx_id: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +100,7 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         transfer_amount: config.transfer_amount,
         tx_id: config.tx_id,
         server_cert_der_hex: config.server_cert_der_hex,
+        vault_tx_id: config.vault_tx_id,
     });
 
     tracing::info!(
@@ -249,6 +251,10 @@ pub struct PageState {
     pub transfer_amount: u64,
     pub tx_id: u64,
     pub server_cert_der_hex: String,
+    /// tx_id of the vault-demo seeded transfer (alice → bob) used by the
+    /// /vault page's TLSN gate. Distinct from `tx_id` (which the /zktls
+    /// page exercises against the alice → treasury transfer).
+    pub vault_tx_id: u64,
 }
 
 #[derive(Template)]
@@ -275,7 +281,14 @@ struct ZkpTemplate;
 
 #[derive(Template)]
 #[template(path = "vault.html")]
-struct VaultTemplate;
+struct VaultTemplate<'a> {
+    cert_hash_hex: &'a str,
+    server_host: &'a str,
+    server_port: u16,
+    server_name: &'a str,
+    server_cert_der_hex: &'a str,
+    vault_tx_id: u64,
+}
 
 #[async_trait]
 impl Writer for ServeError {
@@ -300,8 +313,19 @@ async fn render_zkp(res: &mut Response) -> Result<(), ServeError> {
 }
 
 #[handler]
-async fn render_vault(res: &mut Response) -> Result<(), ServeError> {
-    let html = VaultTemplate.render()?;
+async fn render_vault(depot: &mut Depot, res: &mut Response) -> Result<(), ServeError> {
+    let state = depot
+        .obtain::<Arc<PageState>>()
+        .map_err(|_| ServeError::PageStateMissing)?;
+    let html = VaultTemplate {
+        cert_hash_hex: &state.cert_hash_hex,
+        server_host: &state.server_host,
+        server_port: state.server_port,
+        server_name: &state.server_name,
+        server_cert_der_hex: &state.server_cert_der_hex,
+        vault_tx_id: state.vault_tx_id,
+    }
+    .render()?;
     res.render(Text::Html(html));
     Ok(())
 }

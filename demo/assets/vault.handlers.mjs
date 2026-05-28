@@ -3,6 +3,7 @@
 // DOM rendering is delegated to vault.render.mjs.
 
 import { event, eventErr } from "./log.mjs";
+import { startWorker } from "./flow.mjs";
 import { setFieldError } from "./ui/ui.field-error.mjs";
 import {
   buildTransfer,
@@ -225,12 +226,41 @@ async function onCreateOfferSubmit(ctx) {
   }
 }
 
-// Etap A stub: emulates a successful TLSN session against the bank ledger by
-// returning the values of the vault demo transfer (seeded at server startup,
-// tx_id=2, alice→bob, amount=25). Etap B will replace this with a real TLSN
-// proving worker that fetches the attestation through MPC-TLS.
-async function runTlsnTransferGateStub() {
-  return { txId: 2, toUsername: "bob", amount: 25 };
+// Etap B: spawns vault.tlsn.worker.mjs which runs zktls MPC-TLS proving
+// against the bank ledger, with the demo service acting as the TLSN verifier
+// (parametrised by `expectedToUser` + `price`). Resolves with the attested
+// (txId, toUsername, amount) tuple on success, rejects on any failure
+// (transport, MPC-TLS, verifier policy).
+function runTlsnTransferGate({ expectedToUser, price }) {
+  return new Promise((resolve, reject) => {
+    const root = document.querySelector('[data-role="vault-root"]');
+    if (!root) {
+      reject(new Error("vault-root element missing (template not parametrised)"));
+      return;
+    }
+    const d = root.dataset;
+    const config = {
+      connectUrl: new URL("/connect", location.origin).toString(),
+      certHashHex: d.certHash,
+      serverHost: d.serverHost,
+      serverPort: Number(d.serverPort),
+      serverName: d.serverName,
+      serverCertDerHex: d.serverCertDerHex,
+      txId: Number(d.vaultTxId),
+      expectedToUser,
+      price,
+    };
+    const worker = startWorker("/assets/vault.tlsn.worker.mjs", (msg) => {
+      if (msg.kind === "result") {
+        worker.terminate();
+        resolve(msg.result);
+      } else if (msg.kind === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    });
+    worker.postMessage({ kind: "start", config });
+  });
 }
 
 async function onSolveSubmit(ctx) {
@@ -256,15 +286,30 @@ async function onSolveSubmit(ctx) {
       throw new Error("choose a USDC resource for the fee");
     }
 
-    // TLSN gate: for tlsn_transfer challenges, prove (via TLSN — Etap A stub)
-    // that the bank's attestation matches the offer's declaration before any
-    // proving work begins. The recipient (bank-side toUser) is the offer
-    // creator; the price is set by the creator in the declaration.
+    // TLSN gate: for tlsn_transfer challenges, run real MPC-TLS proving
+    // against the bank ledger via vault.tlsn.worker.mjs. The demo service
+    // verifies the attested response matches the offer declaration
+    // (expectedToUser = offer creator, amount >= price). If the worker
+    // resolves, the policy already passed; the returned values are echoed
+    // back from the verified transcript for the log + future ZK opening.
     if (offerRecord.kindFamily === "offer" && offerRecord.offerState?.challengeId === "tlsn_transfer") {
       const ofs = offerRecord.offerState;
       const decl = ofs.challengeDeclaration;
       const expectedToUser = ofs.creatorUsername;
-      const attestation = await runTlsnTransferGateStub();
+      event("vault.tlsn.gate.start", {
+        expected_to: expectedToUser,
+        expected_price: decl.price,
+      });
+      let attestation;
+      try {
+        attestation = await runTlsnTransferGate({
+          expectedToUser,
+          price: decl.price,
+        });
+      } catch (err) {
+        eventErr("vault.tlsn.gate.failed", { message: err.message });
+        throw new Error(`TLSN proving failed: ${err.message}`);
+      }
       event("vault.tlsn.gate.attested", {
         tx_id: attestation.txId,
         to: attestation.toUsername,
@@ -272,16 +317,6 @@ async function onSolveSubmit(ctx) {
         expected_to: expectedToUser,
         expected_price: decl.price,
       });
-      if (attestation.toUsername !== expectedToUser) {
-        throw new Error(
-          `TLSN attestation toUsername=${attestation.toUsername} does not match offer creator=${expectedToUser}`,
-        );
-      }
-      if (attestation.amount < decl.price) {
-        throw new Error(
-          `TLSN attestation amount=${attestation.amount} below offer price=${decl.price}`,
-        );
-      }
     }
 
     const plan = await buildSolveOffer({

@@ -148,6 +148,7 @@ async fn run(cli: Cli) -> Result<()> {
         to_user: cli.to_user,
         transfer_amount: cli.transfer_amount,
         tx_id: transfer.tx_id,
+        vault_tx_id: vault_transfer.tx_id,
     };
 
     let server_task = tokio::spawn(ledger::serve(server_cfg, state));

@@ -87,4 +87,12 @@ pub enum Error {
     #[cfg(target_arch = "wasm32")]
     #[error("verifier outcome frame too large: {0} bytes")]
     FrameTooLarge(usize),
+
+    /// The verifier accepted the MPC-TLS session but rejected the policy
+    /// check applied to the resulting transcript (e.g. amount below price).
+    /// Surfaced over the wire as `{ "status": "failure", "reason": "…" }`
+    /// in the outcome JSON frame.
+    #[cfg(target_arch = "wasm32")]
+    #[error("verifier policy rejected: {0}")]
+    VerifierPolicyRejected(String),
 }
