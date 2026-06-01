@@ -89,7 +89,7 @@ fn validate_transfer_attestation(
     to_username: &str,
 ) -> Result<(), TransferVerifyError> {
     expect_server_name(output, server_name)?;
-    expect_hash_algorithm(output, HashAlgId::BLAKE3)?;
+    expect_hash_algorithm(output, HashAlgId::POSEIDON2)?;
     expect_header(
         &output.parsed_request.headers,
         output.transcript.sent_unsafe(),

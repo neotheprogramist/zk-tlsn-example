@@ -65,7 +65,7 @@ serde_json = "1.0.149"
 zktls = { path = "./zktls" }
 smol = "2.0.2"
 thiserror = "2.0.18"
-tlsn = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-alpha.14", default-features = false }
+tlsn = { git = "https://github.com/neotheprogramist/tlsn", rev="7a45e1135b3bc84cb9a7aaab56be9607740cf84f", default-features = false }
 tokio = { version = "1.52.3", default-features = false, features = [
   "io-util",
   "rt",
