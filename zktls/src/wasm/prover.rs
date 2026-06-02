@@ -124,7 +124,7 @@ fn build_prover_config(inputs_json: &str) -> Result<ProverConfigBundle, Error> {
         request,
         request_reveal_config: inputs.request_reveal_config,
         response_reveal_config: inputs.response_reveal_config,
-        hash_alg: HashAlgId::BLAKE3,
+        hash_alg: HashAlgId::POSEIDON2,
     })
 }
 
