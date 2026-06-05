@@ -120,6 +120,7 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         .bind()
         .await;
 
+    let wasm_dir = config.asset_dir.join("wasm");
     let router = Router::new()
         .hoop(cross_origin_isolation)
         .hoop(affix_state::inject(page_state))
@@ -131,6 +132,11 @@ pub async fn serve(config: ServiceConfig) -> Result<(), ServeError> {
         .push(Router::with_path("cert-hash").get(render_cert_hash))
         .push(Router::with_path("favicon.ico").get(empty_no_content))
         .push(Router::with_path("connect").goal(crate::connect::handle))
+        .push(
+            Router::with_path("assets/wasm/{**}")
+                .hoop(wasm_cache_headers)
+                .get(StaticDir::new([wasm_dir])),
+        )
         .push(Router::with_path("assets/{**}").get(StaticDir::new([config.asset_dir])));
 
     Server::new(acceptor).serve(router).await;
@@ -167,6 +173,25 @@ async fn cross_origin_isolation(
     headers.insert(COOP, HeaderValue::from_static("same-origin"));
     headers.insert(COEP, HeaderValue::from_static("require-corp"));
     headers.insert(CORP, HeaderValue::from_static("same-origin"));
+}
+
+/// Adds long-lived caching for WASM assets so concurrent Worker fetches for
+/// spawn.js (spawned by Rayon's thread pool) hit the HTTP cache instead of
+/// making new TLS round-trips to Salvo. Without this, 8-16 simultaneous
+/// requests can exceed the browser's HTTP/1.1 connection limit (6) and cause
+/// ERR:ABORTED → deadlock.
+#[handler]
+async fn wasm_cache_headers(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+    ctrl: &mut FlowCtrl,
+) {
+    ctrl.call_next(req, depot, res).await;
+    res.headers_mut().insert(
+        HeaderName::from_static("cache-control"),
+        HeaderValue::from_static("public, max-age=3600, immutable"),
+    );
 }
 
 // ─── Self-signed service certificate ───────────────────────────────────────
