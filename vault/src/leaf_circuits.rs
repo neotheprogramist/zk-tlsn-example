@@ -403,10 +403,12 @@ fn parse_decimal_in_circuit(
     acc
 }
 
-/// **TlsnAttestation AIR** — opens a Poseidon transcript commitment over
-/// a 32-byte ASCII attestation `(txId 10d ‖ toUserId 10d ‖ amount 12d)`
-/// and binds the three parsed segments plus the commitment to public
-/// values.
+/// **OfferSolveTlsnTransfer AIR** — opens a Poseidon transcript
+/// commitment over a 32-byte ASCII attestation
+/// `(txId 10d ‖ toUserId 10d ‖ amount 12d)`, binds the three parsed
+/// segments plus the commitment to public values, and additionally
+/// enforces the offer policy: `to_user_id == expected_to_user_id` and
+/// `amount == expected_amount`.
 ///
 /// Constraints:
 /// 1. Guess each attestation byte (32 Vars) and each blinder byte
@@ -415,19 +417,25 @@ fn parse_decimal_in_circuit(
 /// 2. For each segment, `parse_decimal_in_circuit` accumulates
 ///    `Σ (b_i - 48) · 10^(W-1-i)` mod P and `eq`s it against a Var
 ///    guessed as the public `tx_id` / `to_user_id` / `amount`.
-/// 3. Concatenate attestation Vars + blinder Vars and feed them into
+/// 3. `eq(to_user_id, expected_to_user_id)` and
+///    `eq(amount, expected_amount)` enforce the offer policy: the
+///    attested recipient and value match what the offer creator
+///    declared.
+/// 4. Concatenate attestation Vars + blinder Vars and feed them into
 ///    [`hash_in_circuit`]. Bind the resulting RATE-limb output to the
-///    public `commitment_limbs`, matching the on-wire MPC-VM Poseidon2
+///    public `commitment_hash`, matching the on-wire MPC-VM Poseidon2
 ///    output (8× u32 little-endian = 32 bytes).
-pub fn build_tlsn_attestation(
+pub fn build_offer_solve_tlsn_transfer(
     ctx: &mut TraceContext,
     leaf_index: u32,
     attestation_bytes: &[u8],
     blinder_bytes: &[u8],
-    commitment_limbs: &[u32; RATE],
+    commitment_hash: &[u32; RATE],
     tx_id: u64,
     to_user_id: u64,
     amount: u64,
+    expected_to_user_id: u64,
+    expected_amount: u64,
 ) -> Result<()> {
     if attestation_bytes.len() != TLSN_ATT_LEN {
         return Err(Error::TlsnAttestationBadLength {
@@ -463,6 +471,12 @@ pub fn build_tlsn_attestation(
     let amount_public = guess(ctx, QM31::from(M31::from(amount as u32)));
     eq(ctx, amount_computed, amount_public);
 
+    let expected_to_user_var = guess(ctx, QM31::from(M31::from(expected_to_user_id as u32)));
+    eq(ctx, to_user_public, expected_to_user_var);
+
+    let expected_amount_var = guess(ctx, QM31::from(M31::from(expected_amount as u32)));
+    eq(ctx, amount_public, expected_amount_var);
+
     let blinder_vars: Vec<circuits::context::Var> = blinder_bytes
         .iter()
         .map(|&b| guess(ctx, QM31::from(M31::from(b as u32))))
@@ -472,7 +486,7 @@ pub fn build_tlsn_attestation(
     hash_input.extend_from_slice(&att_vars);
     hash_input.extend_from_slice(&blinder_vars);
     let computed_commitment: [circuits::context::Var; RATE] = hash_in_circuit(ctx, &hash_input);
-    let expected_m31: [M31; RATE] = core::array::from_fn(|i| M31::from(commitment_limbs[i]));
+    let expected_m31: [M31; RATE] = core::array::from_fn(|i| M31::from(commitment_hash[i]));
     bind_hash_to_expected(ctx, &computed_commitment, &expected_m31);
 
     emit_canonical_outputs(ctx, leaf_index)
@@ -563,24 +577,28 @@ pub fn dispatch(
             padding_created,
         ),
         (
-            AirKind::TlsnAttestation,
-            LeafWitness::TlsnAttestation {
+            AirKind::OfferSolveTlsnTransfer,
+            LeafWitness::OfferSolveTlsnTransfer {
                 attestation_bytes,
                 blinder_bytes,
-                commitment_limbs,
+                commitment_hash,
                 tx_id,
                 to_user_id,
                 amount,
+                expected_to_user_id,
+                expected_amount,
             },
-        ) => build_tlsn_attestation(
+        ) => build_offer_solve_tlsn_transfer(
             ctx,
             leaf_index,
             attestation_bytes,
             blinder_bytes,
-            commitment_limbs,
+            commitment_hash,
             *tx_id,
             *to_user_id,
             *amount,
+            *expected_to_user_id,
+            *expected_amount,
         ),
         (k, LeafWitness::DigestBound) => build_digest_bound_leaf(ctx, leaf_index, k.tag()),
         (k, w) => Err(Error::AirWitnessMismatch {

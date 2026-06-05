@@ -60,19 +60,25 @@ pub enum LeafWitness {
     /// No private witness; the proof's constraint set is the canonical
     /// leaf output emission only.
     DigestBound,
-    /// Opens a TLSN-Poseidon commitment over a 32-byte ASCII attestation
-    /// (`txId 10d ‖ toUserId 10d ‖ amount 12d`). The circuit re-derives
-    /// `Poseidon(attestation ‖ blinder)` and binds it to the public
-    /// `commitment_limbs`, plus parses each decimal segment in-circuit
-    /// and binds the result to the public `tx_id` / `to_user_id` /
-    /// `amount`.
-    TlsnAttestation {
+    /// OfferSolve for the `tlsn_transfer` challenge: opens a
+    /// TLSN-Poseidon commitment over a 32-byte ASCII attestation
+    /// (`txId 10d ‖ toUserId 10d ‖ amount 12d`), parses each decimal
+    /// segment, and binds the parsed `to_user_id` / `amount` to the
+    /// offer's `expected_to_user_id` / `expected_amount`.
+    OfferSolveTlsnTransfer {
         attestation_bytes: Vec<u8>,
         blinder_bytes: Vec<u8>,
-        commitment_limbs: [u32; 8],
+        commitment_hash: [u32; 8],
         tx_id: u64,
         to_user_id: u64,
         amount: u64,
+        /// Recipient bank user-id the offer creator declared at offer
+        /// creation; the circuit enforces `to_user_id == expected_to_user_id`.
+        expected_to_user_id: u64,
+        /// Transfer amount the offer creator declared (`price` in the
+        /// JS-side declaration); the circuit enforces
+        /// `amount == expected_amount`.
+        expected_amount: u64,
     },
 }
 
@@ -139,7 +145,7 @@ impl LeafWitness {
             Self::OfferCancelAuth { .. } => "offerCancelAuth",
             Self::Compliance { .. } => "compliance",
             Self::DigestBound => "digestBound",
-            Self::TlsnAttestation { .. } => "tlsnAttestation",
+            Self::OfferSolveTlsnTransfer { .. } => "offerSolveTlsnTransfer",
         }
     }
 }
@@ -228,10 +234,11 @@ pub enum PublicInputs {
         leaf_count: u32,
         kinds_touched: Vec<String>,
     },
-    TlsnAttestation {
-        /// Poseidon commitment limbs (8× M31) that the in-circuit
+    OfferSolveTlsnTransfer {
+        /// Poseidon commitment hash (8× u32 little-endian limbs of the
+        /// 32-byte Poseidon2-M31 output) that the in-circuit
         /// `Poseidon(attestation ‖ blinder)` must equal.
-        commitment_limbs: [u32; 8],
+        commitment_hash: [u32; 8],
         /// Decimal `tx_id` parsed from the first 10 bytes of the
         /// attestation, bound in-circuit.
         tx_id: u64,
@@ -239,5 +246,11 @@ pub enum PublicInputs {
         to_user_id: u64,
         /// Decimal `amount` parsed from bytes 20..32.
         amount: u64,
+        /// Recipient bank user-id the offer creator declared. The circuit
+        /// enforces `to_user_id == expected_to_user_id`.
+        expected_to_user_id: u64,
+        /// Transfer amount the offer creator declared. The circuit
+        /// enforces `amount == expected_amount`.
+        expected_amount: u64,
     },
 }

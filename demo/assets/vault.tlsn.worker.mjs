@@ -70,8 +70,8 @@ function buildProverInputs(config) {
 }
 
 // Find the Poseidon2 commitment over the .attestation value in the
-// response, then unpack into a triple `(attestation_bytes, blinder_bytes,
-// commitment_limbs)` the vault opening AIR consumes verbatim.
+// response, then unpack into a triple `(attestationBytes, blinderBytes,
+// commitmentHash)` the vault opening AIR consumes verbatim.
 function extractAttestationOpening(output) {
   const commitments = output.commitments ?? [];
   const candidate = commitments.find(
@@ -111,9 +111,9 @@ function extractAttestationOpening(output) {
   // 8× little-endian u32 limbs — matches the MPC-VM Poseidon2 `Array<U8, 32>`
   // output layout (each u32 in state[0..8] becomes 4 consecutive bytes).
   const dv = new DataView(hashBytes.buffer, hashBytes.byteOffset, hashBytes.byteLength);
-  const commitmentLimbs = new Array(8);
-  for (let i = 0; i < 8; i++) commitmentLimbs[i] = dv.getUint32(i * 4, true);
-  return { attestationBytes, blinderBytes, commitmentLimbs };
+  const commitmentHash = new Array(8);
+  for (let i = 0; i < 8; i++) commitmentHash[i] = dv.getUint32(i * 4, true);
+  return { attestationBytes, blinderBytes, commitmentHash };
 }
 
 async function runProve(config) {
@@ -167,13 +167,13 @@ async function runProve(config) {
       amount: Number(body.amount),
       commitmentCount: Number(output.commitmentCount ?? 0),
       // Opening data for the in-circuit Poseidon proof
-      // (`AirKind::TlsnAttestation`): the 32-byte attestation plaintext
+      // (`AirKind::OfferSolveTlsnTransfer`): the 32-byte attestation plaintext
       // the prover committed to, the 16-byte blinder, and the commitment
       // hash split into 8× u32 little-endian M31 limbs (matching the
       // MPC-VM Poseidon2 output layout).
       attestationBytes: Array.from(opening.attestationBytes),
       blinderBytes: Array.from(opening.blinderBytes),
-      commitmentLimbs: opening.commitmentLimbs,
+      commitmentHash: opening.commitmentHash,
     };
   } finally {
     try {

@@ -360,44 +360,54 @@ function offerSolveLeafSpec({ instanceSaltHex, challengeId, declaration, witness
   };
 }
 
-// TlsnAttestation leaf: in-circuit opening of a TLSN Poseidon transcript
-// commitment over the bank's 32-byte ASCII attestation. The circuit
-// constraints (vault::leaf_circuits::build_tlsn_attestation):
+// OfferSolveTlsnTransfer leaf: in-circuit opening of a TLSN Poseidon
+// transcript commitment over the bank's 32-byte ASCII attestation,
+// combined with the offer policy check. The circuit constraints
+// (vault::leaf_circuits::build_offer_solve_tlsn_transfer):
 //   1. Parse `tx_id` (10d) / `to_user_id` (10d) / `amount` (12d) from
 //      the attestation bytes and bind each to its public counterpart.
-//   2. Recompute `Poseidon2(attestation ‖ blinder)` and bind to
-//      `commitment_limbs`.
-// All five private witness fields (attestation, blinder, tx_id,
-// to_user_id, amount) come from `vault.tlsn.worker.mjs`. The public
-// inputs include the commitment limbs + parsed scalars so the verifier
-// can recompute the public-input digest and bind the proof to a
-// specific (tx_id, to_user_id, amount) tuple.
-function tlsnAttestationLeafSpec({
-  commitmentLimbs,
+//   2. Enforce `to_user_id == expectedToUserId` and
+//      `amount == expectedAmount` — the parsed attestation must match
+//      the offer creator's declared recipient and price.
+//   3. Recompute `Poseidon2(attestation ‖ blinder)` and bind to
+//      `commitmentHash`.
+// The truly private fields are `attestationBytes` + `blinderBytes`
+// (never exposed to the verifier outside the prover). The remaining
+// fields (commitmentHash, txId, toUserId, amount, expectedToUserId,
+// expectedAmount) appear in the publicInputs JSON so the verifier
+// can compare the host-side digest against the proof.
+function offerSolveTlsnTransferLeafSpec({
+  commitmentHash,
   txId,
   toUserId,
   amount,
   attestationBytes,
   blinderBytes,
+  expectedToUserId,
+  expectedAmount,
 }) {
   return {
     leafIndex: null,
-    air: "tlsnAttestation",
+    air: "offerSolveTlsnTransfer",
     publicInputs: {
-      air: "tlsnAttestation",
-      commitmentLimbs,
+      air: "offerSolveTlsnTransfer",
+      commitmentHash,
       txId,
       toUserId,
       amount,
+      expectedToUserId,
+      expectedAmount,
     },
     privateWitness: {
-      kind: "tlsnAttestation",
+      kind: "offerSolveTlsnTransfer",
       attestationBytes,
       blinderBytes,
-      commitmentLimbs,
+      commitmentHash,
       txId,
       toUserId,
       amount,
+      expectedToUserId,
+      expectedAmount,
     },
   };
 }
@@ -954,22 +964,26 @@ export async function buildSolveOffer({ store, activeUsername, offerRecord, witn
       }),
     );
   }
-  // Per-challenge leaf: algebraic challenges (x+1=2, sum_eq_n, …) emit an
-  // offerSolve leaf binding the witness in-circuit. The `tlsn_transfer`
-  // challenge emits a tlsnAttestation leaf instead — the witness here
-  // carries the TLSN-extracted attestation + blinder + commitment limbs
-  // from `vault.tlsn.worker.mjs`, and the in-circuit proof opens the
-  // Poseidon commitment and parses the (tx_id, to_user_id, amount)
-  // segments out of the attestation bytes.
+  // Per-challenge leaf: algebraic challenges (x+1=2, sum_eq_n, …) emit
+  // an `offerSolve` leaf binding the witness in-circuit. The
+  // `tlsn_transfer` challenge emits an `offerSolveTlsnTransfer` leaf
+  // instead — the witness here carries the TLSN-extracted attestation
+  // + blinder + commitment hash from `vault.tlsn.worker.mjs`, plus the
+  // offer declaration's `expectedToUserId` / `expectedAmount`. The
+  // in-circuit proof opens the Poseidon commitment, parses the
+  // `(tx_id, to_user_id, amount)` segments, and enforces that the
+  // attested recipient and value match what the offer declared.
   if (ofs.challengeId === "tlsn_transfer") {
     leafSpecs.push(
-      tlsnAttestationLeafSpec({
-        commitmentLimbs: witness.commitmentLimbs,
+      offerSolveTlsnTransferLeafSpec({
+        commitmentHash: witness.commitmentHash,
         txId: witness.txId,
         toUserId: witness.toUserId,
         amount: witness.amount,
         attestationBytes: witness.attestationBytes,
         blinderBytes: witness.blinderBytes,
+        expectedToUserId: witness.expectedToUserId,
+        expectedAmount: witness.expectedAmount,
       }),
     );
   } else {

@@ -19,6 +19,7 @@ import {
   setActiveTabLabel,
   updateIdentityDisplay,
 } from "./vault.render.mjs";
+import { bankUserIdFor } from "./vault.challenges.mjs";
 
 export function attachHandlers(ctx) {
   ctx.onResourceToggle = (uid, checked) => {
@@ -203,6 +204,12 @@ async function onCreateOfferSubmit(ctx) {
     )) {
       challengeParams[inp.dataset.fieldName] = inp.value;
     }
+    // tlsn_transfer derives `expectedToUserId` from the offer creator's
+    // vault identity — the creator wants payment to their own bank
+    // account, so we don't ask them to type their bank user-id.
+    if (ctx.els.offerChallenge.value === "tlsn_transfer") {
+      challengeParams.expectedToUserId = bankUserIdFor(ctx.activeUsername);
+    }
     const feeUid = ctx.els.offerFeeResource.value;
     if (!feeUid) {
       setFieldError(ctx.els.offerFeeResource, "choose a USDC resource");
@@ -318,16 +325,21 @@ async function onSolveSubmit(ctx) {
         expected_price: decl.price,
       });
       // Feed the opening witness into buildSolveOffer so the
-      // tlsnAttestation leaf (vault::AirKind::TlsnAttestation) can be
-      // built. The leaf circuit re-derives the Poseidon commitment and
-      // parses the decimal segments — these fields are private inputs
-      // for the proof, not values the solver picked.
+      // offerSolveTlsnTransfer leaf
+      // (vault::AirKind::OfferSolveTlsnTransfer) can be built. The leaf
+      // circuit re-derives the Poseidon commitment, parses the decimal
+      // segments, and enforces the offer policy
+      // (`to_user_id == expectedToUserId`, `amount == expectedAmount`).
+      // TLSN-side fields come from the worker; offer-side `expected*`
+      // fields come from the offer's declaration.
       witness.attestationBytes = attestation.attestationBytes;
       witness.blinderBytes = attestation.blinderBytes;
-      witness.commitmentLimbs = attestation.commitmentLimbs;
+      witness.commitmentHash = attestation.commitmentHash;
       witness.txId = attestation.txId;
       witness.toUserId = attestation.toUserId;
       witness.amount = attestation.amount;
+      witness.expectedToUserId = Number(decl.expectedToUserId);
+      witness.expectedAmount = Number(decl.price);
     }
 
     const plan = await buildSolveOffer({

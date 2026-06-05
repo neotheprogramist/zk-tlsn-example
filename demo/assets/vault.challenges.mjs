@@ -82,14 +82,35 @@ const tlsn_transfer = {
   id: "tlsn_transfer",
   title: "TLSN bank transfer",
   description:
-    "Solver must prove via TLSN that they executed a bank transfer to the offer creator for at least `price`. The recipient is implicit (the offer creator's username); the only thing the creator picks is the price.",
+    "Solver must prove via TLSN that they executed a bank transfer to the offer creator's bank account for exactly `price` USD. The recipient bank user-id is derived from the creator's vault identity at offer-creation time (see bankUserIdFor) and stored in the declaration as `expectedToUserId`. Both values are bound in the offerSolveTlsnTransfer circuit.",
   paramSchema: [{ name: "price", kind: "number" }],
   witnessSchema: [],
-  declaration: (params) => ({ price: Number(params.price ?? 0) }),
-  // The real verification happens in the TLSN gate; the JS-side hook is a
-  // no-op so buildSolveOffer's challenge.verify() call always passes.
+  // `expectedToUserId` is injected into `params` by the offer-creation
+  // handler before calling this; it is not user-picked.
+  declaration: (params) => ({
+    price: Number(params.price ?? 0),
+    expectedToUserId: Number(params.expectedToUserId ?? 0),
+  }),
+  // The real verification happens in the TLSN gate + in-circuit policy
+  // check; the JS-side hook is a no-op so buildSolveOffer's
+  // challenge.verify() call always passes.
   verify: () => true,
 };
+
+// Demo bank ledger (`demo/src/ledger.rs`) seeds users in fixed insertion
+// order with sequential u64 IDs starting at 1: alice=1, bob=2, treasury=3.
+// `tlsn_transfer` derives the offer's `expectedToUserId` from the active
+// vault identity at offer-creation time, so the user doesn't have to type
+// their own bank account number into the offer form.
+const BANK_USER_IDS_BY_USERNAME = { alice: 1, bob: 2, treasury: 3 };
+
+export function bankUserIdFor(username) {
+  const id = BANK_USER_IDS_BY_USERNAME[username];
+  if (id == null) {
+    throw new Error(`no bank user_id mapped for vault identity ${username}`);
+  }
+  return id;
+}
 
 const REGISTRY = new Map([
   [x_plus_1_eq_2.id, x_plus_1_eq_2],
