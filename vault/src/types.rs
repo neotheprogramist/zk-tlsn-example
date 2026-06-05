@@ -60,7 +60,34 @@ pub enum LeafWitness {
     /// No private witness; the proof's constraint set is the canonical
     /// leaf output emission only.
     DigestBound,
+    /// Opens a TLSN-Poseidon commitment over a 32-byte ASCII attestation
+    /// (`txId 10d ‖ toUserId 10d ‖ amount 12d`). The circuit re-derives
+    /// `Poseidon(attestation ‖ blinder)` and binds it to the public
+    /// `commitment_limbs`, plus parses each decimal segment in-circuit
+    /// and binds the result to the public `tx_id` / `to_user_id` /
+    /// `amount`.
+    TlsnAttestation {
+        attestation_bytes: Vec<u8>,
+        blinder_bytes: Vec<u8>,
+        commitment_limbs: [u32; 8],
+        tx_id: u64,
+        to_user_id: u64,
+        amount: u64,
+    },
 }
+
+/// Fixed-width ASCII decimal layout of the TLSN-attested transfer record.
+/// Must mirror `demo/src/attestation.rs` exactly — the in-circuit decimal
+/// parse hard-codes these widths.
+pub const TLSN_ATT_TX_ID_WIDTH: usize = 10;
+pub const TLSN_ATT_USER_ID_WIDTH: usize = 10;
+pub const TLSN_ATT_AMOUNT_WIDTH: usize = 12;
+pub const TLSN_ATT_LEN: usize =
+    TLSN_ATT_TX_ID_WIDTH + TLSN_ATT_USER_ID_WIDTH + TLSN_ATT_AMOUNT_WIDTH;
+
+/// Length of the TLSN per-commitment blinder, as fixed by the upstream
+/// `tlsn::hash::Blinder` newtype (`[u8; 16]`).
+pub const TLSN_BLINDER_LEN: usize = 16;
 
 /// One created resource: preimage limbs (canonical 38-limb shape) and
 /// the cm the prover claims for them. Vec rather than `[u32; 38]`
@@ -112,6 +139,7 @@ impl LeafWitness {
             Self::OfferCancelAuth { .. } => "offerCancelAuth",
             Self::Compliance { .. } => "compliance",
             Self::DigestBound => "digestBound",
+            Self::TlsnAttestation { .. } => "tlsnAttestation",
         }
     }
 }
@@ -199,5 +227,17 @@ pub enum PublicInputs {
         action_digest_hex: String,
         leaf_count: u32,
         kinds_touched: Vec<String>,
+    },
+    TlsnAttestation {
+        /// Poseidon commitment limbs (8× M31) that the in-circuit
+        /// `Poseidon(attestation ‖ blinder)` must equal.
+        commitment_limbs: [u32; 8],
+        /// Decimal `tx_id` parsed from the first 10 bytes of the
+        /// attestation, bound in-circuit.
+        tx_id: u64,
+        /// Decimal `to_user_id` parsed from bytes 10..20.
+        to_user_id: u64,
+        /// Decimal `amount` parsed from bytes 20..32.
+        amount: u64,
     },
 }

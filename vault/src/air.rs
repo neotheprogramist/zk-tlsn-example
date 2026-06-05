@@ -45,6 +45,14 @@ pub enum AirKind {
 
     /// Action-AIR root: the merge fold over all per-action leaves.
     ActionRoot = 6,
+
+    /// TLSN-attested transfer: opens a Poseidon transcript commitment in-
+    /// circuit and parses the canonical fixed-width attestation layout
+    /// (`tx_id ‖ to_user_id ‖ amount` as zero-padded ASCII decimal) into
+    /// three public M31 values. Bound to the public commitment limbs so
+    /// the verifier knows the prover saw a TLSN session whose revealed
+    /// `.attestation` field hashes to that commitment.
+    TlsnAttestation = 7,
 }
 
 /// Tag space cap. The tag is packed into one M31 slot so the cap is well
@@ -65,6 +73,7 @@ impl AirKind {
             4 => Some(Self::OfferCancel),
             5 => Some(Self::UserKey),
             6 => Some(Self::ActionRoot),
+            7 => Some(Self::TlsnAttestation),
             _ => None,
         }
     }
@@ -80,6 +89,7 @@ impl AirKind {
             Self::OfferCancel => "offerCancel",
             Self::UserKey => "userKey",
             Self::ActionRoot => "actionRoot",
+            Self::TlsnAttestation => "tlsnAttestation",
         }
     }
 }

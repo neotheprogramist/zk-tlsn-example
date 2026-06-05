@@ -317,6 +317,17 @@ async function onSolveSubmit(ctx) {
         expected_to: expectedToUser,
         expected_price: decl.price,
       });
+      // Feed the opening witness into buildSolveOffer so the
+      // tlsnAttestation leaf (vault::AirKind::TlsnAttestation) can be
+      // built. The leaf circuit re-derives the Poseidon commitment and
+      // parses the decimal segments — these fields are private inputs
+      // for the proof, not values the solver picked.
+      witness.attestationBytes = attestation.attestationBytes;
+      witness.blinderBytes = attestation.blinderBytes;
+      witness.commitmentLimbs = attestation.commitmentLimbs;
+      witness.txId = attestation.txId;
+      witness.toUserId = attestation.toUserId;
+      witness.amount = attestation.amount;
     }
 
     const plan = await buildSolveOffer({

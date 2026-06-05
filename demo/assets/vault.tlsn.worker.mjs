@@ -12,6 +12,11 @@ import { installWorkerErrorForwarder } from "./flow.mjs";
 installWorkerErrorForwarder();
 
 const ATTESTATION_LEN = 32;
+const BLINDER_LEN = 16;
+// HashAlgId byte for Poseidon2 in the upstream `tlsn::hash::HashAlgId`
+// table (`POSEIDON2 = 4`). Used to filter out commitments that aren't
+// the one we hand into the in-circuit opening proof.
+const POSEIDON2_HASH_ALG = 4;
 const MAX_SENT_DATA = 1 << 12;
 const MAX_RECV_DATA = 1 << 14;
 
@@ -64,6 +69,53 @@ function buildProverInputs(config) {
   };
 }
 
+// Find the Poseidon2 commitment over the .attestation value in the
+// response, then unpack into a triple `(attestation_bytes, blinder_bytes,
+// commitment_limbs)` the vault opening AIR consumes verbatim.
+function extractAttestationOpening(output) {
+  const commitments = output.commitments ?? [];
+  const candidate = commitments.find(
+    (c) =>
+      c.direction === "received" &&
+      Number(c.alg) === POSEIDON2_HASH_ALG &&
+      Array.isArray(c.ranges) &&
+      c.ranges.length === 1 &&
+      c.ranges[0].end - c.ranges[0].start === ATTESTATION_LEN,
+  );
+  if (!candidate) {
+    throw new Error(
+      "TLSN output has no Poseidon2 commitment over a 32-byte received range — " +
+        "vault opening proof cannot be built",
+    );
+  }
+  const { start, end } = candidate.ranges[0];
+  const received = new Uint8Array(output.received);
+  const attestationBytes = received.slice(start, end);
+  if (attestationBytes.length !== ATTESTATION_LEN) {
+    throw new Error(
+      `attestation slice has ${attestationBytes.length} bytes, expected ${ATTESTATION_LEN}`,
+    );
+  }
+  const blinderBytes = new Uint8Array(candidate.blinderBytes ?? []);
+  if (blinderBytes.length !== BLINDER_LEN) {
+    throw new Error(
+      `blinder has ${blinderBytes.length} bytes, expected ${BLINDER_LEN}`,
+    );
+  }
+  const hashBytes = new Uint8Array(candidate.hashBytes ?? []);
+  if (hashBytes.length !== 32) {
+    throw new Error(
+      `commitment hash has ${hashBytes.length} bytes, expected 32 (Poseidon2-M31)`,
+    );
+  }
+  // 8× little-endian u32 limbs — matches the MPC-VM Poseidon2 `Array<U8, 32>`
+  // output layout (each u32 in state[0..8] becomes 4 consecutive bytes).
+  const dv = new DataView(hashBytes.buffer, hashBytes.byteOffset, hashBytes.byteLength);
+  const commitmentLimbs = new Array(8);
+  for (let i = 0; i < 8; i++) commitmentLimbs[i] = dv.getUint32(i * 4, true);
+  return { attestationBytes, blinderBytes, commitmentLimbs };
+}
+
 async function runProve(config) {
   event("vault.tlsn.worker.wasm.init.start");
   await init();
@@ -104,13 +156,24 @@ async function runProve(config) {
     // attested body fields out of the response_body bytes for echo-back.
     const body = JSON.parse(new TextDecoder().decode(new Uint8Array(output.responseBody)).trim());
 
+    const opening = extractAttestationOpening(output);
+
     return {
       flow: "tlsn-vault",
       serverName: config.serverName,
       txId: Number(body.txId),
       toUsername: String(body.toUsername),
+      toUserId: Number(body.toUserId),
       amount: Number(body.amount),
       commitmentCount: Number(output.commitmentCount ?? 0),
+      // Opening data for the in-circuit Poseidon proof
+      // (`AirKind::TlsnAttestation`): the 32-byte attestation plaintext
+      // the prover committed to, the 16-byte blinder, and the commitment
+      // hash split into 8× u32 little-endian M31 limbs (matching the
+      // MPC-VM Poseidon2 output layout).
+      attestationBytes: Array.from(opening.attestationBytes),
+      blinderBytes: Array.from(opening.blinderBytes),
+      commitmentLimbs: opening.commitmentLimbs,
     };
   } finally {
     try {

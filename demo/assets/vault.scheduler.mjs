@@ -351,6 +351,7 @@ const AIR_NAME_TO_TAG = Object.freeze({
   offerCancel: 4,
   userKey: 5,
   actionRoot: 6,
+  tlsnAttestation: 7,
 });
 
 function mapAirToTag(name) {

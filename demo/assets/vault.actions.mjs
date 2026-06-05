@@ -360,6 +360,48 @@ function offerSolveLeafSpec({ instanceSaltHex, challengeId, declaration, witness
   };
 }
 
+// TlsnAttestation leaf: in-circuit opening of a TLSN Poseidon transcript
+// commitment over the bank's 32-byte ASCII attestation. The circuit
+// constraints (vault::leaf_circuits::build_tlsn_attestation):
+//   1. Parse `tx_id` (10d) / `to_user_id` (10d) / `amount` (12d) from
+//      the attestation bytes and bind each to its public counterpart.
+//   2. Recompute `Poseidon2(attestation ‖ blinder)` and bind to
+//      `commitment_limbs`.
+// All five private witness fields (attestation, blinder, tx_id,
+// to_user_id, amount) come from `vault.tlsn.worker.mjs`. The public
+// inputs include the commitment limbs + parsed scalars so the verifier
+// can recompute the public-input digest and bind the proof to a
+// specific (tx_id, to_user_id, amount) tuple.
+function tlsnAttestationLeafSpec({
+  commitmentLimbs,
+  txId,
+  toUserId,
+  amount,
+  attestationBytes,
+  blinderBytes,
+}) {
+  return {
+    leafIndex: null,
+    air: "tlsnAttestation",
+    publicInputs: {
+      air: "tlsnAttestation",
+      commitmentLimbs,
+      txId,
+      toUserId,
+      amount,
+    },
+    privateWitness: {
+      kind: "tlsnAttestation",
+      attestationBytes,
+      blinderBytes,
+      commitmentLimbs,
+      txId,
+      toUserId,
+      amount,
+    },
+  };
+}
+
 function offerCancelLeafSpec({
   instanceSaltHex,
   creatorUserkeySaltHex,
@@ -912,11 +954,25 @@ export async function buildSolveOffer({ store, activeUsername, offerRecord, witn
       }),
     );
   }
-  // TLSN-based challenges do not have an in-circuit constraint — the real
-  // verification is done host-side (TLSN gate in vault.handlers.mjs) so the
-  // offerSolve leaf is skipped entirely. Algebraic challenges (x+1=2, sum_eq_n,
-  // …) still emit a leaf that proves the witness in-circuit.
-  if (ofs.challengeId !== "tlsn_transfer") {
+  // Per-challenge leaf: algebraic challenges (x+1=2, sum_eq_n, …) emit an
+  // offerSolve leaf binding the witness in-circuit. The `tlsn_transfer`
+  // challenge emits a tlsnAttestation leaf instead — the witness here
+  // carries the TLSN-extracted attestation + blinder + commitment limbs
+  // from `vault.tlsn.worker.mjs`, and the in-circuit proof opens the
+  // Poseidon commitment and parses the (tx_id, to_user_id, amount)
+  // segments out of the attestation bytes.
+  if (ofs.challengeId === "tlsn_transfer") {
+    leafSpecs.push(
+      tlsnAttestationLeafSpec({
+        commitmentLimbs: witness.commitmentLimbs,
+        txId: witness.txId,
+        toUserId: witness.toUserId,
+        amount: witness.amount,
+        attestationBytes: witness.attestationBytes,
+        blinderBytes: witness.blinderBytes,
+      }),
+    );
+  } else {
     leafSpecs.push(
       offerSolveLeafSpec({
         instanceSaltHex: ofs.instanceSaltHex,
