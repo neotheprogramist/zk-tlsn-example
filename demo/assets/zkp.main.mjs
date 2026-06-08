@@ -57,6 +57,7 @@ createLog(els.log);
 let lastVerifyResult = null;
 let lastVerifyError = null;
 let booted = false;
+let sessionStart = null;
 
 function lastByKind(state, kind, key) {
   let last = null;
@@ -121,6 +122,11 @@ scheduler.subscribe(renderReadouts);
 
 els.btnNext.addEventListener("click", () => {
   if (els.btnNext.disabled) return;
+  if (!sessionStart) {
+    sessionStart = performance.now();
+    console.time("zkp: proving session");
+    event("zkp.session.start", {});
+  }
   // Click event before scheduler.submitLeaf so the structured log reads
   // chronologically (click → queue → dispatch).
   event("zkp.action.next.click", {});
@@ -130,6 +136,10 @@ els.btnNext.addEventListener("click", () => {
 els.btnReset.addEventListener("click", () => {
   if (els.btnReset.disabled) return;
   event("zkp.action.reset.click");
+  if (sessionStart) {
+    console.timeEnd("zkp: proving session");
+    sessionStart = null;
+  }
   lastVerifyResult = null;
   lastVerifyError = null;
   scheduler.reset();
@@ -142,16 +152,30 @@ els.btnVerify.addEventListener("click", async () => {
   try {
     const result = await scheduler.verify();
     lastVerifyResult = result;
+    const elapsedMs = sessionStart != null ? Math.round(performance.now() - sessionStart) : null;
+    if (sessionStart != null) {
+      console.timeEnd("zkp: proving session");
+      sessionStart = null;
+    }
     event("zkp.verify.done", {
       root_node_id: result.rootNodeId,
       verified: result.verified,
       lo: result.lo,
       hi: result.hi,
       count: result.count,
+      ...(elapsedMs != null && { elapsed_ms: elapsedMs }),
     });
   } catch (err) {
     lastVerifyError = err.message;
-    eventErr("zkp.verify.failed", { message: lastVerifyError });
+    const elapsedMs = sessionStart != null ? Math.round(performance.now() - sessionStart) : null;
+    if (sessionStart != null) {
+      console.timeEnd("zkp: proving session");
+      sessionStart = null;
+    }
+    eventErr("zkp.verify.failed", {
+      message: lastVerifyError,
+      ...(elapsedMs != null && { elapsed_ms: elapsedMs }),
+    });
   }
   renderReadouts(scheduler.snapshot());
 });

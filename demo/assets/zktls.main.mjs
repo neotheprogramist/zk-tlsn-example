@@ -127,12 +127,18 @@ function start() {
   lockUI(true);
   setOverall("running");
   runStartedAt = performance.now();
+  console.time("zktls: proving session");
 
   event("zktls.action.start.click");
 
   currentWorker = startWorker("/assets/zktls.worker.mjs", (msg) => {
     if (msg.kind === "result") {
-      event("zktls.notarize.done", msg.result);
+      const elapsedMs = runStartedAt != null ? Math.round(performance.now() - runStartedAt) : null;
+      console.timeEnd("zktls: proving session");
+      event("zktls.notarize.done", {
+        ...msg.result,
+        ...(elapsedMs != null && { elapsed_ms: elapsedMs }),
+      });
       steps.done("result");
       showResult(msg.result);
       setOverall("done");
@@ -140,7 +146,12 @@ function start() {
       currentWorker = null;
       lockUI(false);
     } else if (msg.kind === "error") {
-      eventErr("zktls.notarize.failed", { message: msg.message });
+      const elapsedMs = runStartedAt != null ? Math.round(performance.now() - runStartedAt) : null;
+      console.timeEnd("zktls: proving session");
+      eventErr("zktls.notarize.failed", {
+        message: msg.message,
+        ...(elapsedMs != null && { elapsed_ms: elapsedMs }),
+      });
       steps.failAllPending(msg.message);
       showError(msg.message);
       setOverall("failed");

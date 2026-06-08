@@ -51,11 +51,11 @@ pub enum Error {
 
     /// Leaf and merge AIRs both emit user-facing `(lo, hi, count)` at
     /// `output_values[0..3]`; `circuit_common::finalize::finalize_context`
-    /// appends two more outputs (the constants hash) at `[3..5]`. Anything
-    /// else means the proof was produced by a different circuit and we
-    /// refuse to host-verify it.
+    /// appends one more output (the constants hash) at `[3]`. Anything else
+    /// means the proof was produced by a different circuit and we refuse to
+    /// host-verify it.
     #[error(
-        "expected exactly 5 output values (lo, hi, count, constants_hash[0..2]); claim has {actual}"
+        "expected exactly 4 output values (lo, hi, count, constants_hash); claim has {actual}"
     )]
     OutputCardinalityMismatch { actual: usize },
 

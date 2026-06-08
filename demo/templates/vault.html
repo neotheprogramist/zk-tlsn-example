@@ -6,7 +6,16 @@
   // Fullbleed (no-scroll) layout. Set early so the body grid applies before paint.
   document.body.setAttribute("data-fullbleed", "");
 </script>
-<main class="vault-page">
+<main
+  class="vault-page"
+  data-role="vault-root"
+  data-cert-hash="{{ cert_hash_hex }}"
+  data-server-host="{{ server_host }}"
+  data-server-port="{{ server_port }}"
+  data-server-name="{{ server_name }}"
+  data-server-cert-der-hex="{{ server_cert_der_hex }}"
+  data-vault-tx-id="{{ vault_tx_id }}"
+>
   <header class="vault-page__header">
     <div class="page-header__row">
       <h1 class="page-header__title">

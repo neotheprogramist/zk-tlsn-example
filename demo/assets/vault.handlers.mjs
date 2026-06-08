@@ -3,6 +3,7 @@
 // DOM rendering is delegated to vault.render.mjs.
 
 import { event, eventErr } from "./log.mjs";
+import { startWorker } from "./flow.mjs";
 import { setFieldError } from "./ui/ui.field-error.mjs";
 import {
   buildTransfer,
@@ -18,6 +19,7 @@ import {
   setActiveTabLabel,
   updateIdentityDisplay,
 } from "./vault.render.mjs";
+import { bankUserIdFor } from "./vault.challenges.mjs";
 
 export function attachHandlers(ctx) {
   ctx.onResourceToggle = (uid, checked) => {
@@ -102,6 +104,8 @@ function selectedRecords(ctx) {
 async function runAction(ctx, plan) {
   const knownStates = new WeakMap();
   ctx.store.setPendingDelta(1);
+  const timerLabel = `vault: prove [${plan.flow}]`;
+  console.time(timerLabel);
   // The scheduler invokes onUpdate synchronously inside submitAction (before
   // the outer `await` resolves), so the closure cannot read the destructured
   // `state` binding — it's still in TDZ. Use the actionState parameter that
@@ -121,6 +125,7 @@ async function runAction(ctx, plan) {
       }
     },
   });
+  console.timeEnd(timerLabel);
   ctx.store.setPendingDelta(-1);
   if (ok) {
     for (let i = 0; i < plan.consumedRecords.length; i++) {
@@ -199,6 +204,12 @@ async function onCreateOfferSubmit(ctx) {
     )) {
       challengeParams[inp.dataset.fieldName] = inp.value;
     }
+    // tlsn_transfer derives `expectedToUserId` from the offer creator's
+    // vault identity — the creator wants payment to their own bank
+    // account, so we don't ask them to type their bank user-id.
+    if (ctx.els.offerChallenge.value === "tlsn_transfer") {
+      challengeParams.expectedToUserId = bankUserIdFor(ctx.activeUsername);
+    }
     const feeUid = ctx.els.offerFeeResource.value;
     if (!feeUid) {
       setFieldError(ctx.els.offerFeeResource, "choose a USDC resource");
@@ -222,6 +233,43 @@ async function onCreateOfferSubmit(ctx) {
   }
 }
 
+// Etap B: spawns vault.tlsn.worker.mjs which runs zktls MPC-TLS proving
+// against the bank ledger, with the demo service acting as the TLSN verifier
+// (parametrised by `expectedToUser` + `price`). Resolves with the attested
+// (txId, toUsername, amount) tuple on success, rejects on any failure
+// (transport, MPC-TLS, verifier policy).
+function runTlsnTransferGate({ expectedToUser, price }) {
+  return new Promise((resolve, reject) => {
+    const root = document.querySelector('[data-role="vault-root"]');
+    if (!root) {
+      reject(new Error("vault-root element missing (template not parametrised)"));
+      return;
+    }
+    const d = root.dataset;
+    const config = {
+      connectUrl: new URL("/connect", location.origin).toString(),
+      certHashHex: d.certHash,
+      serverHost: d.serverHost,
+      serverPort: Number(d.serverPort),
+      serverName: d.serverName,
+      serverCertDerHex: d.serverCertDerHex,
+      txId: Number(d.vaultTxId),
+      expectedToUser,
+      price,
+    };
+    const worker = startWorker("/assets/vault.tlsn.worker.mjs", (msg) => {
+      if (msg.kind === "result") {
+        worker.terminate();
+        resolve(msg.result);
+      } else if (msg.kind === "error") {
+        worker.terminate();
+        reject(new Error(msg.message));
+      }
+    });
+    worker.postMessage({ kind: "start", config });
+  });
+}
+
 async function onSolveSubmit(ctx) {
   ctx.els.solveError.textContent = "";
   setFieldError(ctx.els.solveOfferSelect, null);
@@ -232,6 +280,7 @@ async function onSolveSubmit(ctx) {
       setFieldError(ctx.els.solveOfferSelect, "pick an offer");
       throw new Error("choose an offer");
     }
+    const offerRecord = ctx.store.getResource(uid);
     const witness = {};
     for (const inp of ctx.els.solveWitnessFields.querySelectorAll(
       '[data-role="solve-witness-input"]',
@@ -243,10 +292,60 @@ async function onSolveSubmit(ctx) {
       setFieldError(ctx.els.solveFeeResource, "choose a USDC resource");
       throw new Error("choose a USDC resource for the fee");
     }
+
+    // TLSN gate: for tlsn_transfer challenges, run real MPC-TLS proving
+    // against the bank ledger via vault.tlsn.worker.mjs. The demo service
+    // verifies the attested response matches the offer declaration
+    // (expectedToUser = offer creator, amount >= price). If the worker
+    // resolves, the policy already passed; the returned values are echoed
+    // back from the verified transcript for the log + future ZK opening.
+    if (offerRecord.kindFamily === "offer" && offerRecord.offerState?.challengeId === "tlsn_transfer") {
+      const ofs = offerRecord.offerState;
+      const decl = ofs.challengeDeclaration;
+      const expectedToUser = ofs.creatorUsername;
+      event("vault.tlsn.gate.start", {
+        expected_to: expectedToUser,
+        expected_price: decl.price,
+      });
+      let attestation;
+      try {
+        attestation = await runTlsnTransferGate({
+          expectedToUser,
+          price: decl.price,
+        });
+      } catch (err) {
+        eventErr("vault.tlsn.gate.failed", { message: err.message });
+        throw new Error(`TLSN proving failed: ${err.message}`);
+      }
+      event("vault.tlsn.gate.attested", {
+        tx_id: attestation.txId,
+        to: attestation.toUsername,
+        amount: attestation.amount,
+        expected_to: expectedToUser,
+        expected_price: decl.price,
+      });
+      // Feed the opening witness into buildSolveOffer so the
+      // offerSolveTlsnTransfer leaf
+      // (vault::AirKind::OfferSolveTlsnTransfer) can be built. The leaf
+      // circuit re-derives the Poseidon commitment, parses the decimal
+      // segments, and enforces the offer policy
+      // (`to_user_id == expectedToUserId`, `amount == expectedAmount`).
+      // TLSN-side fields come from the worker; offer-side `expected*`
+      // fields come from the offer's declaration.
+      witness.attestationBytes = attestation.attestationBytes;
+      witness.blinderBytes = attestation.blinderBytes;
+      witness.commitmentHash = attestation.commitmentHash;
+      witness.txId = attestation.txId;
+      witness.toUserId = attestation.toUserId;
+      witness.amount = attestation.amount;
+      witness.expectedToUserId = Number(decl.expectedToUserId);
+      witness.expectedAmount = Number(decl.price);
+    }
+
     const plan = await buildSolveOffer({
       store: ctx.store,
       activeUsername: ctx.activeUsername,
-      offerRecord: ctx.store.getResource(uid),
+      offerRecord,
       witness,
       feeRecord: ctx.store.getResource(feeUid),
     });

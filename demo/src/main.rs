@@ -104,6 +104,28 @@ async fn run(cli: Cli) -> Result<()> {
         "demo.transfer.seeded"
     );
 
+    // Vault demo's tlsn_transfer challenge uses a second seeded transfer
+    // (alice → bob, amount=25) so the demo has two distinct flows: the
+    // existing zktls page exercises tx_id=1 (alice→treasury), and the vault
+    // demo's offer-solve exercises tx_id=2 (alice→bob).
+    let vault_transfer = ledger::seed_transfer(
+        &state,
+        TransferRequest {
+            from_username: "alice".to_string(),
+            to_username: "bob".to_string(),
+            amount: 25,
+        },
+    )
+    .await
+    .context("failed to seed vault demo transfer")?;
+    info!(
+        tx_id = vault_transfer.tx_id,
+        from = %vault_transfer.from_username,
+        to = %vault_transfer.to_username,
+        amount = vault_transfer.amount,
+        "demo.transfer.seeded.vault"
+    );
+
     let server_cert_der = get_or_create_cert_bytes(&cli.server_cert_path, &cli.server_key_path)
         .context("failed to prepare server certificate")?;
     let server_cert_der_hex = hex::encode(&server_cert_der);
@@ -126,6 +148,7 @@ async fn run(cli: Cli) -> Result<()> {
         to_user: cli.to_user,
         transfer_amount: cli.transfer_amount,
         tx_id: transfer.tx_id,
+        vault_tx_id: vault_transfer.tx_id,
     };
 
     let server_task = tokio::spawn(ledger::serve(server_cfg, state));

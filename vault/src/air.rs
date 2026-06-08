@@ -45,6 +45,15 @@ pub enum AirKind {
 
     /// Action-AIR root: the merge fold over all per-action leaves.
     ActionRoot = 6,
+
+    /// OfferSolve branch for the `tlsn_transfer` challenge family: opens
+    /// a Poseidon transcript commitment in-circuit, parses the canonical
+    /// fixed-width attestation layout (`tx_id ‖ to_user_id ‖ amount` as
+    /// zero-padded ASCII decimal), and binds the parsed `to_user_id` /
+    /// `amount` to the offer declaration's `expected_to_user_id` /
+    /// `expected_amount`. Tagged at 7 (originally `TlsnAttestation`,
+    /// renamed once it absorbed the offer-policy constraints).
+    OfferSolveTlsnTransfer = 7,
 }
 
 /// Tag space cap. The tag is packed into one M31 slot so the cap is well
@@ -65,6 +74,7 @@ impl AirKind {
             4 => Some(Self::OfferCancel),
             5 => Some(Self::UserKey),
             6 => Some(Self::ActionRoot),
+            7 => Some(Self::OfferSolveTlsnTransfer),
             _ => None,
         }
     }
@@ -80,6 +90,7 @@ impl AirKind {
             Self::OfferCancel => "offerCancel",
             Self::UserKey => "userKey",
             Self::ActionRoot => "actionRoot",
+            Self::OfferSolveTlsnTransfer => "offerSolveTlsnTransfer",
         }
     }
 }

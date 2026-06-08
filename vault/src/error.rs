@@ -103,6 +103,16 @@ pub enum Error {
     #[error("bincode codec: {0}")]
     Bincode(#[source] bincode::Error),
 
+    /// TLSN attestation witness has a byte length other than the
+    /// canonical [`crate::types::TLSN_ATT_LEN`] (32).
+    #[error("tlsn attestation has {got} bytes, expected {expected}")]
+    TlsnAttestationBadLength { got: usize, expected: usize },
+
+    /// TLSN blinder witness has a byte length the circuit's input shape
+    /// does not accept (the circuit's blinder column count is fixed).
+    #[error("tlsn blinder has {got} bytes, expected {expected}")]
+    TlsnBlinderBadLength { got: usize, expected: usize },
+
     /// Pass-through of an error raised by the underlying zkp crate's
     /// leaf/merge prover or verifier. The vault crate adds no new
     /// constraints on the envelope itself; everything zkp catches, we

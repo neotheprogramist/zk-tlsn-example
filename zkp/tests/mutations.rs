@@ -43,16 +43,6 @@ fn merge_rejects_mutated_left_output_value() {
 }
 
 #[test]
-fn merge_rejects_mutated_n_blake_gates() {
-    let (mut l0, l1) = fresh_pair();
-    l0.metadata.n_blake_gates += 1;
-    assert!(
-        merge_rejects(l0, l1),
-        "merge accepted left with corrupted metadata.n_blake_gates",
-    );
-}
-
-#[test]
 fn merge_rejects_mutated_output_addresses() {
     let (mut l0, l1) = fresh_pair();
     l0.metadata.output_addresses[0] += 1;

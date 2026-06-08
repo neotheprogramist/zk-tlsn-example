@@ -23,7 +23,7 @@ use zktls::{
 
 use crate::{
     tls::{TestTlsConfig, TlsFixtureError, get_or_create_test_tls_config},
-    transfer_verifier::{TransferVerifyError, verify_transfer},
+    transfer_verifier::{TransferVerifyError, verify_transfer, verify_transfer_vault},
 };
 
 const MAX_PREAMBLE_BYTES: usize = 256;
@@ -74,6 +74,13 @@ pub enum ConnectError {
 #[derive(Debug, PartialEq, Eq)]
 enum Role {
     Verify,
+    /// Vault-demo verify stream. Carries the offer parameters the TLSN
+    /// verifier must check against the attested response: the expected
+    /// recipient username and the minimum acceptable amount.
+    VerifyVault {
+        expected_to_user: String,
+        price: u64,
+    },
     Connect { host: String, port: u16 },
 }
 
@@ -105,6 +112,23 @@ where
 fn parse_role(line: &str) -> Result<Role, ConnectError> {
     if line == "VERIFY" {
         return Ok(Role::Verify);
+    }
+    if let Some(rest) = line.strip_prefix("VERIFY_VAULT ") {
+        // Preamble: "VERIFY_VAULT <to_user> <price>"
+        let mut parts = rest.splitn(2, ' ');
+        let to_user = parts
+            .next()
+            .ok_or_else(|| ConnectError::PreambleUnknownRole(line.to_string()))?;
+        let price_str = parts
+            .next()
+            .ok_or_else(|| ConnectError::PreambleUnknownRole(line.to_string()))?;
+        let price: u64 = price_str
+            .parse()
+            .map_err(|_| ConnectError::PreambleUnknownRole(line.to_string()))?;
+        return Ok(Role::VerifyVault {
+            expected_to_user: to_user.to_string(),
+            price,
+        });
     }
     if let Some(rest) = line.strip_prefix("CONNECT ") {
         let (host, port) = rest
@@ -195,6 +219,27 @@ where
             }
             let joined = tokio::io::join(ChainedRead::new(leftover, wt_recv), wt_send);
             let outcome = run_notarize_stream(joined, proxy_config).await;
+            verified.store(true, Ordering::SeqCst);
+            outcome
+        }
+        Role::VerifyVault {
+            expected_to_user,
+            price,
+        } => {
+            if !leftover.is_empty() {
+                tracing::warn!(
+                    leftover_bytes = leftover.len(),
+                    "demo.connect.verify_vault.stream.leftover"
+                );
+            }
+            let joined = tokio::io::join(ChainedRead::new(leftover, wt_recv), wt_send);
+            let outcome = run_vault_notarize_stream(
+                joined,
+                proxy_config,
+                expected_to_user,
+                price,
+            )
+            .await;
             verified.store(true, Ordering::SeqCst);
             outcome
         }
@@ -326,6 +371,24 @@ enum VerificationOutcome<'a> {
     },
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum VaultVerificationOutcome<'a> {
+    #[serde(rename = "success")]
+    Success {
+        server_name: &'a str,
+        commitment_count: usize,
+        tx_id: u64,
+        to_username: &'a str,
+        amount: u64,
+    },
+    /// MPC-TLS session completed but the policy check (toUser match,
+    /// amount >= price, …) rejected the transcript. Surfaces the reason
+    /// so the JS prover can show a meaningful error to the user.
+    #[serde(rename = "failure")]
+    Failure { reason: &'a str },
+}
+
 pub async fn run_notarize_stream<IO>(
     stream: IO,
     proxy_config: &ProxyConfig,
@@ -351,6 +414,65 @@ where
     };
     info!(success = true, "zktls.verifier.outcome.sent");
     write_json_frame(&mut io, &outcome).await?;
+    io.close().await?;
+    Ok(())
+}
+
+pub async fn run_vault_notarize_stream<IO>(
+    stream: IO,
+    proxy_config: &ProxyConfig,
+    expected_to_user: String,
+    price: u64,
+) -> Result<(), ConnectError>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    use futures::AsyncWriteExt as _;
+
+    info!(
+        expected_to_user = %expected_to_user,
+        price,
+        "demo.connect.vault.verify.start"
+    );
+    let (mut io, output, parsed) = verify_transfer_vault(
+        create_verifier_config()?,
+        Compat::new(stream),
+        &proxy_config.server_name,
+        &expected_to_user,
+        price,
+    )
+    .await?;
+
+    log_verifier_output(&output);
+
+    match parsed {
+        Ok(parsed) => {
+            let outcome = VaultVerificationOutcome::Success {
+                server_name: &parsed.server_name,
+                commitment_count: parsed.commitment_count,
+                tx_id: parsed.tx_id,
+                to_username: &parsed.to_username,
+                amount: parsed.amount,
+            };
+            info!(
+                success = true,
+                tx_id = parsed.tx_id,
+                to_username = %parsed.to_username,
+                amount = parsed.amount,
+                "zktls.verifier.vault.outcome.sent"
+            );
+            write_json_frame(&mut io, &outcome).await?;
+        }
+        Err(err) => {
+            // MPC-TLS succeeded, but the transcript failed the post-session
+            // policy check. Surface the reason back to the prover instead of
+            // hanging up — otherwise the WASM client would just see EOF.
+            let reason = err.to_string();
+            tracing::warn!(error = %err, "zktls.verifier.vault.policy.rejected");
+            let outcome = VaultVerificationOutcome::Failure { reason: &reason };
+            write_json_frame(&mut io, &outcome).await?;
+        }
+    }
     io.close().await?;
     Ok(())
 }

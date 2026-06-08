@@ -53,10 +53,66 @@ function buildProverInputs(config) {
   };
 }
 
+// Vite automatically inlines spawn.js as a data: URL when bundling, which
+// eliminates all HTTP requests for Rayon thread Workers. Without a bundler,
+// Salvo serves spawn.js over HTTPS from disk — Rayon can spawn 8-16+ threads
+// simultaneously, each needing spawn.js, but HTTP/1.1's 6-connection limit
+// causes some fetches to be cancelled (ERR:ABORTED) → thread never starts → deadlock.
+//
+// This function replicates what Vite does at build time: fetch spawn.js once,
+// rewrite its relative imports to absolute URLs (required when running from a
+// blob URL which has no directory context), then create a blob URL. The Worker
+// constructor is patched so all subsequent spawn Workers use the blob URL
+// (served from browser memory, no network round-trip).
+async function installSpawnBlobPatch() {
+  const ZKTLS_ABS = new URL("/assets/wasm/zktls.js", location.origin).href;
+
+  // Dynamically find spawn.js path from zktls.js so the hash in the path
+  // doesn't need to be updated manually after each WASM rebuild.
+  const zktlsText = await fetch(ZKTLS_ABS).then((r) => r.text());
+  const match = zktlsText.match(/['"](\.[^'"]*web-spawn[^'"]*spawn\.js)['"]/);
+  if (!match) throw new Error("could not find spawn.js path in zktls.js");
+  const SPAWN_PATH = new URL(match[1], ZKTLS_ABS).href;
+
+  let text = await fetch(SPAWN_PATH).then((r) => r.text());
+
+  // Fix relative zktls.js import → absolute URL (blob URLs have no directory).
+  text = text
+    .replaceAll("'../../../zktls.js'", `'${ZKTLS_ABS}'`)
+    .replaceAll('"../../../zktls.js"', `"${ZKTLS_ABS}"`);
+
+  // Replace `new URL('./spawn.js', import.meta.url)` with `new URL(import.meta.url)`.
+  // When running as a blob Worker, import.meta.url IS the blob URL itself, so
+  // thread Workers spawned by Rayon's spawner also receive the blob URL — no HTTP.
+  text = text.replaceAll(
+    "new URL(\n        './spawn.js',\n        import.meta.url\n    )",
+    "new URL(import.meta.url)",
+  );
+
+  const blob = new Blob([text], { type: "application/javascript" });
+  const blobUrl = URL.createObjectURL(blob);
+
+  const OriginalWorker = self.Worker;
+  self.Worker = class extends OriginalWorker {
+    constructor(url, options) {
+      // Intercept any Worker pointing at spawn.js (HTTP or blob variants).
+      const s = String(url);
+      if (s.includes("/spawn.js") || s.includes("web-spawn")) {
+        super(blobUrl, options);
+      } else {
+        super(url, options);
+      }
+    }
+  };
+}
+
 async function runProve(config) {
   event("zktls.worker.wasm.init.start");
   await init();
   event("zktls.worker.wasm.init.done");
+
+  await installSpawnBlobPatch();
+
   event("zktls.worker.pool.start");
   await initialize();
   event("zktls.worker.pool.ready");

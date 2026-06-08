@@ -17,17 +17,19 @@
 
 use circuits::{
     context::TraceContext,
-    ops::{add, eq, guess, output},
+    ops::{add, eq, guess, mul, output, sub},
 };
 use stwo::core::fields::{m31::M31, qm31::QM31};
 
 use crate::{
     error::{Error, Result},
-    poseidon::{RATE, bind_hash_to_expected, hash_in_circuit, prime_blake_component},
+    poseidon::{RATE, bind_hash_to_expected, hash_in_circuit},
     preimage::{MAX_COMPLIANCE_CONSUMED, MAX_COMPLIANCE_CREATED, PREIMAGE_LIMB_COUNT},
     types::{
         CONSERVATION_MAX_INPUTS, CONSERVATION_MAX_OUTPUTS, ComplianceConsumedEntry,
-        CompliancePreimageEntry, LeafWitness, MAX_USERKEY_AUTH_PER_LEAF, UserKeyAuthEntry,
+        CompliancePreimageEntry, LeafWitness, MAX_USERKEY_AUTH_PER_LEAF, TLSN_ATT_AMOUNT_WIDTH,
+        TLSN_ATT_LEN, TLSN_ATT_TX_ID_WIDTH, TLSN_ATT_USER_ID_WIDTH, TLSN_BLINDER_LEN,
+        UserKeyAuthEntry,
     },
 };
 
@@ -221,8 +223,6 @@ pub fn build_userkey_auth(
         });
     }
 
-    prime_blake_component(ctx);
-
     let nk_vars: [circuits::context::Var; 8] =
         core::array::from_fn(|i| guess(ctx, QM31::from(M31::from(nk_limbs[i]))));
 
@@ -265,7 +265,6 @@ pub fn build_offer_cancel_auth(
     cm_offer_limbs: &[u32; 8],
     cancel_auth_tag_limbs: &[u32; 8],
 ) -> Result<()> {
-    prime_blake_component(ctx);
     let nk_vars: [circuits::context::Var; 8] =
         core::array::from_fn(|i| guess(ctx, QM31::from(M31::from(nk_creator_limbs[i]))));
 
@@ -326,9 +325,6 @@ pub fn build_compliance(
         });
     }
 
-    // Prover-quirk workaround: keep blake sub-components populated.
-    prime_blake_component(ctx);
-
     // ─── Consumed slots: cm + nf ─────────────────────────────────────────
     for slot in 0..MAX_COMPLIANCE_CONSUMED {
         let entry = consumed.get(slot).unwrap_or(padding_consumed);
@@ -376,6 +372,122 @@ pub fn build_compliance(
             core::array::from_fn(|i| M31::from(entry.expected_cm_limbs[i]));
         bind_hash_to_expected(ctx, &computed_cm, &expected_cm_m31);
     }
+
+    emit_canonical_outputs(ctx, leaf_index)
+}
+
+/// Parse a contiguous slice of ASCII digit Vars (each holds an M31 in
+/// `[48, 58)` if the byte really is `'0'..='9'`) into a single Var that
+/// equals the decimal value. The constraint relies on the downstream
+/// Poseidon bind: a malicious witness that picks non-digit byte values
+/// must still produce a Poseidon commitment matching the public limbs,
+/// which is collision-resistant.
+///
+/// Accumulator overflow note: the parsed value is computed mod
+/// `M31::P ≈ 2³¹-1`. The toy assumes attestation field widths produce
+/// values comfortably below P (tx_id and to_user_id always do at 10
+/// decimal digits; amount up to 12 digits is the caller's responsibility
+/// to keep ≤ P, e.g. by capping amounts host-side).
+fn parse_decimal_in_circuit(
+    ctx: &mut TraceContext,
+    digit_bytes: &[circuits::context::Var],
+) -> circuits::context::Var {
+    let ten = ctx.constant(QM31::from(M31::from(10u32)));
+    let ascii_zero = ctx.constant(QM31::from(M31::from(48u32)));
+    let mut acc = ctx.zero();
+    for &byte_var in digit_bytes {
+        let digit = sub(ctx, byte_var, ascii_zero);
+        let acc_times_ten = mul(ctx, acc, ten);
+        acc = add(ctx, acc_times_ten, digit);
+    }
+    acc
+}
+
+/// **OfferSolveTlsnTransfer AIR** — opens a Poseidon transcript
+/// commitment over a 32-byte ASCII attestation
+/// `(txId 10d ‖ toUserId 10d ‖ amount 12d)`, binds the three parsed
+/// segments plus the commitment to public values, and additionally
+/// enforces the offer policy: `to_user_id == expected_to_user_id` and
+/// `amount == expected_amount`.
+///
+/// Constraints:
+/// 1. Guess each attestation byte (32 Vars) and each blinder byte
+///    (16 Vars). The Vars hold M31 values in `[0, 256)` *if* they really
+///    are bytes; non-byte witnesses must still satisfy (2) and (3) below.
+/// 2. For each segment, `parse_decimal_in_circuit` accumulates
+///    `Σ (b_i - 48) · 10^(W-1-i)` mod P and `eq`s it against a Var
+///    guessed as the public `tx_id` / `to_user_id` / `amount`.
+/// 3. `eq(to_user_id, expected_to_user_id)` and
+///    `eq(amount, expected_amount)` enforce the offer policy: the
+///    attested recipient and value match what the offer creator
+///    declared.
+/// 4. Concatenate attestation Vars + blinder Vars and feed them into
+///    [`hash_in_circuit`]. Bind the resulting RATE-limb output to the
+///    public `commitment_hash`, matching the on-wire MPC-VM Poseidon2
+///    output (8× u32 little-endian = 32 bytes).
+pub fn build_offer_solve_tlsn_transfer(
+    ctx: &mut TraceContext,
+    leaf_index: u32,
+    attestation_bytes: &[u8],
+    blinder_bytes: &[u8],
+    commitment_hash: &[u32; RATE],
+    tx_id: u64,
+    to_user_id: u64,
+    amount: u64,
+    expected_to_user_id: u64,
+    expected_amount: u64,
+) -> Result<()> {
+    if attestation_bytes.len() != TLSN_ATT_LEN {
+        return Err(Error::TlsnAttestationBadLength {
+            got: attestation_bytes.len(),
+            expected: TLSN_ATT_LEN,
+        });
+    }
+    if blinder_bytes.len() != TLSN_BLINDER_LEN {
+        return Err(Error::TlsnBlinderBadLength {
+            got: blinder_bytes.len(),
+            expected: TLSN_BLINDER_LEN,
+        });
+    }
+
+    let att_vars: Vec<circuits::context::Var> = attestation_bytes
+        .iter()
+        .map(|&b| guess(ctx, QM31::from(M31::from(b as u32))))
+        .collect();
+
+    let tx_id_end = TLSN_ATT_TX_ID_WIDTH;
+    let user_id_end = tx_id_end + TLSN_ATT_USER_ID_WIDTH;
+    let amount_end = user_id_end + TLSN_ATT_AMOUNT_WIDTH;
+
+    let tx_id_computed = parse_decimal_in_circuit(ctx, &att_vars[..tx_id_end]);
+    let tx_id_public = guess(ctx, QM31::from(M31::from(tx_id as u32)));
+    eq(ctx, tx_id_computed, tx_id_public);
+
+    let to_user_computed = parse_decimal_in_circuit(ctx, &att_vars[tx_id_end..user_id_end]);
+    let to_user_public = guess(ctx, QM31::from(M31::from(to_user_id as u32)));
+    eq(ctx, to_user_computed, to_user_public);
+
+    let amount_computed = parse_decimal_in_circuit(ctx, &att_vars[user_id_end..amount_end]);
+    let amount_public = guess(ctx, QM31::from(M31::from(amount as u32)));
+    eq(ctx, amount_computed, amount_public);
+
+    let expected_to_user_var = guess(ctx, QM31::from(M31::from(expected_to_user_id as u32)));
+    eq(ctx, to_user_public, expected_to_user_var);
+
+    let expected_amount_var = guess(ctx, QM31::from(M31::from(expected_amount as u32)));
+    eq(ctx, amount_public, expected_amount_var);
+
+    let blinder_vars: Vec<circuits::context::Var> = blinder_bytes
+        .iter()
+        .map(|&b| guess(ctx, QM31::from(M31::from(b as u32))))
+        .collect();
+
+    let mut hash_input = Vec::with_capacity(TLSN_ATT_LEN + TLSN_BLINDER_LEN);
+    hash_input.extend_from_slice(&att_vars);
+    hash_input.extend_from_slice(&blinder_vars);
+    let computed_commitment: [circuits::context::Var; RATE] = hash_in_circuit(ctx, &hash_input);
+    let expected_m31: [M31; RATE] = core::array::from_fn(|i| M31::from(commitment_hash[i]));
+    bind_hash_to_expected(ctx, &computed_commitment, &expected_m31);
 
     emit_canonical_outputs(ctx, leaf_index)
 }
@@ -463,6 +575,30 @@ pub fn dispatch(
             created,
             padding_consumed,
             padding_created,
+        ),
+        (
+            AirKind::OfferSolveTlsnTransfer,
+            LeafWitness::OfferSolveTlsnTransfer {
+                attestation_bytes,
+                blinder_bytes,
+                commitment_hash,
+                tx_id,
+                to_user_id,
+                amount,
+                expected_to_user_id,
+                expected_amount,
+            },
+        ) => build_offer_solve_tlsn_transfer(
+            ctx,
+            leaf_index,
+            attestation_bytes,
+            blinder_bytes,
+            commitment_hash,
+            *tx_id,
+            *to_user_id,
+            *amount,
+            *expected_to_user_id,
+            *expected_amount,
         ),
         (k, LeafWitness::DigestBound) => build_digest_bound_leaf(ctx, leaf_index, k.tag()),
         (k, w) => Err(Error::AirWitnessMismatch {
